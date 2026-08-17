@@ -1,0 +1,2 @@
+// expect: error 2:35: `E` has no variant `Zork`
+enum E { A } fn f() { let e: E = E.Zork; }

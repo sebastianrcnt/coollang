@@ -6,6 +6,7 @@ wasmtime 으로 실제로 돌린다. 컴파일이 되는 것과 옳은 것은 �
 import pytest
 
 from conftest import instantiate, run, traps
+from fixtures import load_semantics
 
 U32_MAX = 0xFFFFFFFF
 
@@ -862,3 +863,19 @@ fn f() -> u32 {
 }
 """
     assert run(src, "f") == 111 * 1000 + 222
+
+
+# --- 픽스처 파일 (fixtures/cool0/semantics/) --------------------------------------
+#
+# 나머지 실행 의미 테스트는 이 파일에 소스가 직접 박혀 있지만, 몇 개는
+# fixtures/cool0/semantics/*.cool0 에서 읽어 형식을 보여 준다. 파일 첫 줄의
+# `// expect: fn(args) == value` 가 곧 그 파일의 유일한 단언이다.
+
+
+@pytest.mark.parametrize(
+    "name,src,fn,args,want",
+    load_semantics(),
+    ids=[name for name, *_ in load_semantics()],
+)
+def test_semantics_fixture(name, src, fn, args, want):
+    assert run(src.decode("ascii"), fn, *args) == want

@@ -1,0 +1,10 @@
+// expect: ok
+
+fn fill(a: []mut u8, v: u32) { for let mut i: u32 = 0; i < a.len; i += 1 { a[i] = v; } }
+fn sum(a: []u8) -> u32 {
+    let mut t: u32 = 0;
+    for let mut i: u32 = 0; i < a.len; i += 1 { t += a[i]; }
+    return t;
+}
+fn words(a: []mut u32, i: u32, v: u32) { a[i] = v; }
+fn literal() -> u32 { let s: []u8 = "cool0"; return s.len + s[0]; }

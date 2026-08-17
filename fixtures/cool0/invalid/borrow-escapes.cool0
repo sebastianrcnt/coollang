@@ -1,0 +1,2 @@
+// expect: error 2:64: a borrow may only appear as a call argument
+struct S { a: i32 } fn f() { let mut s: S = S{ a: 1 }; let r = &mut s; }

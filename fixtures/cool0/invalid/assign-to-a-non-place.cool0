@@ -1,0 +1,2 @@
+// expect: error 2:10: expected a place expression
+fn f() { 1 = 2; }

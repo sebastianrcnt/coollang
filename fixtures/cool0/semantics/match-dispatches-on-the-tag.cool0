@@ -1,0 +1,15 @@
+// expect: f(2) == 12
+enum Shape { Dot, Line(i32), Rect(i32, i32) }
+fn area(s: &Shape) -> i32 {
+    match s.^ {
+        Dot => { return 0; }
+        Line(n) => { return n; }
+        Rect(w, h) => { return w * h; }
+    }
+}
+fn f(k: u32) -> i32 {
+    let mut s: Shape = Shape.Dot;
+    if k == 1 { s = Shape.Line(5); }
+    if k == 2 { s = Shape.Rect(3, 4); }
+    return area(&s);
+}

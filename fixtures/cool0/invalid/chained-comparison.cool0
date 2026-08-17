@@ -1,0 +1,2 @@
+// expect: error 2:24: comparison operators cannot be chained
+fn f() { let x = 1 < 2 < 3; }

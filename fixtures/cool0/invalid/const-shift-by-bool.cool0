@@ -1,0 +1,2 @@
+// expect: error 2:18: `<<` requires integer operands
+const C: i32 = 1 << true;

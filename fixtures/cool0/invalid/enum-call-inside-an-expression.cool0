@@ -1,0 +1,2 @@
+// expect: error 2:43: enum literal is only allowed as an initializer
+enum E { A(i32) } fn f() { let x = 1 + E.A(1); }

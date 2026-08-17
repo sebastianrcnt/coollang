@@ -1,0 +1,8 @@
+// expect: ok
+
+fn a(x: i32) -> i32 { return x; }
+fn b(y: u32) -> u32 { return y; }
+fn c() { }
+fn d() { }
+fn e() -> u32 { let s: []u8 = "shared"; return s.len; }
+fn g() -> u32 { let s: []u8 = "shared"; return s.len; }

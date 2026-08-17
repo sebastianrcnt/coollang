@@ -1,0 +1,2 @@
+// expect: error 2:12: duplicate top-level name `f`
+fn f() { } fn f() { }

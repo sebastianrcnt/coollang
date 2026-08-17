@@ -1,0 +1,2 @@
+// expect: error 2:41: callee must be a function name
+fn g() -> u32 { return 0; } fn f() { g()(); }

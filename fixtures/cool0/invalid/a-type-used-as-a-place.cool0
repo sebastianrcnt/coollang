@@ -1,0 +1,2 @@
+// expect: error 2:38: `S` is a type, not a place
+struct S { a: i32 } fn f() { let x = S.a; }

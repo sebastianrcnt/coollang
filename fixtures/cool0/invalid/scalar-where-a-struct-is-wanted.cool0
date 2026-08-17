@@ -1,0 +1,2 @@
+// expect: error 2:41: expected `S`, found `integer literal`
+struct S { a: i32 } fn f() { let s: S = 1; }

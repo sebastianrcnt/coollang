@@ -1,0 +1,4 @@
+// expect: ok
+
+fn slen(s: &[]u8) -> u32 { return s.^.len; }
+fn f(a: []u8) -> u32 { return slen(&a); }

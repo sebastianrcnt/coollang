@@ -1,0 +1,9 @@
+// expect: ok
+
+enum E { A, B(u32) }
+fn f(x: &E, y: &E) -> u32 {
+    match x.^ {
+        A => { match y.^ { A => { return 1; } B(v) => { return v; } } }
+        B(v) => { match y.^ { A => { return v; } B(w) => { return v + w; } } }
+    }
+}

@@ -1,0 +1,4 @@
+// expect: ok
+
+fn peek(x: &u32) -> u32 { return x.^; }
+fn f(n: u32) -> u32 { return peek(&n); }

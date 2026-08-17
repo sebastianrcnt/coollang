@@ -1,0 +1,2 @@
+// expect: ok
+struct S { } fn f() { let s: S = S{ }; }

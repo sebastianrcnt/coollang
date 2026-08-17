@@ -1,0 +1,2 @@
+// expect: error 2:35: cannot index `i32`
+fn f() { let a: i32 = 1; let b = a[0]; }

@@ -1,0 +1,2 @@
+// expect: error 2:39: expected `u32`, found `i32`
+fn f() { let a: i32 = 1; let b: u32 = a; }

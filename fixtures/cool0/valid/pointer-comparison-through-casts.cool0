@@ -1,0 +1,3 @@
+// expect: ok
+
+fn f(p: *u8, q: *u32) -> bool { return p == (q as u32) as *u8; }

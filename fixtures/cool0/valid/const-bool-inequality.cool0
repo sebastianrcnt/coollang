@@ -1,0 +1,2 @@
+// expect: ok
+const C: bool = true != false; fn f() -> bool { return C; }

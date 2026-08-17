@@ -1,0 +1,2 @@
+// expect: error 2:27: unknown function `a`
+fn f() { let a: i32 = 1; a(); }

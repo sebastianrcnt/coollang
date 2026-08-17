@@ -1,0 +1,2 @@
+// expect: error 2:18: unknown name `zz`
+fn f() { let x = zz.len; }

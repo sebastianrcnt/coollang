@@ -1,0 +1,4 @@
+// expect: error 4:37: `s` is borrowed mutably and also used in the same argument list
+struct S { a: i32 }
+fn g(x: &mut S, y: &mut S) { }
+fn f() { let mut s: S = S{ a: 1 }; g(&mut s, &mut s); }

@@ -1,0 +1,2 @@
+// expect: error 2:48: `*` requires `i32` or `u32`, found `bool`
+fn f() { let a = true; let b = true; let c = a * b; }

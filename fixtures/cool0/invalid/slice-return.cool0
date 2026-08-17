@@ -1,0 +1,2 @@
+// expect: error 2:11: cannot return a slice (wasm 1.0 has a single result)
+fn f() -> []u8 { }

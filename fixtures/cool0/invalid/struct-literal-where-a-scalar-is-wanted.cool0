@@ -1,0 +1,2 @@
+// expect: error 2:43: expected `i32`, found `S`
+struct S { a: i32 } fn f() { let x: i32 = S{ a: 1 }; }

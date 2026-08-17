@@ -1,0 +1,5 @@
+// expect: ok
+
+fn poke(addr: u32, v: u32) { unsafe { let p: *u32 = addr as *u32; p.^ = v; } }
+fn peek(addr: u32) -> u32 { unsafe { let p: *u32 = addr as *u32; return p.^; } }
+fn is_null(a: u32) -> bool { let p: *u8 = a as *u8; return p == 0 as *u8; }

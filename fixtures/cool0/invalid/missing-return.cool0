@@ -1,0 +1,2 @@
+// expect: error 2:1: function `f` must return a value on every path
+fn f() -> i32 { }

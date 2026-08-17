@@ -1,0 +1,4 @@
+// expect: ok
+
+fn peek(x: &bool) -> bool { return x.^; }
+fn f(c: bool) -> bool { return peek(&c); }

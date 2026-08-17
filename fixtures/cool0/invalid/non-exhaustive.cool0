@@ -1,0 +1,2 @@
+// expect: error 2:42: non-exhaustive match: missing `B`
+enum E { A, B } fn f() { let e: E = E.A; match e { A => { } } }

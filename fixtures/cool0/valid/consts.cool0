@@ -1,0 +1,2 @@
+// expect: ok
+const A: i32 = 1 + 2; const B: u32 = A as u32 * 3; fn f() -> u32 { return B; }

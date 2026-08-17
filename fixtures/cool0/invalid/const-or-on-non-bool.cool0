@@ -1,0 +1,2 @@
+// expect: error 2:19: `||` requires bool operands
+const C: bool = 1 || true;

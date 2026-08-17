@@ -1,0 +1,2 @@
+// expect: error 2:44: raw pointer dereference requires `unsafe`
+fn f() { let p: *u32 = 0 as *u32; let x = p.^; }

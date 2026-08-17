@@ -1,0 +1,4 @@
+// expect: ok
+
+enum C { E, F(u32) }
+fn f(a: []C) -> u32 { match a[0] { E => { return 0; } F(v) => { return v; } } }

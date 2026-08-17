@@ -1,0 +1,15 @@
+// expect: ok
+
+fn f(n: u32) -> u32 {
+    let mut acc: u32 = 0;
+    for let mut i: u32 = 0; i < n; i += 1 {
+        if i % 2 == 0 { continue; }
+        if i > 100 { break; }
+        acc += i;
+    }
+    for { break; }
+    let mut j: u32 = 0;
+    for j < n { j += 1; }
+    if n == 0 { acc = 0; } else if n == 1 { acc = 1; } else { acc += j; }
+    return acc;
+}

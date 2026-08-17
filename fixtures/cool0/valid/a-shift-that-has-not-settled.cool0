@@ -1,0 +1,2 @@
+// expect: ok
+fn f(x: u32) -> bool { return 1 << 2 == x; }

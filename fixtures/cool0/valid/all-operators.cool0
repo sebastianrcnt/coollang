@@ -1,0 +1,7 @@
+// expect: ok
+
+fn arith(a: i32, b: i32) -> i32 { return a + b - a * b / (b | 1) % (b | 1); }
+fn bits(a: u32, b: u32) -> u32 { return (a & b) ^ (a | b) << 3 >> 2; }
+fn cmps(a: i32, b: i32) -> bool { return a == b || a != b && a < b || a > b || a <= b || a >= b; }
+fn unary(a: i32, c: bool) -> i32 { if !c { return -a; } return a; }
+fn casts(a: i32) -> u32 { return a as u32; }

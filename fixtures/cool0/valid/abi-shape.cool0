@@ -1,0 +1,14 @@
+// expect: ok
+
+const OUT_PTR: u32 = 0;
+const OUT_LEN: u32 = 4;
+const SRC: u32 = 0x1000;
+fn compile(src_len: u32) -> i32 {
+    unsafe {
+        let p: *u32 = OUT_PTR as *u32;
+        let l: *u32 = OUT_LEN as *u32;
+        p.^ = SRC;
+        l.^ = src_len;
+    }
+    return 0;
+}

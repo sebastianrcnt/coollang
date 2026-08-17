@@ -1,0 +1,3 @@
+// expect: ok
+
+fn f() -> u32 { for { unsafe { break; } } return 1; }

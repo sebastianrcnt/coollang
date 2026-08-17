@@ -1,0 +1,2 @@
+// expect: error 2:18: cannot negate `bool`
+fn f() { let a = -true; }

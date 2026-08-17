@@ -1,0 +1,2 @@
+// expect: error 2:10: `u8` is storage-only; there are no u8 locals
+fn f() { let b: u8 = 0; }

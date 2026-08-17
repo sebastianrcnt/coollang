@@ -18,7 +18,7 @@ import pytest
 import wasmtime
 
 from conftest import ENGINE, run_compiler
-from corpus import DIAGNOSTICS, PROGRAMS
+from corpus import DIAGNOSTIC_TEXT, DIAGNOSTICS, PROGRAMS
 from cool0.cool0 import STATUS_OK, compile as reference_compile
 
 SRC_DIR = pathlib.Path(__file__).resolve().parent.parent / "src" / "cool0"
@@ -50,6 +50,43 @@ def cool0c_compile(src: bytes) -> tuple[int, bytes]:
     return run_compiler(WASM, src)
 
 
+# --- 픽스처가 하나도 새지 않는지 --------------------------------------------
+
+
+def test_every_fixture_is_claimed_by_exactly_one_module():
+    """fixtures/cool0/ 의 모든 파일이 corpus.py 나 gaps.py 중 정확히 한쪽에 속한다.
+
+    두 모듈은 이름 목록으로 자기 몫을 고른다. 새 픽스처를 넣고 목록에 안 적으면
+    어느 테스트도 그 파일을 돌리지 않는다 -- 늘어난 커버리지처럼 보이지만 실제로는
+    죽은 파일이다. 그 자리를 여기서 막는다.
+    """
+    import corpus
+    import gaps
+    from fixtures import load_invalid, load_valid
+
+    for kind, on_disk, claims in [
+        ("valid", {n for n, _ in load_valid()},
+         [("corpus", corpus.PROGRAM_NAMES), ("gaps", gaps.GAP_PROGRAM_NAMES)]),
+        ("invalid", {n for n, _, _ in load_invalid()},
+         [("corpus", corpus.DIAGNOSTIC_NAMES), ("gaps", gaps.GAP_NAMES)]),
+    ]:
+        (mod_a, names_a), (mod_b, names_b) = claims
+        both = set(names_a) & set(names_b)
+        assert not both, f"{kind}: {sorted(both)} 를 {mod_a} 와 {mod_b} 가 겹쳐 맡았다"
+
+        claimed = set(names_a) | set(names_b)
+        orphans = on_disk - claimed
+        assert not orphans, (
+            f"fixtures/cool0/{kind}/ 의 {sorted(orphans)} 를 아무도 맡지 않았다 -- "
+            f"{mod_a}.py 나 {mod_b}.py 의 이름 목록에 넣어라"
+        )
+
+        missing = claimed - on_disk
+        assert not missing, (
+            f"{mod_a}/{mod_b} 가 없는 파일 {sorted(missing)} 를 맡고 있다"
+        )
+
+
 # --- 참조 구현이 코퍼스를 감당하는지 ----------------------------------------
 
 
@@ -71,6 +108,18 @@ def test_the_corpus_is_deterministic():
     for _, src in PROGRAMS:
         b = src.encode("ascii")
         assert reference_compile(b) == reference_compile(b)
+
+
+@pytest.mark.parametrize("name,src", DIAGNOSTICS, ids=[n for n, _ in DIAGNOSTICS])
+def test_reference_matches_the_exact_fixture_diagnostic(name, src):
+    """fixtures/cool0/invalid/*.cool0 이 적어 둔 `// expect: error ...` 그대로.
+
+    implementation.md §9 는 진단 문구 자체를 명세로 정한다. 이 단언은 세 구현이
+    서로 일치하는지가 아니라, 오라클이 그 문구를 정확히 내는지를 본다.
+    """
+    status, out = reference_compile(src)
+    assert status != STATUS_OK
+    assert out == DIAGNOSTIC_TEXT[name]
 
 
 # --- 진짜 패리티. cool0c 가 생기면 켜진다 ------------------------------------

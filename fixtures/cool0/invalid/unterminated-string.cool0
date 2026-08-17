@@ -1,0 +1,2 @@
+// expect: error 2:24: unterminated string literal
+fn f() { let s: []u8 = "abc; }

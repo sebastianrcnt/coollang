@@ -1,0 +1,2 @@
+// expect: error 2:34: const `A` depends on itself
+const A: i32 = B; const B: i32 = A;

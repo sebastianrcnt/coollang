@@ -1,0 +1,2 @@
+// expect: error 2:10: `break` outside of a loop
+fn f() { break; }

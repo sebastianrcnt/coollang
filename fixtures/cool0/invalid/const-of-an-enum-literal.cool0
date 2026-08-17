@@ -1,0 +1,2 @@
+// expect: error 2:30: not a constant expression
+enum E { A } const C: i32 = E.A;

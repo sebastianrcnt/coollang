@@ -1,0 +1,4 @@
+// expect: ok
+
+struct S { a: u32, b: i32 }
+fn f() -> u32 { let mut s: S = S{ a: 8, b: 0 - 16 }; s.a <<= 2; s.b >>= 2; return s.a; }

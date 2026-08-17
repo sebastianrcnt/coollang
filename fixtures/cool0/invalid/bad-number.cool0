@@ -1,0 +1,2 @@
+// expect: error 2:18: integer literal has no digits
+fn f() { let x = 0x; }

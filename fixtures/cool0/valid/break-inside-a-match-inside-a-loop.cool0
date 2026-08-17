@@ -1,0 +1,8 @@
+// expect: ok
+
+enum E { A, B }
+fn f() -> u32 {
+    let e: E = E.A;
+    for { match e { A => { break; } B => { } } }
+    return 1;
+}

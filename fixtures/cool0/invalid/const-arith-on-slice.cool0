@@ -1,0 +1,2 @@
+// expect: error 2:20: not a constant expression
+const C: i32 = 1 + "x";

@@ -1,0 +1,2 @@
+// expect: error 2:16: `zz` is not a constant
+const C: i32 = zz;

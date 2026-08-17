@@ -1,0 +1,4 @@
+// expect: ok
+
+enum T { End, W([]u8, u32) }
+fn f() -> u32 { let t: T = T.W("abcd", 7); match t { End => { return 0; } W(s, n) => { return s.len + n + s[0]; } } }

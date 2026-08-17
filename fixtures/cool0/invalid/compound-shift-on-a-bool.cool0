@@ -1,0 +1,2 @@
+// expect: error 2:28: `<<` requires an integer, found `bool`
+fn f() { let mut a = true; a <<= 1; }

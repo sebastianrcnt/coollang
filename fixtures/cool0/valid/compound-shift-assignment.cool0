@@ -1,0 +1,4 @@
+// expect: ok
+
+fn f(a: u32, n: u32) -> u32 { let mut x: u32 = a; x <<= n; x >>= 1; return x; }
+fn g(a: i32, n: u32) -> i32 { let mut x: i32 = a; x >>= n; x <<= 1; return x; }

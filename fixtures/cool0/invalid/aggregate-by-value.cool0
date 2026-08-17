@@ -1,0 +1,2 @@
+// expect: error 2:26: cannot pass aggregate `S` by value
+struct S { a: i32 } fn f(s: S) { }

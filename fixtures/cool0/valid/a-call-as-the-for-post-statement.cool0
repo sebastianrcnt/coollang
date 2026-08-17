@@ -1,0 +1,4 @@
+// expect: ok
+
+fn step(a: []mut u32) { a[0] += 1; }
+fn f(a: []mut u32) -> u32 { for let mut i: u32 = 0; a[0] < 3; step(a) { i += 1; } return a[0]; }

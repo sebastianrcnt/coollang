@@ -1,0 +1,2 @@
+// expect: error 2:61: `S` has no field `zz`
+struct S { a: i32 } fn f() { let s: S = S{ a: 1 }; let x = s.zz; }

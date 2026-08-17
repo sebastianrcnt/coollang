@@ -1,0 +1,14 @@
+// expect: ok
+
+struct S { a: i32 }
+fn read2(x: &S, y: &S) -> i32 { return x.^.a + y.^.a; }
+fn write1(x: &mut S) { x.^.a += 1; }
+fn forward(x: &mut S) { write1(x); write1(x); }
+fn incr(n: &mut u32) { n.^ += 1; }
+fn f() -> i32 {
+    let mut s: S = S{ a: 1 };
+    forward(&mut s);
+    let mut n: u32 = 0;
+    incr(&mut n);
+    return read2(&s, &s) + n as i32;
+}

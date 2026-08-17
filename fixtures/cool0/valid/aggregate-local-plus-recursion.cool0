@@ -1,0 +1,5 @@
+// expect: ok
+
+struct Acc { total: u32, depth: u32 }
+fn step(a: &mut Acc, n: u32) { a.^.depth += 1; a.^.total += n; if n > 0 { step(a, n - 1); } }
+fn f(n: u32) -> u32 { let mut a: Acc = Acc{ total: 0, depth: 0 }; step(&mut a, n); return a.total; }

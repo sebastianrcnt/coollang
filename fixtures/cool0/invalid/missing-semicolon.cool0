@@ -1,0 +1,2 @@
+// expect: error 2:25: expected `;`, found `}`
+fn f() { let x: i32 = 1 }

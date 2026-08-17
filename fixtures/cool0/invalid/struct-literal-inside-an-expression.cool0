@@ -1,0 +1,2 @@
+// expect: error 2:42: struct literal is only allowed as an initializer
+struct S { a: i32 } fn f() { let x = 1 + S{ a: 1 }; }

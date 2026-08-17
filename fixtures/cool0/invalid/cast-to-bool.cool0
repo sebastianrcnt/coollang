@@ -1,0 +1,2 @@
+// expect: error 2:36: cannot cast to `bool`
+fn f() { let a: i32 = 1; let b = a as bool; }

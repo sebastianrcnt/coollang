@@ -1,0 +1,4 @@
+// expect: ok
+
+fn two(x: &u32, y: &u32) -> u32 { return x.^ + y.^; }
+fn f(a: u32, b: u32) -> u32 { return two(&a, &b); }

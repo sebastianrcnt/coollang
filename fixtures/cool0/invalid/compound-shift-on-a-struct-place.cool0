@@ -1,0 +1,2 @@
+// expect: error 2:56: `<<` requires an integer, found `S`
+struct S { a: i32 } fn f() { let mut s: S = S{ a: 1 }; s <<= 1; }

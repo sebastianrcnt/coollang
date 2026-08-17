@@ -1,0 +1,2 @@
+// expect: error 2:30: expected `i32`, found `*u8`
+fn f(p: *u8) -> i32 { return p; }
