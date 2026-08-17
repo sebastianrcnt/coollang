@@ -19,17 +19,16 @@ SRC_DIR = pathlib.Path(__file__).resolve().parent.parent / "src" / "cool0"
 COOL0C = SRC_DIR / "cool0c.cool0"
 
 # cool0c 의 전역 주소. cool0c.cool0 과 같아야 한다
-G_SRCLEN = 0x0010
 G_ERR = 0x0014
 G_NTOK = 0x002C
 G_TOKS = 0x0030
 SRC_ADDR = 0x1000
-TOK_SIZE = 32
+TOK_SIZE = 28  # struct Token 은 u32 일곱 개다 (implementation.md §2)
 
 KIND_NAME = {0: "eof", 1: "ident", 2: "int", 3: "char", 4: "str", 5: "kw", 6: "punct"}
 
 KEYWORDS = """fn struct enum const let mut if else for break continue
-              return match unsafe as true false""".split()
+              return match unsafe as true false slice slice_mut offset""".split()
 PUNCT = [
     "<<=", ">>=", "->", "=>", "==", "!=", "<=", ">=", "&&", "||", "<<", ">>",
     "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=",

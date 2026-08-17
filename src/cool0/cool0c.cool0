@@ -1,0 +1,655 @@
+// ===========================================================================
+// cool0c -- the cool0 compiler, written in cool0
+//
+// It implements spec/ and must emit byte-identical output to cool0.py
+// (implementation.md S8).
+//
+// This file uses cool0 the way cool0 is meant to be used. That is the point of
+// it existing at all -- a compiler is the program cool0 was designed for, so
+// the compiler is the proof:
+//
+//     struct        records with named fields, not u32 arrays and offsets
+//     enum + match  every sum type is a real sum type, dispatched by match
+//     []T / []mut T arenas are slices, so every index is bounds-checked
+//     &T / &mut T   the compiler context is borrowed, not global
+//     slice_mut     the one place raw memory becomes a checked arena
+//
+// `unsafe` appears in exactly two kinds of place: the raw byte accessors used
+// to write the output buffer, and the arena constructors in `compile`. Nothing
+// in the lexer, parser, checker, or emitter dereferences a raw pointer.
+//
+// cool0 has no mutable globals, so state lives in one `Ctx` that is threaded
+// through as `&mut Ctx`. That is not a workaround -- it is what makes the data
+// flow visible.
+// ===========================================================================
+
+// --- memory map (implementation.md S7) -------------------------------------
+
+const OUT_PTR_ADDR: u32 = 0x0000;
+const OUT_LEN_ADDR: u32 = 0x0004;
+const SRC: u32 = 0x1000;
+
+// Debug window. The workbench (tests/test_cool0c.py) reads these to compare
+// stages against the oracle. They are written once per stage and never read
+// by the compiler itself.
+const G_ERR: u32 = 0x0014;
+const G_NTOK: u32 = 0x002C;
+const G_TOKS: u32 = 0x0030;
+
+// regions
+const S1: u32 = 0x0080_0000;   // scratch for one function body
+const S2: u32 = 0x00A0_0000;   // scratch for one section payload
+const OUT: u32 = 0x0101_0000;  // final output; 0x0100_0000 is this module's rodata
+
+const NONE: u32 = 0xFFFF_FFFF;
+
+// --- raw memory ------------------------------------------------------------
+//
+// The only raw pointers in the compiler. Everything above this line is a
+// slice, and every slice index is checked.
+
+fn ldb(a: u32) -> u32 { unsafe { let p: *u8 = a as *u8; return p.^; } }
+
+fn stb(a: u32, v: u32) { unsafe { let p: *u8 = a as *u8; p.^ = v; } }
+
+fn align4(v: u32) -> u32 { return (v + 3) / 4 * 4; }
+
+// ===========================================================================
+// The compiler context
+// ===========================================================================
+
+struct Ctx {
+    // source and lexer cursor
+    src: []u8,
+    pos: u32,
+    line: u32,
+    col: u32,
+
+    // tokens
+    toks: []mut Token,
+    ntok: u32,
+
+    // bump heap for string literal bodies. Nothing is ever freed -- the
+    // compiler runs once and the host reclaims the memory.
+    heap: u32,
+
+    // diagnostics. Only the first error writes; the rest are dropped.
+    err: u32,
+    out: u32,
+}
+
+// --- output buffer ---------------------------------------------------------
+
+fn out_reset(c: &mut Ctx) { c.^.out = OUT; }
+
+fn put_ch(c: &mut Ctx, ch: u32) {
+    stb(c.^.out, ch);
+    c.^.out = c.^.out + 1;
+}
+
+fn put_str(c: &mut Ctx, s: []u8) {
+    for let mut i: u32 = 0; i < s.len; i += 1 { put_ch(c, s[i]); }
+}
+
+fn put_src(c: &mut Ctx, start: u32, len: u32) {
+    for let mut i: u32 = 0; i < len; i += 1 {
+        let b: u32 = c.^.src[start + i];
+        put_ch(c, b);
+    }
+}
+
+fn put_num(c: &mut Ctx, v: u32) {
+    if v >= 10 { put_num(c, v / 10); }
+    put_ch(c, '0' + v % 10);
+}
+
+// --- diagnostics (implementation.md S9) ------------------------------------
+
+fn failed(c: &Ctx) -> bool { return c.^.err != 0; }
+
+// Stop at the first error. Only the winner writes its message.
+fn err_open(c: &mut Ctx, line: u32, col: u32) -> bool {
+    if failed(c) { return false; }
+    c.^.err = 1;
+    out_reset(c);
+    put_num(c, line);
+    put_ch(c, ':');
+    put_num(c, col);
+    put_ch(c, ':');
+    put_ch(c, ' ');
+    return true;
+}
+
+fn err_end(c: &mut Ctx) { put_ch(c, '\n'); }
+
+// A diagnostic that is just one fixed phrase
+fn err_msg(c: &mut Ctx, line: u32, col: u32, s: []u8) {
+    if err_open(c, line, col) {
+        put_str(c, s);
+        err_end(c);
+    }
+}
+
+// ===========================================================================
+// Tokens (language.md S2)
+// ===========================================================================
+
+const TK_EOF: u32 = 0;
+const TK_IDENT: u32 = 1;
+const TK_INT: u32 = 2;
+const TK_CHAR: u32 = 3;
+const TK_STR: u32 = 4;
+const TK_KW: u32 = 5;
+const TK_PUNCT: u32 = 6;
+
+struct Token {
+    kind: u32,
+    start: u32,
+    len: u32,
+    value: u32,   // int/char value, punct/keyword id, or string body address
+    line: u32,
+    col: u32,
+    aux: u32,     // decoded length of a string literal
+}
+
+// keyword ids -- the order language.md S2 lists them in
+const K_FN: u32 = 0;
+const K_STRUCT: u32 = 1;
+const K_ENUM: u32 = 2;
+const K_CONST: u32 = 3;
+const K_LET: u32 = 4;
+const K_MUT: u32 = 5;
+const K_IF: u32 = 6;
+const K_ELSE: u32 = 7;
+const K_FOR: u32 = 8;
+const K_BREAK: u32 = 9;
+const K_CONTINUE: u32 = 10;
+const K_RETURN: u32 = 11;
+const K_MATCH: u32 = 12;
+const K_UNSAFE: u32 = 13;
+const K_AS: u32 = 14;
+const K_TRUE: u32 = 15;
+const K_FALSE: u32 = 16;
+const K_SLICE: u32 = 17;
+const K_SLICE_MUT: u32 = 18;
+const K_OFFSET: u32 = 19;
+
+// punctuation ids -- longest match order
+const P_SHLEQ: u32 = 0;
+const P_SHREQ: u32 = 1;
+const P_ARROW: u32 = 2;
+const P_FATARROW: u32 = 3;
+const P_EQEQ: u32 = 4;
+const P_NE: u32 = 5;
+const P_LE: u32 = 6;
+const P_GE: u32 = 7;
+const P_ANDAND: u32 = 8;
+const P_OROR: u32 = 9;
+const P_SHL: u32 = 10;
+const P_SHR: u32 = 11;
+const P_ADDEQ: u32 = 12;
+const P_SUBEQ: u32 = 13;
+const P_MULEQ: u32 = 14;
+const P_DIVEQ: u32 = 15;
+const P_MODEQ: u32 = 16;
+const P_ANDEQ: u32 = 17;
+const P_OREQ: u32 = 18;
+const P_XOREQ: u32 = 19;
+const P_LPAREN: u32 = 20;
+const P_RPAREN: u32 = 21;
+const P_LBRACE: u32 = 22;
+const P_RBRACE: u32 = 23;
+const P_LBRACK: u32 = 24;
+const P_RBRACK: u32 = 25;
+const P_COMMA: u32 = 26;
+const P_SEMI: u32 = 27;
+const P_COLON: u32 = 28;
+const P_DOT: u32 = 29;
+const P_EQ: u32 = 30;
+const P_LT: u32 = 31;
+const P_GT: u32 = 32;
+const P_ADD: u32 = 33;
+const P_SUB: u32 = 34;
+const P_MUL: u32 = 35;
+const P_DIV: u32 = 36;
+const P_MOD: u32 = 37;
+const P_AND: u32 = 38;
+const P_OR: u32 = 39;
+const P_XOR: u32 = 40;
+const P_NOT: u32 = 41;
+
+// ===========================================================================
+// Lexer (language.md S2)
+// ===========================================================================
+
+// Byte predicates. Source is ASCII only.
+fn is_alpha(b: u32) -> bool {
+    return b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z';
+}
+
+fn is_digit(b: u32) -> bool { return b >= '0' && b <= '9'; }
+
+fn is_ident_start(b: u32) -> bool { return is_alpha(b) || b == '_'; }
+
+fn is_ident_cont(b: u32) -> bool { return is_alpha(b) || is_digit(b) || b == '_'; }
+
+fn at(c: &Ctx, i: u32) -> u32 { return c.^.src[i]; }
+
+fn adv(c: &mut Ctx, k: u32) {
+    for let mut t: u32 = 0; t < k; t += 1 {
+        let p: u32 = c.^.pos;
+        if c.^.src[p] == '\n' {
+            c.^.line = c.^.line + 1;
+            c.^.col = 1;
+        } else {
+            c.^.col = c.^.col + 1;
+        }
+        c.^.pos = p + 1;
+    }
+}
+
+// does source [start, start+len) equal s
+fn src_eq(c: &Ctx, start: u32, len: u32, s: []u8) -> bool {
+    if len != s.len { return false; }
+    for let mut i: u32 = 0; i < len; i += 1 {
+        if c.^.src[start + i] != s[i] { return false; }
+    }
+    return true;
+}
+
+// does source at i start with s
+fn src_has(c: &Ctx, i: u32, s: []u8) -> bool {
+    if i + s.len > c.^.src.len { return false; }
+    for let mut k: u32 = 0; k < s.len; k += 1 {
+        if c.^.src[i + k] != s[k] { return false; }
+    }
+    return true;
+}
+
+fn kw_id(c: &Ctx, start: u32, len: u32) -> u32 {
+    if src_eq(c, start, len, "fn") { return K_FN; }
+    if src_eq(c, start, len, "struct") { return K_STRUCT; }
+    if src_eq(c, start, len, "enum") { return K_ENUM; }
+    if src_eq(c, start, len, "const") { return K_CONST; }
+    if src_eq(c, start, len, "let") { return K_LET; }
+    if src_eq(c, start, len, "mut") { return K_MUT; }
+    if src_eq(c, start, len, "if") { return K_IF; }
+    if src_eq(c, start, len, "else") { return K_ELSE; }
+    if src_eq(c, start, len, "for") { return K_FOR; }
+    if src_eq(c, start, len, "break") { return K_BREAK; }
+    if src_eq(c, start, len, "continue") { return K_CONTINUE; }
+    if src_eq(c, start, len, "return") { return K_RETURN; }
+    if src_eq(c, start, len, "match") { return K_MATCH; }
+    if src_eq(c, start, len, "unsafe") { return K_UNSAFE; }
+    if src_eq(c, start, len, "as") { return K_AS; }
+    if src_eq(c, start, len, "true") { return K_TRUE; }
+    if src_eq(c, start, len, "false") { return K_FALSE; }
+    if src_eq(c, start, len, "slice") { return K_SLICE; }
+    if src_eq(c, start, len, "slice_mut") { return K_SLICE_MUT; }
+    if src_eq(c, start, len, "offset") { return K_OFFSET; }
+    return NONE;
+}
+
+// longest match (language.md S2)
+fn punct_id(c: &Ctx, i: u32) -> u32 {
+    if src_has(c, i, "<<=") { return P_SHLEQ; }
+    if src_has(c, i, ">>=") { return P_SHREQ; }
+    if src_has(c, i, "->") { return P_ARROW; }
+    if src_has(c, i, "=>") { return P_FATARROW; }
+    if src_has(c, i, "==") { return P_EQEQ; }
+    if src_has(c, i, "!=") { return P_NE; }
+    if src_has(c, i, "<=") { return P_LE; }
+    if src_has(c, i, ">=") { return P_GE; }
+    if src_has(c, i, "&&") { return P_ANDAND; }
+    if src_has(c, i, "||") { return P_OROR; }
+    if src_has(c, i, "<<") { return P_SHL; }
+    if src_has(c, i, ">>") { return P_SHR; }
+    if src_has(c, i, "+=") { return P_ADDEQ; }
+    if src_has(c, i, "-=") { return P_SUBEQ; }
+    if src_has(c, i, "*=") { return P_MULEQ; }
+    if src_has(c, i, "/=") { return P_DIVEQ; }
+    if src_has(c, i, "%=") { return P_MODEQ; }
+    if src_has(c, i, "&=") { return P_ANDEQ; }
+    if src_has(c, i, "|=") { return P_OREQ; }
+    if src_has(c, i, "^=") { return P_XOREQ; }
+    if src_has(c, i, "(") { return P_LPAREN; }
+    if src_has(c, i, ")") { return P_RPAREN; }
+    if src_has(c, i, "{") { return P_LBRACE; }
+    if src_has(c, i, "}") { return P_RBRACE; }
+    if src_has(c, i, "[") { return P_LBRACK; }
+    if src_has(c, i, "]") { return P_RBRACK; }
+    if src_has(c, i, ",") { return P_COMMA; }
+    if src_has(c, i, ";") { return P_SEMI; }
+    if src_has(c, i, ":") { return P_COLON; }
+    if src_has(c, i, ".") { return P_DOT; }
+    if src_has(c, i, "=") { return P_EQ; }
+    if src_has(c, i, "<") { return P_LT; }
+    if src_has(c, i, ">") { return P_GT; }
+    if src_has(c, i, "+") { return P_ADD; }
+    if src_has(c, i, "-") { return P_SUB; }
+    if src_has(c, i, "*") { return P_MUL; }
+    if src_has(c, i, "/") { return P_DIV; }
+    if src_has(c, i, "%") { return P_MOD; }
+    if src_has(c, i, "&") { return P_AND; }
+    if src_has(c, i, "|") { return P_OR; }
+    if src_has(c, i, "^") { return P_XOR; }
+    if src_has(c, i, "!") { return P_NOT; }
+    return NONE;
+}
+
+fn punct_len(id: u32) -> u32 {
+    if id <= P_SHREQ { return 3; }
+    if id <= P_XOREQ { return 2; }
+    return 1;
+}
+
+fn push_tok(c: &mut Ctx, kind: u32, start: u32, len: u32, value: u32,
+            line: u32, col: u32, aux: u32) {
+    let n: u32 = c.^.ntok;
+    c.^.toks[n] = Token{
+        kind: kind, start: start, len: len, value: value,
+        line: line, col: col, aux: aux,
+    };
+    c.^.ntok = n + 1;
+}
+
+// One escape. Strings allow one more than chars do (language.md S2).
+fn escape_of(e: u32, in_string: bool) -> u32 {
+    if e == 'n' { return 10; }
+    if e == 't' { return 9; }
+    if e == 'r' { return 13; }
+    if e == '0' { return 0; }
+    if e == '\\' { return 92; }
+    if e == '\'' { return 39; }
+    if in_string && e == '"' { return 34; }
+    return NONE;
+}
+
+fn lex_ident(c: &mut Ctx) {
+    let sl: u32 = c.^.line;
+    let sc: u32 = c.^.col;
+    let i: u32 = c.^.pos;
+    let n: u32 = c.^.src.len;
+    let mut j: u32 = i;
+    for j < n && is_ident_cont(c.^.src[j]) { j += 1; }
+    let id: u32 = kw_id(c, i, j - i);
+    adv(c, j - i);
+    if id == NONE {
+        push_tok(c, TK_IDENT, i, j - i, 0, sl, sc, 0);
+    } else {
+        push_tok(c, TK_KW, i, j - i, id, sl, sc, 0);
+    }
+}
+
+fn digit_val(ch: u32, base: u32) -> u32 {
+    if is_digit(ch) {
+        if ch - '0' < base { return ch - '0'; }
+        return NONE;
+    }
+    if base == 16 {
+        if ch >= 'a' && ch <= 'f' { return ch - 'a' + 10; }
+        if ch >= 'A' && ch <= 'F' { return ch - 'A' + 10; }
+    }
+    return NONE;
+}
+
+fn lex_number(c: &mut Ctx) {
+    let sl: u32 = c.^.line;
+    let sc: u32 = c.^.col;
+    let i: u32 = c.^.pos;
+    let n: u32 = c.^.src.len;
+    let mut base: u32 = 10;
+    let mut j: u32 = i;
+    if c.^.src[i] == '0' && i + 1 < n {
+        let b: u32 = c.^.src[i + 1];
+        if b == 'x' || b == 'X' { base = 16; j = i + 2; }
+        if b == 'b' || b == 'B' { base = 2; j = i + 2; }
+    }
+    let mut ndigits: u32 = 0;
+    let mut value: u32 = 0;
+    let mut over: bool = false;
+    for j < n {
+        let b: u32 = c.^.src[j];
+        if b == '_' {
+            j += 1;
+        } else {
+            let d: u32 = digit_val(b, base);
+            if d == NONE { break; }
+            // detect overflow past 32 bits; the value itself is then meaningless
+            if value > (0xFFFF_FFFF - d) / base { over = true; }
+            value = value * base + d;
+            ndigits += 1;
+            j += 1;
+        }
+    }
+    if ndigits == 0 {
+        err_msg(c, sl, sc, "integer literal has no digits");
+        return;
+    }
+    if j < n && is_ident_cont(c.^.src[j]) {
+        err_msg(c, sl, sc, "invalid digit in integer literal");
+        return;
+    }
+    if over {
+        err_msg(c, sl, sc, "integer literal out of range");
+        return;
+    }
+    adv(c, j - i);
+    push_tok(c, TK_INT, i, j - i, value, sl, sc, 0);
+}
+
+fn lex_char(c: &mut Ctx) {
+    let sl: u32 = c.^.line;
+    let sc: u32 = c.^.col;
+    let start: u32 = c.^.pos;
+    let n: u32 = c.^.src.len;
+    adv(c, 1);
+    if c.^.pos >= n {
+        err_msg(c, sl, sc, "unterminated character literal");
+        return;
+    }
+    if c.^.src[c.^.pos] == '\'' {
+        err_msg(c, sl, sc, "empty character literal");
+        return;
+    }
+    let mut value: u32 = 0;
+    if c.^.src[c.^.pos] == '\\' {
+        adv(c, 1);
+        if c.^.pos >= n {
+            err_msg(c, sl, sc, "unterminated character literal");
+            return;
+        }
+        let e: u32 = escape_of(c.^.src[c.^.pos], false);
+        if e == NONE {
+            let el: u32 = c.^.line;
+            let ec: u32 = c.^.col;
+            err_msg(c, el, ec, "unknown escape sequence");
+            return;
+        }
+        value = e;
+        adv(c, 1);
+    } else {
+        value = c.^.src[c.^.pos];
+        if value < 0x20 || value > 0x7E {
+            let el: u32 = c.^.line;
+            let ec: u32 = c.^.col;
+            err_msg(c, el, ec, "invalid character in character literal");
+            return;
+        }
+        adv(c, 1);
+    }
+    if c.^.pos >= n {
+        err_msg(c, sl, sc, "unterminated character literal");
+        return;
+    }
+    if c.^.src[c.^.pos] != '\'' {
+        err_msg(c, sl, sc, "unterminated character literal");
+        return;
+    }
+    adv(c, 1);
+    let end: u32 = c.^.pos;
+    push_tok(c, TK_CHAR, start, end - start, value, sl, sc, 0);
+}
+
+fn lex_string(c: &mut Ctx) {
+    let sl: u32 = c.^.line;
+    let sc: u32 = c.^.col;
+    let start: u32 = c.^.pos;
+    let n: u32 = c.^.src.len;
+    adv(c, 1);
+    let buf: u32 = c.^.heap;
+    let mut k: u32 = 0;
+    for {
+        if c.^.pos >= n {
+            err_msg(c, sl, sc, "unterminated string literal");
+            return;
+        }
+        let b: u32 = c.^.src[c.^.pos];
+        if b == '\n' {
+            err_msg(c, sl, sc, "unterminated string literal");
+            return;
+        }
+        if b == '"' {
+            adv(c, 1);
+            break;
+        }
+        if b == '\\' {
+            adv(c, 1);
+            if c.^.pos >= n {
+                err_msg(c, sl, sc, "unterminated string literal");
+                return;
+            }
+            let e: u32 = escape_of(c.^.src[c.^.pos], true);
+            if e == NONE {
+                let el: u32 = c.^.line;
+                let ec: u32 = c.^.col;
+                err_msg(c, el, ec, "unknown escape sequence");
+                return;
+            }
+            stb(buf + k, e);
+            k += 1;
+            adv(c, 1);
+        } else {
+            if b < 0x20 || b > 0x7E {
+                let el: u32 = c.^.line;
+                let ec: u32 = c.^.col;
+                err_msg(c, el, ec, "invalid character in string literal");
+                return;
+            }
+            stb(buf + k, b);
+            k += 1;
+            adv(c, 1);
+        }
+    }
+    c.^.heap = align4(buf + k);
+    let end: u32 = c.^.pos;
+    push_tok(c, TK_STR, start, end - start, buf, sl, sc, k);
+}
+
+fn lex_comment(c: &mut Ctx) {
+    let n: u32 = c.^.src.len;
+    for c.^.pos < n && c.^.src[c.^.pos] != '\n' {
+        let b: u32 = c.^.src[c.^.pos];
+        if b != 9 && b != 13 && (b < 0x20 || b > 0x7E) {
+            let el: u32 = c.^.line;
+            let ec: u32 = c.^.col;
+            err_msg(c, el, ec, "non-ascii byte in source");
+            return;
+        }
+        adv(c, 1);
+    }
+}
+
+fn lex(c: &mut Ctx) {
+    let n: u32 = c.^.src.len;
+    c.^.pos = 0;
+    c.^.line = 1;
+    c.^.col = 1;
+    c.^.ntok = 0;
+
+    for c.^.pos < n && !failed(c) {
+        let i: u32 = c.^.pos;
+        let b: u32 = c.^.src[i];
+
+        if b != 9 && b != 10 && b != 13 && (b < 0x20 || b > 0x7E) {
+            let el: u32 = c.^.line;
+            let ec: u32 = c.^.col;
+            err_msg(c, el, ec, "non-ascii byte in source");
+            return;
+        }
+        if b == 9 || b == 10 || b == 13 || b == 32 {
+            adv(c, 1);
+            continue;
+        }
+        if b == '/' && i + 1 < n && c.^.src[i + 1] == '/' {
+            lex_comment(c);
+            continue;
+        }
+        if is_ident_start(b) { lex_ident(c); continue; }
+        if is_digit(b) { lex_number(c); continue; }
+        if b == '\'' { lex_char(c); continue; }
+        if b == '"' { lex_string(c); continue; }
+
+        let p: u32 = punct_id(c, i);
+        if p == NONE {
+            let el: u32 = c.^.line;
+            let ec: u32 = c.^.col;
+            err_msg(c, el, ec, "unexpected character");
+            return;
+        }
+        let sl: u32 = c.^.line;
+        let sc: u32 = c.^.col;
+        adv(c, punct_len(p));
+        push_tok(c, TK_PUNCT, i, punct_len(p), p, sl, sc, 0);
+    }
+    if failed(c) { return; }
+    let ep: u32 = c.^.pos;
+    let el: u32 = c.^.line;
+    let ec: u32 = c.^.col;
+    push_tok(c, TK_EOF, ep, 0, 0, el, ec, 0);
+}
+
+// ===========================================================================
+// Entry point (implementation.md S7)
+// ===========================================================================
+
+fn compile(src_len_in: u32) -> i32 {
+    unsafe {
+        // The heap starts just past the source. Everything the compiler builds
+        // is bump-allocated from here and never freed -- one run, then the host
+        // reclaims the memory (language.md S1).
+        let heap0: u32 = align4(SRC + src_len_in) + 4;
+
+        // There can be no more tokens than source bytes, plus one for eof.
+        let ntok_max: u32 = src_len_in + 1;
+        let tok_bytes: u32 = ntok_max * 28;
+
+        // This is the boundary. Below it every access is bounds-checked.
+        let mut c: Ctx = Ctx{
+            src: slice(SRC as *u8, src_len_in),
+            pos: 0,
+            line: 1,
+            col: 1,
+            toks: slice_mut(heap0 as *Token, ntok_max),
+            ntok: 0,
+            heap: heap0 + tok_bytes,
+            err: 0,
+            out: OUT,
+        };
+
+        lex(&mut c);
+
+        // debug window for the workbench
+        let toks_at: u32 = heap0;
+        stw(G_TOKS, toks_at);
+        stw(G_NTOK, c.ntok);
+        stw(G_ERR, c.err);
+
+        stw(OUT_PTR_ADDR, OUT);
+        stw(OUT_LEN_ADDR, c.out - OUT);
+        if c.err != 0 { return 1; }
+        return 0;
+    }
+}
+
+fn stw(a: u32, v: u32) { unsafe { let p: *u32 = a as *u32; p.^ = v; } }
