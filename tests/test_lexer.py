@@ -27,10 +27,10 @@ def test_eof_is_always_last():
     assert len(lex(b"")) == 1
 
 
-def test_keywords_are_all_seventeen():
+def test_keywords_are_all_nineteen():
     words = """fn struct enum const let mut if else for break continue
-               return match unsafe as true false""".split()
-    assert len(words) == 17
+               return match unsafe as true false slice slice_mut""".split()
+    assert len(words) == 19
     assert all(k == "kw" for k, _ in kinds(" ".join(words))[:-1])
 
 

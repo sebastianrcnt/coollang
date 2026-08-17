@@ -57,7 +57,8 @@ identifier     = ( letter | "_" ), { letter | digit | "_" } ;
 
 keyword        = "fn" | "struct" | "enum" | "const" | "let" | "mut"
                | "if" | "else" | "for" | "break" | "continue"
-               | "return" | "match" | "unsafe" | "as" | "true" | "false" ;
+               | "return" | "match" | "unsafe" | "as" | "true" | "false"
+               | "slice" | "slice_mut" ;
 
 int_literal    = dec_literal | hex_literal | bin_literal ;
 dec_literal    = digit, { digit | "_" } ;
@@ -186,8 +187,11 @@ primary_expr   = int_literal
                | string_literal
                | "true" | "false"
                | "(", expression, ")"
+               | slice_expression
                | struct_literal
                | identifier ;
+
+slice_expression = ( "slice" | "slice_mut" ), "(", expression, ",", expression, ")" ;
 
 struct_literal = identifier,
                  "{", [ literal_field, { ",", literal_field }, [ "," ] ], "}" ;

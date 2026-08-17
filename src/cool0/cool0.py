@@ -68,7 +68,7 @@ def _err(pos, msg: str) -> CompileError:
 
 KEYWORDS = frozenset(
     """fn struct enum const let mut if else for break continue
-       return match unsafe as true false""".split()
+       return match unsafe as true false slice slice_mut""".split()
 )
 
 # 긴 것부터. 최장 일치.
@@ -473,6 +473,16 @@ class StructLit(Node):
     pos: tuple
     name: str
     fields: list  # [(pos, name, expr)]
+
+
+@dataclass
+class SliceExpr(Node):
+    """`slice(p, len)` / `slice_mut(p, len)` 내장 식."""
+
+    pos: tuple
+    ptr: Node
+    length: Node
+    mut: bool
 
 
 # --- 문 -------------------------------------------------------------------
@@ -1018,6 +1028,15 @@ class Parser:
         if self.at("false"):
             self.i += 1
             return Bool(pos, False)
+        if self.at("slice") or self.at("slice_mut"):
+            mut = self.at("slice_mut")
+            self.i += 1
+            self.expect("(")
+            ptr = self.parse_expr(allow_struct_lit=True)
+            self.expect(",")
+            length = self.parse_expr(allow_struct_lit=True)
+            self.expect(")")
+            return self.deep(SliceExpr(pos, ptr, length, mut), ptr, length)
         if self.at("("):
             self.i += 1
             e = self.parse_expr(allow_struct_lit=True)
@@ -1704,6 +1723,20 @@ class Checker:
         if got is INTLIT and want in INT_TYPES:
             self.retype(e, want)
             return want
+        if (
+            isinstance(got, Ref)
+            and isinstance(want, Ref)
+            and got.mut
+            and not want.mut
+            and got.inner == want.inner
+        ) or (
+            isinstance(got, Slice)
+            and isinstance(want, Slice)
+            and got.mut
+            and not want.mut
+            and got.elem == want.elem
+        ):
+            return want
         if got != want:
             raise _err(e.pos, f"expected `{ty_str(want)}`, found `{ty_str(got)}`")
         return want
@@ -1725,6 +1758,15 @@ class Checker:
             return Slice(U8, False)
         if isinstance(e, StructLit):
             raise _err(e.pos, "struct literal is only allowed as an initializer")
+
+        if isinstance(e, SliceExpr):
+            if self.unsafe_depth == 0:
+                raise _err(e.pos, f"`{'slice_mut' if e.mut else 'slice'}` requires `unsafe`")
+            pt = self.check_expr(e.ptr, None)
+            if not isinstance(pt, Ptr):
+                raise _err(e.ptr.pos, f"expected a raw pointer, found `{ty_str(pt)}`")
+            self.coerce(e.length, U32)
+            return Slice(pt.inner, e.mut)
 
         if isinstance(e, Ident):
             loc = self.lookup(e.name)
@@ -1777,9 +1819,11 @@ class Checker:
             if isinstance(e, Field) and self.is_enum_lit(e):
                 raise _err(e.pos, "enum literal is only allowed as an initializer")
             if isinstance(e, Field):
-                bt = self.check_expr(e.base, None) if self.is_slice_len(e) else None
+                field = self.slice_field(e)
+                bt = self.check_expr(e.base, None) if field is not None else None
                 if bt is not None:
-                    return U32
+                    e.slice_field = field
+                    return U32 if field == "len" else Ptr(bt.elem)
             ty, _, _ = self.check_place(e)
             if is_aggregate(ty):
                 return ty  # 장소로만 쓰인다. 상위에서 거른다
@@ -1787,16 +1831,16 @@ class Checker:
 
         raise AssertionError(type(e))
 
-    def is_slice_len(self, e: Field) -> bool:
-        if e.name != "len":
-            return False
+    def slice_field(self, e: Field) -> Optional[str]:
+        if e.name not in ("len", "ptr"):
+            return None
         if isinstance(e.base, Ident) and e.base.name in self.enums:
-            return False
+            return None
         try:
             probe = self.probe_ty(e.base)
         except CompileError:
-            return False
-        return isinstance(probe, Slice)
+            return None
+        return e.name if isinstance(probe, Slice) else None
 
     def probe_ty(self, e: Node) -> Ty:
         """부작용 없이 타입만 미리 본다 (`.len` 판별용)."""
@@ -1814,6 +1858,14 @@ class Checker:
             return BOOL
         int_want = want if want in INT_TYPES else None
         cmp = op in CMP_OPS
+
+        if op == "+":
+            lt = self.check_expr(e.lhs, None)
+            if isinstance(lt, Ptr):
+                self.coerce(e.rhs, U32)
+                e.opnd_ty = lt
+                e.ptr_stride = self.size_of(lt.inner)
+                return lt
 
         if op in ("<<", ">>"):
             lt = self.check_expr(e.lhs, int_want)
@@ -1945,7 +1997,7 @@ class Checker:
             loc = getattr(e, "local", None)
             if loc is not None:
                 visit(loc)
-        for name in ("operand", "lhs", "rhs", "base", "index", "callee"):
+        for name in ("operand", "lhs", "rhs", "base", "index", "callee", "ptr", "length"):
             child = getattr(e, name, None)
             if isinstance(child, Node):
                 self.walk_locals(child, visit)
@@ -2474,6 +2526,10 @@ class Emitter:
             self.b.i32const(e.addr)
             self.b.i32const(len(e.value))
             return
+        if isinstance(e, SliceExpr):
+            self.emit_expr(e.ptr)
+            self.emit_expr(e.length)
+            return
         if isinstance(e, Ident):
             if getattr(e, "local", None) is not None:
                 self.emit_place_load(e, e.local.ty)
@@ -2503,9 +2559,12 @@ class Emitter:
                     self.emit_expr(a)
             self.b.idx(OP_CALL, e.fn_info.index)
             return
-        if isinstance(e, Field) and getattr(e, "field_info", None) is None:
-            # 슬라이스의 .len
+        if isinstance(e, Field) and getattr(e, "slice_field", None) is not None:
             self.emit_expr(e.base)
+            if e.slice_field == "ptr":
+                self.b.op(OP_DROP)
+                return
+            # 슬라이스의 .len
             t = self.temp()
             self.b.idx(OP_LOCAL_SET, t)
             self.b.op(OP_DROP)
@@ -2535,6 +2594,11 @@ class Emitter:
             return
         self.emit_expr(e.lhs)
         self.emit_expr(e.rhs)
+        if hasattr(e, "ptr_stride"):
+            self.b.i32const(e.ptr_stride)
+            self.b.op(OP_I32_MUL)
+            self.b.op(OP_I32_ADD)
+            return
         if e.op in CMP_OPS:
             # 비교는 피연산자 타입이, 나머지는 결과 타입이 부호를 정한다.
             # 산술과 시프트는 결과 타입이 곧 왼쪽 피연산자 타입이다

@@ -166,8 +166,28 @@ def test_slice_len_is_u32():
     )
 
 
-def test_slice_has_no_other_field():
-    assert "has no field `ptr`" in compile_err(fn('let s: []u8 = "x"; let p = s.ptr;'))
+def test_slice_ptr_is_a_raw_pointer_and_read_only():
+    compile_ok(fn('let s: []u8 = "x"; let p: *u8 = s.ptr;'))
+    assert "has no field `ptr`" in compile_err(
+        fn('let s: []u8 = "x"; s.ptr = 0 as *u8;')
+    )
+
+
+def test_slice_constructors_require_unsafe_pointer_and_u32_length():
+    compile_ok("fn f(p: *u8, n: u32) { unsafe { let a = slice(p, n); let b = slice_mut(p, n); } }")
+    assert "`slice` requires `unsafe`" in compile_err(
+        "fn f(p: *u8) { let s = slice(p, 1); }"
+    )
+    assert "expected a raw pointer" in compile_err(
+        "fn f() { unsafe { let s = slice(1, 2); } }"
+    )
+    assert "expected `u32`, found `i32`" in compile_err(
+        "fn f(p: *u8, n: i32) { unsafe { let s = slice(p, n); } }"
+    )
+
+
+def test_slice_keywords_cannot_be_captured_as_names():
+    assert "expected identifier" in compile_err("fn slice() { }")
 
 
 def test_string_literal_is_immutable_slice():
@@ -200,6 +220,18 @@ def test_cannot_assign_through_shared_borrow():
 
 def test_can_assign_through_mut_borrow():
     compile_ok("struct S { a: i32 } fn g(p: &mut S) { p.^.a = 1; }")
+
+
+def test_mutability_can_be_weakened_for_calls():
+    compile_ok("""
+struct S { a: i32 }
+fn read_ref(p: &S) -> i32 { return p.^.a; }
+fn read_slice(s: []u8) -> u32 { return s.len; }
+fn chain(p: &mut S, s: []mut u8) -> u32 {
+    read_ref(p);
+    return read_slice(s);
+}
+""")
 
 
 def test_field_mutability_follows_the_root():

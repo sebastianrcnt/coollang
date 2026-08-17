@@ -129,6 +129,7 @@ export, code, data. **import·table·start·element·custom 은 없다.**
 - `-x` → `i32.const 0` 다음 `x`, `i32.sub`
 - `!x` → `i32.eqz`
 - `as` → **명령 없음** (비트 재해석)
+- `p: *T + i: u32` → `p`, `i`, `i32.const sizeof(T)`, `i32.mul`, `i32.add`
 - `/` `%` `>>` 와 비교는 피연산자 타입으로 부호를 정한다. `i32` 는 부호 있는 것,
   `u32` 와 `*T` 는 없는 것
 - `&&` `||` → `if (result i32)`. 짧은 쪽에 상수를 놓는다
@@ -137,6 +138,13 @@ export, code, data. **import·table·start·element·custom 은 없다.**
 
 `a[i]` → 슬라이스를 임시 둘에, 첨자를 임시 하나에 넣고 `i >= len` 이면 `unreachable`,
 아니면 `ptr + i * 크기`. **원소 크기가 1 이어도 `i32.const 1; i32.mul` 을 낸다.**
+
+### 슬라이스 구성과 투영
+
+`slice(p, len)`과 `slice_mut(p, len)`은 두 피연산자를 `(ptr, len)` 순서로 그대로
+방출하며 식 자체의 명령은 없다. `s.ptr`과 `s.len`은 각각 그 두 슬롯을 투영한다.
+가변성 약화(`&mut T`→`&T`, `[]mut T`→`[]T`)도 검사기에서 권한만 버리므로 명령을
+만들지 않는다.
 
 ### 제어 흐름
 

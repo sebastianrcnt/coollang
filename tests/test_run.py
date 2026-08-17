@@ -493,6 +493,22 @@ fn get(a: []u8, i: u32) -> u32 { return a[i]; }
     assert inst.read(0x3000, 4) == b"AAAA"
 
 
+def test_slice_construction_ptr_and_partial_slice():
+    src = """
+fn f(addr: u32) -> u32 {
+    unsafe {
+        let whole = slice_mut(addr as *u8, 4);
+        whole[2] = 77;
+        let part = slice(whole.ptr + 1, 2);
+        return part.len * 100 + part[1];
+    }
+}
+"""
+    inst = instantiate(src)
+    inst.write(0x5000, b"abcd")
+    assert inst.call("f", 0x5000) == 277
+
+
 def test_slice_of_u32_uses_element_size():
     src = """
 fn set(a: []mut u32, i: u32, v: u32) { a[i] = v; }
