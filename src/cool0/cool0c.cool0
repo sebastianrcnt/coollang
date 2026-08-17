@@ -119,6 +119,18 @@ struct Ctx {
     place_root: u32,  // ... and its third
     nfns: u32,        // how many functions the module has
 
+    // emitter
+    wb: u32,          // cursor into S1, one function body
+    ws: u32,          // cursor into S2, one section payload
+    sigs: []mut u32,  // interned signatures, three words each
+    nsigs: u32,
+    ntemp: u32,
+    free: []mut u32,
+    free_n: u32,
+    ctrl: []mut u32,
+    ctrl_n: u32,
+    efn: u32,
+
     // bump heap for string literal bodies. Nothing is ever freed -- the
     // compiler runs once and the host reclaims the memory.
     heap: u32,
@@ -4542,6 +4554,1111 @@ fn check_program(c: &mut Ctx) {
 }
 
 // ===========================================================================
+// wasm encoding (implementation.md S5)
+// ===========================================================================
+
+const SEC_TYPE: u32 = 1;
+const SEC_FUNC: u32 = 3;
+const SEC_MEM: u32 = 5;
+const SEC_GLOBAL: u32 = 6;
+const SEC_EXPORT: u32 = 7;
+const SEC_CODE: u32 = 10;
+const SEC_DATA: u32 = 11;
+
+const OP_UNREACHABLE: u32 = 0x00;
+const OP_BLOCK: u32 = 0x02;
+const OP_LOOP: u32 = 0x03;
+const OP_IF: u32 = 0x04;
+const OP_ELSE: u32 = 0x05;
+const OP_END: u32 = 0x0B;
+const OP_BR: u32 = 0x0C;
+const OP_BR_IF: u32 = 0x0D;
+const OP_RETURN: u32 = 0x0F;
+const OP_CALL: u32 = 0x10;
+const OP_DROP: u32 = 0x1A;
+const OP_LOCAL_GET: u32 = 0x20;
+const OP_LOCAL_SET: u32 = 0x21;
+const OP_GLOBAL_GET: u32 = 0x23;
+const OP_GLOBAL_SET: u32 = 0x24;
+const OP_I32_LOAD: u32 = 0x28;
+const OP_I32_LOAD8_U: u32 = 0x2D;
+const OP_I32_STORE: u32 = 0x36;
+const OP_I32_STORE8: u32 = 0x3A;
+const OP_I32_CONST: u32 = 0x41;
+const OP_I32_EQZ: u32 = 0x45;
+const OP_I32_LT_U: u32 = 0x49;
+const OP_I32_GE_U: u32 = 0x4F;
+const OP_I32_ADD: u32 = 0x6A;
+const OP_I32_SUB: u32 = 0x6B;
+const OP_I32_MUL: u32 = 0x6C;
+const TYPE_I32: u32 = 0x7F;
+const BLOCK_VOID: u32 = 0x40;
+
+const MEM_PAGES: u32 = 512;
+const SHADOW_FLOOR: u32 = 0x0180_0000;
+const SHADOW_TOP: u32 = 0x0200_0000;
+
+const CTRL_BRK: u32 = 1;
+const CTRL_LOOP: u32 = 2;
+const CTRL_CNT: u32 = 3;
+const CTRL_MATCH: u32 = 4;
+const CTRL_IF: u32 = 5;
+
+// Two output cursors: one for a function body, one for a section payload.
+const W_BODY: u32 = 0;
+const W_SEC: u32 = 1;
+const W_OUT: u32 = 2;
+
+// --- byte writers ----------------------------------------------------------
+
+fn w_ch(c: &mut Ctx, sel: u32, ch: u32) {
+    if sel == W_BODY {
+        stb(c.^.wb, ch);
+        c.^.wb = c.^.wb + 1;
+        return;
+    }
+    if sel == W_SEC {
+        stb(c.^.ws, ch);
+        c.^.ws = c.^.ws + 1;
+        return;
+    }
+    stb(c.^.out, ch);
+    c.^.out = c.^.out + 1;
+}
+
+fn w_u(c: &mut Ctx, sel: u32, n: u32) {
+    let mut x: u32 = n;
+    for {
+        let byte: u32 = x & 0x7F;
+        x = x >> 7;
+        if x == 0 {
+            w_ch(c, sel, byte);
+            break;
+        }
+        w_ch(c, sel, byte | 0x80);
+    }
+}
+
+// signed LEB128 of the 32-bit pattern v
+fn w_s(c: &mut Ctx, sel: u32, v: u32) {
+    let mut x: i32 = v as i32;
+    for {
+        let byte: u32 = (x as u32) & 0x7F;
+        x = x >> 7;
+        let sign: u32 = byte & 0x40;
+        if (x == 0 && sign == 0) || (x == -1 && sign != 0) {
+            w_ch(c, sel, byte);
+            break;
+        }
+        w_ch(c, sel, byte | 0x80);
+    }
+}
+
+fn w_copy(c: &mut Ctx, sel: u32, src: u32, n: u32) {
+    for let mut i: u32 = 0; i < n; i += 1 {
+        let b: u32 = ldb(src + i);
+        w_ch(c, sel, b);
+    }
+}
+
+fn leb_u_len(n: u32) -> u32 {
+    let mut x: u32 = n;
+    let mut k: u32 = 1;
+    for x >= 128 {
+        x = x >> 7;
+        k += 1;
+    }
+    return k;
+}
+
+// body writers
+fn b_ch(c: &mut Ctx, ch: u32) { w_ch(c, W_BODY, ch); }
+
+fn b_u(c: &mut Ctx, n: u32) { w_u(c, W_BODY, n); }
+
+fn b_op(c: &mut Ctx, op: u32) { w_ch(c, W_BODY, op); }
+
+fn b_i32const(c: &mut Ctx, v: u32) {
+    w_ch(c, W_BODY, OP_I32_CONST);
+    w_s(c, W_BODY, v);
+}
+
+fn b_idx(c: &mut Ctx, op: u32, i: u32) {
+    w_ch(c, W_BODY, op);
+    w_u(c, W_BODY, i);
+}
+
+// memarg: alignment, then an offset that is always 0 (implementation.md S5)
+fn b_mem(c: &mut Ctx, op: u32, align: u32) {
+    w_ch(c, W_BODY, op);
+    w_u(c, W_BODY, align);
+    w_u(c, W_BODY, 0);
+}
+
+fn b_blocked(c: &mut Ctx, op: u32, bt: u32) {
+    w_ch(c, W_BODY, op);
+    w_ch(c, W_BODY, bt);
+}
+
+// section writers
+fn s_ch(c: &mut Ctx, ch: u32) { w_ch(c, W_SEC, ch); }
+
+fn s_u(c: &mut Ctx, n: u32) { w_u(c, W_SEC, n); }
+
+// --- temporaries (implementation.md S6) ------------------------------------
+
+fn temp(c: &mut Ctx) -> u32 {
+    if c.^.free_n != 0 {
+        let n: u32 = c.^.free_n - 1;
+        c.^.free_n = n;
+        return c.^.free[n];
+    }
+    let fi: u32 = c.^.efn;
+    let i: u32 = c.^.fns[fi].npslot + c.^.fns[fi].nlslot + c.^.ntemp;
+    c.^.ntemp = c.^.ntemp + 1;
+    return i;
+}
+
+fn free_push(c: &mut Ctx, t: u32) {
+    let n: u32 = c.^.free_n;
+    c.^.free[n] = t;
+    c.^.free_n = n + 1;
+}
+
+fn release1(c: &mut Ctx, a: u32) { free_push(c, a); }
+
+// released highest first, exactly as cool0.py sorts them
+fn release2(c: &mut Ctx, a: u32, b: u32) {
+    if a > b { free_push(c, a); free_push(c, b); return; }
+    free_push(c, b);
+    free_push(c, a);
+}
+
+fn release3(c: &mut Ctx, a: u32, b: u32, d: u32) {
+    let mut hi: u32 = a;
+    let mut mid: u32 = b;
+    let mut lo: u32 = d;
+    if mid > hi { let t: u32 = hi; hi = mid; mid = t; }
+    if lo > hi { let t: u32 = hi; hi = lo; lo = t; }
+    if lo > mid { let t: u32 = mid; mid = lo; lo = t; }
+    free_push(c, hi);
+    free_push(c, mid);
+    free_push(c, lo);
+}
+
+// --- control stack ---------------------------------------------------------
+
+fn ctrl_push(c: &mut Ctx, k: u32) {
+    let n: u32 = c.^.ctrl_n;
+    c.^.ctrl[n] = k;
+    c.^.ctrl_n = n + 1;
+}
+
+fn ctrl_pop(c: &mut Ctx) { c.^.ctrl_n = c.^.ctrl_n - 1; }
+
+fn depth_to(c: &Ctx, k: u32) -> u32 {
+    let n: u32 = c.^.ctrl_n;
+    let mut i: u32 = n;
+    for i > 0 {
+        i -= 1;
+        if c.^.ctrl[i] == k { return n - 1 - i; }
+    }
+    return 0;
+}
+
+// --- storage assignment (implementation.md S6) -----------------------------
+
+fn loc_in_memory(c: &Ctx, loc: u32) -> bool {
+    let t: u32 = c.^.locals[loc].ty;
+    return is_aggregate(c, t) || c.^.locals[loc].addr != 0;
+}
+
+fn assign_storage(c: &mut Ctx, fi: u32) {
+    let mut slot: u32 = 0;
+    let mut loc: u32 = c.^.fns[fi].locals;
+    for loc != 0 {
+        if c.^.locals[loc].is_param != 0 {
+            let t: u32 = c.^.locals[loc].ty;
+            c.^.locals[loc].slot = slot;
+            slot += slot_count(c, t);
+        }
+        loc = c.^.locals[loc].next;
+    }
+    c.^.fns[fi].npslot = slot;
+    loc = c.^.fns[fi].locals;
+    for loc != 0 {
+        if c.^.locals[loc].is_param == 0 && !loc_in_memory(c, loc) {
+            let t: u32 = c.^.locals[loc].ty;
+            c.^.locals[loc].slot = slot;
+            slot += slot_count(c, t);
+        }
+        loc = c.^.locals[loc].next;
+    }
+    c.^.fns[fi].nlslot = slot - c.^.fns[fi].npslot;
+
+    let mut off: u32 = 0;
+    let mut align: u32 = 4;
+    loc = c.^.fns[fi].locals;
+    for loc != 0 {
+        if loc_in_memory(c, loc) {
+            let t: u32 = c.^.locals[loc].ty;
+            let a: u32 = align_of(c, t);
+            off = align_up(off, a);
+            c.^.locals[loc].foff = off;
+            off += size_of(c, t);
+            if a > align { align = a; }
+        }
+        loc = c.^.locals[loc].next;
+    }
+    if off != 0 { c.^.fns[fi].frame = align_up(off, align); }
+    else { c.^.fns[fi].frame = 0; }
+}
+
+// --- memory access ---------------------------------------------------------
+
+fn load_op(c: &mut Ctx, t: u32) {
+    let k: u32 = ty_kind(c, t);
+    if k == TYK_BOOL || k == TYK_U8 { b_mem(c, OP_I32_LOAD8_U, 0); return; }
+    b_mem(c, OP_I32_LOAD, 2);
+}
+
+fn store_op(c: &mut Ctx, t: u32) {
+    let k: u32 = ty_kind(c, t);
+    if k == TYK_BOOL || k == TYK_U8 { b_mem(c, OP_I32_STORE8, 0); return; }
+    b_mem(c, OP_I32_STORE, 2);
+}
+
+fn frame_addr(c: &mut Ctx, loc: u32) {
+    let off: u32 = c.^.locals[loc].foff;
+    b_idx(c, OP_GLOBAL_GET, 0);
+    b_i32const(c, off);
+    b_op(c, OP_I32_ADD);
+}
+
+fn ident_local(c: &Ctx, e: u32) -> u32 {
+    if c.^.nodes[e].aux2 != 0 { return 0; }
+    return c.^.nodes[e].aux;
+}
+
+fn in_wasm_local(c: &Ctx, e: u32) -> bool {
+    if c.^.nodes[e].kind != E_IDENT { return false; }
+    let loc: u32 = ident_local(c, e);
+    if loc == 0 { return false; }
+    return !loc_in_memory(c, loc);
+}
+
+fn place_ty(c: &Ctx, e: u32) -> u32 {
+    let k: u32 = c.^.nodes[e].kind;
+    if k == E_IDENT {
+        let loc: u32 = ident_local(c, e);
+        return c.^.locals[loc].ty;
+    }
+    if k == E_FIELD {
+        let f: u32 = c.^.nodes[e].d;
+        return c.^.fields[f].ty;
+    }
+    let base: u32 = c.^.nodes[e].a;
+    let bt: u32 = c.^.nodes[base].ty;
+    return ty_arg(c, bt);
+}
+
+fn emit_addr(c: &mut Ctx, e: u32) {
+    let k: u32 = c.^.nodes[e].kind;
+    let ea: u32 = c.^.nodes[e].a;
+    if k == E_IDENT {
+        let loc: u32 = ident_local(c, e);
+        frame_addr(c, loc);
+        return;
+    }
+    if k == E_FIELD {
+        let f: u32 = c.^.nodes[e].d;
+        let off: u32 = c.^.fields[f].off;
+        emit_addr(c, ea);
+        b_i32const(c, off);
+        b_op(c, OP_I32_ADD);
+        return;
+    }
+    if k == E_DEREF { emit_expr(c, ea); return; }
+    // E_INDEX -- bounds checked (language.md S5)
+    let tp: u32 = temp(c);
+    let tl: u32 = temp(c);
+    let tix: u32 = temp(c);
+    let stride: u32 = c.^.nodes[e].d;
+    let eb: u32 = c.^.nodes[e].b;
+    emit_expr(c, ea);
+    b_idx(c, OP_LOCAL_SET, tl);
+    b_idx(c, OP_LOCAL_SET, tp);
+    emit_expr(c, eb);
+    b_idx(c, OP_LOCAL_SET, tix);
+    b_idx(c, OP_LOCAL_GET, tix);
+    b_idx(c, OP_LOCAL_GET, tl);
+    b_op(c, OP_I32_GE_U);
+    b_blocked(c, OP_IF, BLOCK_VOID);
+    b_op(c, OP_UNREACHABLE);
+    b_op(c, OP_END);
+    b_idx(c, OP_LOCAL_GET, tp);
+    b_idx(c, OP_LOCAL_GET, tix);
+    b_i32const(c, stride);
+    b_op(c, OP_I32_MUL);
+    b_op(c, OP_I32_ADD);
+    release3(c, tp, tl, tix);
+}
+
+fn emit_place_load(c: &mut Ctx, e: u32, pt: u32) {
+    if in_wasm_local(c, e) {
+        let loc: u32 = ident_local(c, e);
+        let slot: u32 = c.^.locals[loc].slot;
+        let lt: u32 = c.^.locals[loc].ty;
+        b_idx(c, OP_LOCAL_GET, slot);
+        if ty_kind(c, lt) == TYK_SLICE {
+            b_idx(c, OP_LOCAL_GET, slot + 1);
+        }
+        return;
+    }
+    if ty_kind(c, pt) == TYK_SLICE {
+        let ta: u32 = temp(c);
+        emit_addr(c, e);
+        b_idx(c, OP_LOCAL_SET, ta);
+        b_idx(c, OP_LOCAL_GET, ta);
+        b_mem(c, OP_I32_LOAD, 2);
+        b_idx(c, OP_LOCAL_GET, ta);
+        b_i32const(c, 4);
+        b_op(c, OP_I32_ADD);
+        b_mem(c, OP_I32_LOAD, 2);
+        release1(c, ta);
+        return;
+    }
+    emit_addr(c, e);
+    load_op(c, pt);
+}
+
+fn emit_load_at(c: &mut Ctx, ta: u32, off: u32, t: u32) {
+    if ty_kind(c, t) == TYK_SLICE {
+        b_idx(c, OP_LOCAL_GET, ta);
+        b_i32const(c, off);
+        b_op(c, OP_I32_ADD);
+        b_mem(c, OP_I32_LOAD, 2);
+        b_idx(c, OP_LOCAL_GET, ta);
+        b_i32const(c, off + 4);
+        b_op(c, OP_I32_ADD);
+        b_mem(c, OP_I32_LOAD, 2);
+        return;
+    }
+    b_idx(c, OP_LOCAL_GET, ta);
+    b_i32const(c, off);
+    b_op(c, OP_I32_ADD);
+    load_op(c, t);
+}
+
+// vk 0: the value is expression a1.  vk 1: load a3 from a1 + a2.
+fn emit_value(c: &mut Ctx, vk: u32, a1: u32, a2: u32, a3: u32) {
+    if vk == 0 { emit_expr(c, a1); return; }
+    emit_load_at(c, a1, a2, a3);
+}
+
+// --- expressions -----------------------------------------------------------
+
+fn arith_op(op: u32, signed: bool) -> u32 {
+    if op == P_ADD { return 0x6A; }
+    if op == P_SUB { return 0x6B; }
+    if op == P_MUL { return 0x6C; }
+    if op == P_DIV { if signed { return 0x6D; } return 0x6E; }
+    if op == P_MOD { if signed { return 0x6F; } return 0x70; }
+    if op == P_AND { return 0x71; }
+    if op == P_OR { return 0x72; }
+    if op == P_XOR { return 0x73; }
+    if op == P_SHL { return 0x74; }
+    if signed { return 0x75; }
+    return 0x76;
+}
+
+fn cmp_opcode(op: u32, signed: bool) -> u32 {
+    if op == P_EQEQ { return 0x46; }
+    if op == P_NE { return 0x47; }
+    if op == P_LT { if signed { return 0x48; } return 0x49; }
+    if op == P_GT { if signed { return 0x4A; } return 0x4B; }
+    if op == P_LE { if signed { return 0x4C; } return 0x4D; }
+    if signed { return 0x4E; }
+    return 0x4F;
+}
+
+fn emit_binary(c: &mut Ctx, e: u32) {
+    let op: u32 = c.^.nodes[e].a;
+    let eb: u32 = c.^.nodes[e].b;
+    let ec: u32 = c.^.nodes[e].c;
+    if op == P_ANDAND || op == P_OROR {
+        emit_expr(c, eb);
+        b_blocked(c, OP_IF, TYPE_I32);
+        ctrl_push(c, CTRL_IF);
+        if op == P_ANDAND {
+            emit_expr(c, ec);
+            b_op(c, OP_ELSE);
+            b_i32const(c, 0);
+        } else {
+            b_i32const(c, 1);
+            b_op(c, OP_ELSE);
+            emit_expr(c, ec);
+        }
+        ctrl_pop(c);
+        b_op(c, OP_END);
+        return;
+    }
+    emit_expr(c, eb);
+    emit_expr(c, ec);
+    if is_cmp(op) {
+        let ot: u32 = c.^.nodes[e].d;
+        let sg: bool = ty_kind(c, ot) == TYK_I32;
+        b_op(c, cmp_opcode(op, sg));
+        return;
+    }
+    let rt: u32 = c.^.nodes[e].ty;
+    let sg: bool = ty_kind(c, rt) == TYK_I32;
+    b_op(c, arith_op(op, sg));
+}
+
+fn emit_expr(c: &mut Ctx, e: u32) {
+    let k: u32 = c.^.nodes[e].kind;
+    let ea: u32 = c.^.nodes[e].a;
+    let eb: u32 = c.^.nodes[e].b;
+    if k == E_INT || k == E_CHAR || k == E_BOOL { b_i32const(c, ea); return; }
+    if k == E_STR {
+        let addr: u32 = c.^.nodes[e].aux;
+        b_i32const(c, addr);
+        b_i32const(c, eb);
+        return;
+    }
+    if k == E_IDENT {
+        let loc: u32 = ident_local(c, e);
+        if loc != 0 {
+            let lt: u32 = c.^.locals[loc].ty;
+            emit_place_load(c, e, lt);
+            return;
+        }
+        let v: u32 = c.^.nodes[e].aux;
+        b_i32const(c, v);
+        return;
+    }
+    if k == E_CAST { emit_expr(c, ea); return; }
+    if k == E_UNARY {
+        if ea == P_NOT {
+            emit_expr(c, eb);
+            b_op(c, OP_I32_EQZ);
+            return;
+        }
+        b_i32const(c, 0);
+        emit_expr(c, eb);
+        b_op(c, OP_I32_SUB);
+        return;
+    }
+    if k == E_SLICE {
+        // the two operands already are the (ptr, len) pair (implementation.md S5)
+        let ec: u32 = c.^.nodes[e].c;
+        emit_expr(c, eb);
+        emit_expr(c, ec);
+        return;
+    }
+    if k == E_OFFSET {
+        let stride: u32 = c.^.nodes[e].d;
+        emit_expr(c, ea);
+        emit_expr(c, eb);
+        b_i32const(c, stride);
+        b_op(c, OP_I32_MUL);
+        b_op(c, OP_I32_ADD);
+        return;
+    }
+    if k == E_BINARY { emit_binary(c, e); return; }
+    if k == E_CALL {
+        let mut a: u32 = eb;
+        for a != 0 {
+            if c.^.nodes[a].kind == E_BORROW {
+                let opnd: u32 = c.^.nodes[a].b;
+                emit_addr(c, opnd);
+            } else {
+                emit_expr(c, a);
+            }
+            a = c.^.nodes[a].next;
+        }
+        let fi: u32 = c.^.nodes[e].d;
+        let idx: u32 = c.^.fns[fi].index;
+        b_idx(c, OP_CALL, idx);
+        return;
+    }
+    if k == E_FIELD && c.^.nodes[e].d == 0 {
+        // a slice's built-in field: 1 is `len`, 2 is `ptr`
+        let which: u32 = c.^.nodes[e].aux;
+        emit_expr(c, ea);
+        if which == 2 {
+            // (ptr, len) is on the stack; drop the len
+            b_op(c, OP_DROP);
+            return;
+        }
+        let t: u32 = temp(c);
+        b_idx(c, OP_LOCAL_SET, t);
+        b_op(c, OP_DROP);
+        b_idx(c, OP_LOCAL_GET, t);
+        release1(c, t);
+        return;
+    }
+    let pt: u32 = place_ty(c, e);
+    emit_place_load(c, e, pt);
+}
+
+// --- stores ----------------------------------------------------------------
+
+fn emit_store_common(c: &mut Ctx, ak: u32, arg: u32, ty: u32,
+                     vk: u32, a1: u32, a2: u32, a3: u32) {
+    let ta: u32 = temp(c);
+    if ak == 0 { emit_addr(c, arg); } else { frame_addr(c, arg); }
+    b_idx(c, OP_LOCAL_SET, ta);
+    if ty_kind(c, ty) == TYK_SLICE {
+        let tp: u32 = temp(c);
+        let tl: u32 = temp(c);
+        emit_value(c, vk, a1, a2, a3);
+        b_idx(c, OP_LOCAL_SET, tl);
+        b_idx(c, OP_LOCAL_SET, tp);
+        b_idx(c, OP_LOCAL_GET, ta);
+        b_idx(c, OP_LOCAL_GET, tp);
+        b_mem(c, OP_I32_STORE, 2);
+        b_idx(c, OP_LOCAL_GET, ta);
+        b_i32const(c, 4);
+        b_op(c, OP_I32_ADD);
+        b_idx(c, OP_LOCAL_GET, tl);
+        b_mem(c, OP_I32_STORE, 2);
+        release2(c, tp, tl);
+    } else {
+        b_idx(c, OP_LOCAL_GET, ta);
+        emit_value(c, vk, a1, a2, a3);
+        store_op(c, ty);
+    }
+    release1(c, ta);
+}
+
+fn emit_store_slots(c: &mut Ctx, loc: u32, vk: u32, a1: u32, a2: u32, a3: u32) {
+    let slot: u32 = c.^.locals[loc].slot;
+    let lt: u32 = c.^.locals[loc].ty;
+    emit_value(c, vk, a1, a2, a3);
+    if ty_kind(c, lt) == TYK_SLICE {
+        b_idx(c, OP_LOCAL_SET, slot + 1);
+        b_idx(c, OP_LOCAL_SET, slot);
+        return;
+    }
+    b_idx(c, OP_LOCAL_SET, slot);
+}
+
+fn emit_store_to(c: &mut Ctx, place: u32, vk: u32, a1: u32, a2: u32, a3: u32) {
+    if in_wasm_local(c, place) {
+        let loc: u32 = ident_local(c, place);
+        emit_store_slots(c, loc, vk, a1, a2, a3);
+        return;
+    }
+    let pt: u32 = place_ty(c, place);
+    emit_store_common(c, 0, place, pt, vk, a1, a2, a3);
+}
+
+fn emit_store_local(c: &mut Ctx, loc: u32, vk: u32, a1: u32, a2: u32, a3: u32) {
+    if !loc_in_memory(c, loc) {
+        emit_store_slots(c, loc, vk, a1, a2, a3);
+        return;
+    }
+    let lt: u32 = c.^.locals[loc].ty;
+    emit_store_common(c, 1, loc, lt, vk, a1, a2, a3);
+}
+
+fn emit_field_store(c: &mut Ctx, ta: u32, off: u32, ty: u32, value: u32) {
+    if ty_kind(c, ty) == TYK_SLICE {
+        let tp: u32 = temp(c);
+        let tl: u32 = temp(c);
+        emit_expr(c, value);
+        b_idx(c, OP_LOCAL_SET, tl);
+        b_idx(c, OP_LOCAL_SET, tp);
+        b_idx(c, OP_LOCAL_GET, ta);
+        b_i32const(c, off);
+        b_op(c, OP_I32_ADD);
+        b_idx(c, OP_LOCAL_GET, tp);
+        b_mem(c, OP_I32_STORE, 2);
+        b_idx(c, OP_LOCAL_GET, ta);
+        b_i32const(c, off + 4);
+        b_op(c, OP_I32_ADD);
+        b_idx(c, OP_LOCAL_GET, tl);
+        b_mem(c, OP_I32_STORE, 2);
+        release2(c, tp, tl);
+        return;
+    }
+    b_idx(c, OP_LOCAL_GET, ta);
+    b_i32const(c, off);
+    b_op(c, OP_I32_ADD);
+    emit_expr(c, value);
+    store_op(c, ty);
+}
+
+fn is_agg_lit(c: &Ctx, e: u32) -> bool {
+    let k: u32 = c.^.nodes[e].kind;
+    if k == E_STRUCTLIT { return true; }
+    if k == E_FIELD || k == E_CALL { return c.^.nodes[e].aux2 == 1; }
+    return false;
+}
+
+// The literal is written straight into the destination -- no copy (language.md S5).
+fn emit_agg_init(c: &mut Ctx, ta: u32, init: u32) {
+    if c.^.nodes[init].kind == E_STRUCTLIT {
+        let si: u32 = c.^.nodes[init].d;
+        let mut lf: u32 = c.^.nodes[init].c;
+        let mut f: u32 = c.^.structs[si].fields;
+        for lf != 0 {
+            let off: u32 = c.^.fields[f].off;
+            let ft: u32 = c.^.fields[f].ty;
+            let v: u32 = c.^.nodes[lf].c;
+            emit_field_store(c, ta, off, ft, v);
+            lf = c.^.nodes[lf].next;
+            f = c.^.fields[f].next;
+        }
+        return;
+    }
+    let v: u32 = c.^.nodes[init].aux;
+    let tag: u32 = c.^.variants[v].tag;
+    b_idx(c, OP_LOCAL_GET, ta);
+    b_i32const(c, 0);
+    b_op(c, OP_I32_ADD);
+    b_i32const(c, tag);
+    b_mem(c, OP_I32_STORE, 2);
+    let mut a: u32 = 0;
+    if c.^.nodes[init].kind == E_CALL { a = c.^.nodes[init].b; }
+    let mut f: u32 = c.^.variants[v].payload;
+    for a != 0 {
+        let off: u32 = c.^.fields[f].off;
+        let ft: u32 = c.^.fields[f].ty;
+        emit_field_store(c, ta, off, ft, a);
+        a = c.^.nodes[a].next;
+        f = c.^.fields[f].next;
+    }
+}
+
+// --- statements ------------------------------------------------------------
+
+fn emit_epilogue(c: &mut Ctx) {
+    let fi: u32 = c.^.efn;
+    let frame: u32 = c.^.fns[fi].frame;
+    if frame != 0 {
+        b_idx(c, OP_GLOBAL_GET, 0);
+        b_i32const(c, frame);
+        b_op(c, OP_I32_ADD);
+        b_idx(c, OP_GLOBAL_SET, 0);
+    }
+}
+
+fn emit_block(c: &mut Ctx, head: u32) {
+    let mut s: u32 = head;
+    for s != 0 {
+        emit_stmt(c, s);
+        s = c.^.nodes[s].next;
+    }
+}
+
+fn emit_match(c: &mut Ctx, s: u32) {
+    let ta: u32 = temp(c);
+    let scr: u32 = c.^.nodes[s].a;
+    emit_addr(c, scr);
+    b_idx(c, OP_LOCAL_SET, ta);
+    b_blocked(c, OP_BLOCK, BLOCK_VOID);
+    ctrl_push(c, CTRL_MATCH);
+    let mut arm: u32 = c.^.nodes[s].b;
+    for arm != 0 {
+        let body: u32 = c.^.nodes[arm].d;
+        if c.^.nodes[arm].e != 0 {
+            emit_block(c, body);
+        } else {
+            let v: u32 = c.^.nodes[arm].aux;
+            let tag: u32 = c.^.variants[v].tag;
+            b_idx(c, OP_LOCAL_GET, ta);
+            b_i32const(c, 0);
+            b_op(c, OP_I32_ADD);
+            b_mem(c, OP_I32_LOAD, 2);
+            b_i32const(c, tag);
+            b_op(c, cmp_opcode(P_EQEQ, false));
+            b_blocked(c, OP_IF, BLOCK_VOID);
+            ctrl_push(c, CTRL_IF);
+            let mut b: u32 = c.^.nodes[arm].c;
+            let mut f: u32 = c.^.variants[v].payload;
+            for b != 0 {
+                let loc: u32 = c.^.nodes[b].aux;
+                let off: u32 = c.^.fields[f].off;
+                let ft: u32 = c.^.fields[f].ty;
+                emit_store_local(c, loc, 1, ta, off, ft);
+                b = c.^.nodes[b].next;
+                f = c.^.fields[f].next;
+            }
+            emit_block(c, body);
+            let d: u32 = depth_to(c, CTRL_MATCH);
+            b_idx(c, OP_BR, d);
+            ctrl_pop(c);
+            b_op(c, OP_END);
+        }
+        arm = c.^.nodes[arm].next;
+    }
+    if c.^.nodes[s].d == 0 { b_op(c, OP_UNREACHABLE); }
+    ctrl_pop(c);
+    b_op(c, OP_END);
+    release1(c, ta);
+}
+
+fn emit_stmt(c: &mut Ctx, s: u32) {
+    let k: u32 = c.^.nodes[s].kind;
+    let sa: u32 = c.^.nodes[s].a;
+    let sb: u32 = c.^.nodes[s].b;
+    let sc: u32 = c.^.nodes[s].c;
+    let sd: u32 = c.^.nodes[s].d;
+
+    if k == S_LET {
+        let loc: u32 = c.^.nodes[s].aux;
+        if is_agg_lit(c, sd) {
+            let ta: u32 = temp(c);
+            frame_addr(c, loc);
+            b_idx(c, OP_LOCAL_SET, ta);
+            emit_agg_init(c, ta, sd);
+            release1(c, ta);
+            return;
+        }
+        emit_store_local(c, loc, 0, sd, 0, 0);
+        return;
+    }
+
+    if k == S_ASSIGN {
+        let op: u32 = sb;
+        if op == P_EQ {
+            if is_agg_lit(c, sc) {
+                let ta: u32 = temp(c);
+                emit_addr(c, sa);
+                b_idx(c, OP_LOCAL_SET, ta);
+                emit_agg_init(c, ta, sc);
+                release1(c, ta);
+                return;
+            }
+            emit_store_to(c, sa, 0, sc, 0, 0);
+            return;
+        }
+        let base: u32 = assign_base_op(op);
+        let ty: u32 = place_ty(c, sa);
+        let rt: u32 = read_ty(c, ty);
+        let signed: bool = ty_kind(c, rt) == TYK_I32;
+        if in_wasm_local(c, sa) {
+            let loc: u32 = ident_local(c, sa);
+            let slot: u32 = c.^.locals[loc].slot;
+            b_idx(c, OP_LOCAL_GET, slot);
+            emit_expr(c, sc);
+            b_op(c, arith_op(base, signed));
+            b_idx(c, OP_LOCAL_SET, slot);
+            return;
+        }
+        let ta: u32 = temp(c);
+        emit_addr(c, sa);
+        b_idx(c, OP_LOCAL_SET, ta);
+        b_idx(c, OP_LOCAL_GET, ta);
+        b_idx(c, OP_LOCAL_GET, ta);
+        load_op(c, ty);
+        emit_expr(c, sc);
+        b_op(c, arith_op(base, signed));
+        store_op(c, ty);
+        release1(c, ta);
+        return;
+    }
+
+    if k == S_EXPR {
+        emit_expr(c, sa);
+        if c.^.nodes[s].aux != 0 {
+            let et: u32 = c.^.nodes[sa].ty;
+            let n: u32 = slot_count(c, et);
+            for let mut i: u32 = 0; i < n; i += 1 { b_op(c, OP_DROP); }
+        }
+        return;
+    }
+
+    if k == S_IF {
+        emit_expr(c, sa);
+        b_blocked(c, OP_IF, BLOCK_VOID);
+        ctrl_push(c, CTRL_IF);
+        emit_block(c, sb);
+        if sd != 0 {
+            b_op(c, OP_ELSE);
+            emit_block(c, sc);
+        }
+        ctrl_pop(c);
+        b_op(c, OP_END);
+        return;
+    }
+
+    if k == S_FOR {
+        if sa != 0 { emit_stmt(c, sa); }
+        b_blocked(c, OP_BLOCK, BLOCK_VOID);
+        ctrl_push(c, CTRL_BRK);
+        b_blocked(c, OP_LOOP, BLOCK_VOID);
+        ctrl_push(c, CTRL_LOOP);
+        if sb != 0 {
+            emit_expr(c, sb);
+            b_op(c, OP_I32_EQZ);
+            let d: u32 = depth_to(c, CTRL_BRK);
+            b_idx(c, OP_BR_IF, d);
+        }
+        b_blocked(c, OP_BLOCK, BLOCK_VOID);
+        ctrl_push(c, CTRL_CNT);
+        emit_block(c, sd);
+        ctrl_pop(c);
+        b_op(c, OP_END);
+        if sc != 0 { emit_stmt(c, sc); }
+        let dl: u32 = depth_to(c, CTRL_LOOP);
+        b_idx(c, OP_BR, dl);
+        ctrl_pop(c);
+        b_op(c, OP_END);
+        ctrl_pop(c);
+        b_op(c, OP_END);
+        return;
+    }
+
+    if k == S_BREAK {
+        let d: u32 = depth_to(c, CTRL_BRK);
+        b_idx(c, OP_BR, d);
+        return;
+    }
+    if k == S_CONTINUE {
+        let d: u32 = depth_to(c, CTRL_CNT);
+        b_idx(c, OP_BR, d);
+        return;
+    }
+
+    if k == S_RETURN {
+        if sa != 0 { emit_expr(c, sa); }
+        emit_epilogue(c);
+        b_op(c, OP_RETURN);
+        return;
+    }
+
+    if k == S_MATCH { emit_match(c, s); return; }
+    if k == S_UNSAFE { emit_block(c, sa); return; }
+}
+
+// --- functions -------------------------------------------------------------
+
+fn emit_fn(c: &mut Ctx, fi: u32) {
+    assign_storage(c, fi);
+    c.^.wb = S1;
+    c.^.ntemp = 0;
+    c.^.free_n = 0;
+    c.^.ctrl_n = 0;
+    c.^.efn = fi;
+
+    let frame: u32 = c.^.fns[fi].frame;
+    if frame != 0 {
+        b_idx(c, OP_GLOBAL_GET, 0);
+        b_i32const(c, frame);
+        b_op(c, OP_I32_SUB);
+        b_idx(c, OP_GLOBAL_SET, 0);
+        b_idx(c, OP_GLOBAL_GET, 0);
+        b_i32const(c, SHADOW_FLOOR);
+        b_op(c, OP_I32_LT_U);
+        b_blocked(c, OP_IF, BLOCK_VOID);
+        b_op(c, OP_UNREACHABLE);
+        b_op(c, OP_END);
+    }
+    // a parameter whose address is taken is copied into the frame (implementation.md S6)
+    let mut loc: u32 = c.^.fns[fi].locals;
+    for loc != 0 {
+        if c.^.locals[loc].is_param != 0 && c.^.locals[loc].foff != NONE {
+            let slot: u32 = c.^.locals[loc].slot;
+            let lt: u32 = c.^.locals[loc].ty;
+            frame_addr(c, loc);
+            if ty_kind(c, lt) == TYK_SLICE {
+                let ta: u32 = temp(c);
+                b_idx(c, OP_LOCAL_SET, ta);
+                b_idx(c, OP_LOCAL_GET, ta);
+                b_idx(c, OP_LOCAL_GET, slot);
+                b_mem(c, OP_I32_STORE, 2);
+                b_idx(c, OP_LOCAL_GET, ta);
+                b_i32const(c, 4);
+                b_op(c, OP_I32_ADD);
+                b_idx(c, OP_LOCAL_GET, slot + 1);
+                b_mem(c, OP_I32_STORE, 2);
+                release1(c, ta);
+            } else {
+                b_idx(c, OP_LOCAL_GET, slot);
+                store_op(c, lt);
+            }
+        }
+        loc = c.^.locals[loc].next;
+    }
+
+    let d: u32 = c.^.fns[fi].decl;
+    let body: u32 = c.^.nodes[d].e;
+    emit_block(c, body);
+    emit_epilogue(c);
+    let ret: u32 = c.^.fns[fi].ret;
+    if ty_kind(c, ret) != TYK_VOID { b_op(c, OP_UNREACHABLE); }
+    b_op(c, OP_END);
+
+    let nlocals: u32 = c.^.fns[fi].nlslot + c.^.ntemp;
+    let mut declsize: u32 = 1;
+    if nlocals != 0 { declsize = 1 + leb_u_len(nlocals) + 1; }
+    let codelen: u32 = c.^.wb - S1;
+    s_u(c, declsize + codelen);
+    if nlocals == 0 {
+        s_u(c, 0);
+    } else {
+        s_u(c, 1);
+        s_u(c, nlocals);
+        s_ch(c, TYPE_I32);
+    }
+    w_copy(c, W_SEC, S1, codelen);
+}
+
+// --- the module (implementation.md S4) -------------------------------------
+
+fn sig_of(c: &Ctx, fi: u32) -> u32 {
+    let mut n: u32 = 0;
+    let mut p: u32 = c.^.fns[fi].params;
+    for p != 0 {
+        let pt: u32 = c.^.params[p].ty;
+        n += slot_count(c, pt);
+        p = c.^.params[p].next;
+    }
+    // every wasm type here is i32, so the shape is (count, has-result)
+    let ret: u32 = c.^.fns[fi].ret;
+    if ty_kind(c, ret) == TYK_VOID { return n * 2; }
+    return n * 2 + 1;
+}
+
+fn type_idx(c: &mut Ctx, sig: u32) -> u32 {
+    let n: u32 = c.^.nsigs;
+    for let mut i: u32 = 0; i < n; i += 1 {
+        if c.^.sigs[i] == sig { return i; }
+    }
+    c.^.sigs[n] = sig;
+    c.^.nsigs = n + 1;
+    return n;
+}
+
+fn begin_section(c: &mut Ctx) { c.^.ws = S2; }
+
+fn end_section(c: &mut Ctx, id: u32) {
+    let n: u32 = c.^.ws - S2;
+    w_ch(c, W_OUT, id);
+    w_u(c, W_OUT, n);
+    w_copy(c, W_OUT, S2, n);
+}
+
+fn emit_module(c: &mut Ctx) {
+    for let mut fi: u32 = 1; fi < c.^.nfn; fi += 1 {
+        let sig: u32 = sig_of(c, fi);
+        type_idx(c, sig);
+    }
+
+    out_reset(c);
+    put_ch(c, 0);
+    put_ch(c, 'a');
+    put_ch(c, 's');
+    put_ch(c, 'm');
+    put_ch(c, 1);
+    put_ch(c, 0);
+    put_ch(c, 0);
+    put_ch(c, 0);
+
+    let nfns: u32 = c.^.nfns;
+    let nsigs: u32 = c.^.nsigs;
+
+    if nsigs != 0 {
+        begin_section(c);
+        s_u(c, nsigs);
+        for let mut i: u32 = 0; i < nsigs; i += 1 {
+            let sig: u32 = c.^.sigs[i];
+            let np: u32 = sig / 2;
+            s_ch(c, 0x60);
+            s_u(c, np);
+            for let mut j: u32 = 0; j < np; j += 1 { s_ch(c, TYPE_I32); }
+            if sig % 2 == 0 {
+                s_u(c, 0);
+            } else {
+                s_u(c, 1);
+                s_ch(c, TYPE_I32);
+            }
+        }
+        end_section(c, SEC_TYPE);
+    }
+
+    if nfns != 0 {
+        begin_section(c);
+        s_u(c, nfns);
+        for let mut fi: u32 = 1; fi < c.^.nfn; fi += 1 {
+            let sig: u32 = sig_of(c, fi);
+            let ti: u32 = type_idx(c, sig);
+            s_u(c, ti);
+        }
+        end_section(c, SEC_FUNC);
+    }
+
+    begin_section(c);
+    s_u(c, 1);
+    s_ch(c, 0x01);
+    s_u(c, MEM_PAGES);
+    s_u(c, MEM_PAGES);
+    end_section(c, SEC_MEM);
+
+    begin_section(c);
+    s_u(c, 1);
+    s_ch(c, TYPE_I32);
+    s_ch(c, 0x01);
+    s_ch(c, OP_I32_CONST);
+    w_s(c, W_SEC, SHADOW_TOP);
+    s_ch(c, OP_END);
+    end_section(c, SEC_GLOBAL);
+
+    begin_section(c);
+    s_u(c, nfns + 1);
+    for let mut fi: u32 = 1; fi < c.^.nfn; fi += 1 {
+        let ns: u32 = c.^.fns[fi].ns;
+        let nl: u32 = c.^.fns[fi].nl;
+        let idx: u32 = c.^.fns[fi].index;
+        s_u(c, nl);
+        w_copy(c, W_SEC, SRC + ns, nl);
+        s_ch(c, 0x00);
+        s_u(c, idx);
+    }
+    s_u(c, 6);
+    s_ch(c, 'm');
+    s_ch(c, 'e');
+    s_ch(c, 'm');
+    s_ch(c, 'o');
+    s_ch(c, 'r');
+    s_ch(c, 'y');
+    s_ch(c, 0x02);
+    s_u(c, 0);
+    end_section(c, SEC_EXPORT);
+
+    if nfns != 0 {
+        begin_section(c);
+        s_u(c, nfns);
+        for let mut fi: u32 = 1; fi < c.^.nfn; fi += 1 {
+            emit_fn(c, fi);
+        }
+        end_section(c, SEC_CODE);
+    }
+
+    if c.^.nstr > 1 {
+        let nstr: u32 = c.^.nstr - 1;
+        begin_section(c);
+        s_u(c, nstr);
+        for let mut sp: u32 = 1; sp < c.^.nstr; sp += 1 {
+            let addr: u32 = c.^.strs[sp].addr;
+            let ptr: u32 = c.^.strs[sp].ptr;
+            let len: u32 = c.^.strs[sp].len;
+            s_ch(c, 0x00);
+            s_ch(c, OP_I32_CONST);
+            w_s(c, W_SEC, addr);
+            s_ch(c, OP_END);
+            s_u(c, len);
+            w_copy(c, W_SEC, ptr, len);
+        }
+        end_section(c, SEC_DATA);
+    }
+}
+
+// ===========================================================================
 // Arena sizing
 // ===========================================================================
 //
@@ -4655,6 +5772,16 @@ fn compile(src_len_in: u32) -> i32 {
             place_mut: 0,
             place_root: 0,
             nfns: 0,
+            wb: S1,
+            ws: S2,
+            sigs: slice_mut(heap0 as *u32, 0),
+            nsigs: 0,
+            ntemp: 0,
+            free: slice_mut(heap0 as *u32, 0),
+            free_n: 0,
+            ctrl: slice_mut(heap0 as *u32, 0),
+            ctrl_n: 0,
+            efn: 0,
             heap: heap0 + tok_bytes,
             err: 0,
             out: OUT,
@@ -4735,8 +5862,18 @@ fn compile(src_len_in: u32) -> i32 {
             c.marks = slice_mut(c.heap as *u32, n_mark);
             c.heap = c.heap + n_mark * 4;
 
+            let n_stack: u32 = 512;
+            c.free = slice_mut(c.heap as *u32, n_stack);
+            c.heap = c.heap + n_stack * 4;
+            c.ctrl = slice_mut(c.heap as *u32, n_stack);
+            c.heap = c.heap + n_stack * 4;
+            let n_sig: u32 = (k.fns + 2) * 3;
+            c.sigs = slice_mut(c.heap as *u32, n_sig);
+            c.heap = c.heap + n_sig * 4;
+
             init_types(&mut c);
             check_program(&mut c);
+            if c.err == 0 { emit_module(&mut c); }
         }
 
         // debug window for the workbench
