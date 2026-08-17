@@ -1,0 +1,26 @@
+// expect: ok
+// Left-associative chains. If the checker looks at the left operand twice, these
+// blow up as 2^depth. Adding `*T + u32` did exactly that once -- 24 terms took
+// 6.5 seconds. Every chain here is a legal program well inside the nesting
+// limit of 64 (language.md S9).
+
+struct N { v: u32, k: u32 }
+
+fn adds() -> u32 {
+    return 1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1;
+}
+
+fn mixed(a: u32, b: u32) -> u32 {
+    return a+b-a+b-a+b-a+b-a+b-a+b-a+b-a+b-a+b-a+b-a+b-a+b;
+}
+
+fn shifts(a: u32) -> u32 {
+    return a+1<<1|a+1&a+1^a+1|a+1&a+1^a+1|a+1&a+1^a+1;
+}
+
+fn pointers(p: *N) -> u32 {
+    unsafe {
+        let q = p + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
+        return q.^.v;
+    }
+}

@@ -542,3 +542,27 @@ def test_non_constant_expression():
     assert "not a constant expression" in compile_err(
         "fn g() -> i32 { return 1; } const C: i32 = g();"
     )
+
+
+# --- 검사기가 피연산자를 한 번만 본다 ---------------------------------------
+
+
+def test_a_left_associative_chain_is_checked_in_linear_time():
+    """이항식의 왼쪽을 두 번 보면 사슬이 2^깊이 로 터진다.
+
+    `*T + u32` 를 넣으면서 실제로 터졌다 -- `+` 가 왼쪽을 미리 보고 포인터인지
+    확인한 뒤, 포인터가 아니면 아래로 떨어져 같은 왼쪽을 다시 봤다. 24항이
+    6.5초였고 40항은 사실상 끝나지 않았다. 둘 다 중첩 한계 64 안쪽의 합법
+    프로그램이다.
+
+    시간으로 재는 시험이라 경계를 아주 헐겁게 잡는다. 선형이면 1밀리초, 지수면
+    몇 초다 -- 그 사이 어디에 금을 그어도 흔들리지 않는다.
+    """
+    import time
+
+    src = "fn f() -> u32 { return " + "+".join(["1"] * 24) + "; }"
+    start = time.monotonic()
+    compile_ok(src)
+    assert time.monotonic() - start < 2.0, (
+        "이항식의 피연산자를 두 번 검사하고 있다 -- check_binary 를 보라"
+    )

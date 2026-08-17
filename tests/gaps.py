@@ -43,6 +43,7 @@ GAP_PROGRAM_NAMES = [
     "compound-shift-on-a-struct-field", "const-bool-equality", "const-bool-inequality",
     "a-shift-that-has-not-settled", "deref-of-a-cast-no-root-local",
     "enum-with-no-variants", "signature-dedup-and-string-sharing",
+    "left-associative-operator-chains",
     "pointer-comparison-through-casts", "a-call-as-the-for-post-statement",
     "nested-match", "aggregate-local-plus-recursion",
 ]

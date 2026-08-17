@@ -1859,14 +1859,6 @@ class Checker:
         int_want = want if want in INT_TYPES else None
         cmp = op in CMP_OPS
 
-        if op == "+":
-            lt = self.check_expr(e.lhs, None)
-            if isinstance(lt, Ptr):
-                self.coerce(e.rhs, U32)
-                e.opnd_ty = lt
-                e.ptr_stride = self.size_of(lt.inner)
-                return lt
-
         if op in ("<<", ">>"):
             lt = self.check_expr(e.lhs, int_want)
             self.coerce(e.rhs, U32)
@@ -1882,6 +1874,15 @@ class Checker:
             return lt
 
         lt = self.check_expr(e.lhs, None if cmp else int_want)
+
+        # `*T + u32` -- 원소 단위로 건너뛴다 (language.md §5). 왼쪽은 위에서 이미
+        # 한 번 봤다. 여기서 다시 보면 왼쪽 결합 사슬이 2^깊이 로 터진다
+        if op == "+" and isinstance(lt, Ptr):
+            self.coerce(e.rhs, U32)
+            e.opnd_ty = lt
+            e.ptr_stride = self.size_of(lt.inner)
+            return lt
+
         rt = self.check_expr(e.rhs, lt if lt is not INTLIT else (None if cmp else int_want))
         if lt is INTLIT and rt is not INTLIT:
             self.retype(e.lhs, rt)
