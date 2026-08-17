@@ -18,9 +18,11 @@ fn shifts(a: u32) -> u32 {
     return a+1<<1|a+1&a+1^a+1|a+1&a+1^a+1|a+1&a+1^a+1;
 }
 
+// Raw pointers have no arithmetic operator -- `offset` moves by elements
+// (language.md S5). Nested builtin expressions are their own depth chain.
 fn pointers(p: *N) -> u32 {
     unsafe {
-        let q = p + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1;
+        let q = offset(offset(offset(offset(offset(offset(p,1),1),1),1),1),1);
         return q.^.v;
     }
 }

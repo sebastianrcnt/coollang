@@ -544,6 +544,34 @@ def test_non_constant_expression():
     )
 
 
+# --- 생 포인터를 다루는 내장 식 (language.md §5, §8) -------------------------
+
+
+def test_offset_needs_no_unsafe_to_build_an_address():
+    """주소를 만드는 것은 위험하지 않다. 역참조와 `slice` 에만 표시가 붙는다."""
+    compile_ok("struct N { v: u32 }\nfn f(p: *N) -> u32 { let q = offset(p, 3); return 0; }")
+
+
+def test_slice_still_needs_unsafe():
+    assert "`slice` requires `unsafe`" in compile_err(
+        "fn f(p: *u8) -> u32 { let s = slice(p, 2); return s[0]; }"
+    )
+
+
+def test_raw_pointers_have_no_arithmetic_operator():
+    """`p + 1` 은 없다. 곱셈이 코드에 안 보이기 때문이다 (language.md §5)."""
+    assert "`+` requires `i32` or `u32`" in compile_err(
+        "struct N { v: u32 }\n" + fn("let q = p + 1;", "fn f(p: *N)")
+    )
+
+
+def test_offset_wants_a_pointer_and_a_u32():
+    assert "expected a raw pointer" in compile_err(fn("let q = offset(1, 1);"))
+    assert "expected `u32`, found `i32`" in compile_err(
+        "struct N { v: u32 }\n" + fn("let i: i32 = 1; let q = offset(p, i);", "fn f(p: *N)")
+    )
+
+
 # --- 검사기가 피연산자를 한 번만 본다 ---------------------------------------
 
 

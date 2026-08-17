@@ -27,11 +27,15 @@ def test_eof_is_always_last():
     assert len(lex(b"")) == 1
 
 
-def test_keywords_are_all_nineteen():
+def test_keywords_are_all_twenty():
     words = """fn struct enum const let mut if else for break continue
-               return match unsafe as true false slice slice_mut""".split()
-    assert len(words) == 19
+               return match unsafe as true false slice slice_mut offset""".split()
+    assert len(words) == 20
     assert all(k == "kw" for k, _ in kinds(" ".join(words))[:-1])
+    # 목록이 구현과 어긋나면 여기서 잡힌다. 예전에는 한쪽만 늘어도 통과했다
+    from cool0.cool0 import KEYWORDS
+
+    assert set(words) == set(KEYWORDS)
 
 
 def test_underscore_is_an_identifier():

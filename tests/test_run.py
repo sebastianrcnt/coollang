@@ -499,7 +499,7 @@ fn f(addr: u32) -> u32 {
     unsafe {
         let whole = slice_mut(addr as *u8, 4);
         whole[2] = 77;
-        let part = slice(whole.ptr + 1, 2);
+        let part = slice(offset(whole.ptr, 1), 2);
         return part.len * 100 + part[1];
     }
 }
@@ -507,6 +507,26 @@ fn f(addr: u32) -> u32 {
     inst = instantiate(src)
     inst.write(0x5000, b"abcd")
     assert inst.call("f", 0x5000) == 277
+
+
+def test_offset_moves_by_elements_not_bytes():
+    """`offset(p, i)` 는 주소에 `i * sizeof(T)` 를 더한다 (language.md §5).
+
+    `*u32` 로 한 칸 가면 4바이트다. 이 곱셈이 빠지면 1바이트만 움직여서 값이
+    엉뚱하게 나온다 -- 그게 `p + 1` 대신 이름 붙인 식을 두는 이유다.
+    """
+    src = """
+fn word(addr: u32, i: u32) -> u32 { unsafe { return offset(addr as *u32, i).^; } }
+fn byte(addr: u32, i: u32) -> u32 { unsafe { return offset(addr as *u8, i).^; } }
+fn back(addr: u32) -> u32 { unsafe { return offset(addr as *u32, 0 - 1).^; } }
+"""
+    inst = instantiate(src)
+    inst.write(0x3000, bytes([1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0]))
+    assert inst.call("word", 0x3000, 0) == 1
+    assert inst.call("word", 0x3000, 1) == 2  # 4바이트 건너뛴다
+    assert inst.call("word", 0x3000, 2) == 3
+    assert inst.call("byte", 0x3000, 4) == 2  # u8 은 1바이트씩
+    assert inst.call("back", 0x3004) == 1  # 랩어라운드로 뒤로
 
 
 def test_slice_of_u32_uses_element_size():

@@ -68,7 +68,7 @@ def _err(pos, msg: str) -> CompileError:
 
 KEYWORDS = frozenset(
     """fn struct enum const let mut if else for break continue
-       return match unsafe as true false slice slice_mut""".split()
+       return match unsafe as true false slice slice_mut offset""".split()
 )
 
 # 긴 것부터. 최장 일치.
@@ -483,6 +483,15 @@ class SliceExpr(Node):
     ptr: Node
     length: Node
     mut: bool
+
+
+@dataclass
+class OffsetExpr(Node):
+    """`offset(p, i)` 내장 식. 원소 단위로 움직인다."""
+
+    pos: tuple
+    ptr: Node
+    index: Node
 
 
 # --- 문 -------------------------------------------------------------------
@@ -1037,6 +1046,14 @@ class Parser:
             length = self.parse_expr(allow_struct_lit=True)
             self.expect(")")
             return self.deep(SliceExpr(pos, ptr, length, mut), ptr, length)
+        if self.at("offset"):
+            self.i += 1
+            self.expect("(")
+            ptr = self.parse_expr(allow_struct_lit=True)
+            self.expect(",")
+            index = self.parse_expr(allow_struct_lit=True)
+            self.expect(")")
+            return self.deep(OffsetExpr(pos, ptr, index), ptr, index)
         if self.at("("):
             self.i += 1
             e = self.parse_expr(allow_struct_lit=True)
@@ -1768,6 +1785,17 @@ class Checker:
             self.coerce(e.length, U32)
             return Slice(pt.inner, e.mut)
 
+        if isinstance(e, OffsetExpr):
+            # `unsafe` 를 요구하지 않는다. 주소를 만드는 것은 이미 `as` 로도
+            # 되고 (§8), `*T` 는 역참조 전까지 아무것도 아니다. 위험은 `p.^`
+            # 와 `slice` 에 있고 거기엔 이미 표시가 붙어 있다
+            pt = self.check_expr(e.ptr, None)
+            if not isinstance(pt, Ptr):
+                raise _err(e.ptr.pos, f"expected a raw pointer, found `{ty_str(pt)}`")
+            self.coerce(e.index, U32)
+            e.stride = self.size_of(pt.inner)
+            return pt
+
         if isinstance(e, Ident):
             loc = self.lookup(e.name)
             if loc is not None:
@@ -1874,15 +1902,6 @@ class Checker:
             return lt
 
         lt = self.check_expr(e.lhs, None if cmp else int_want)
-
-        # `*T + u32` -- 원소 단위로 건너뛴다 (language.md §5). 왼쪽은 위에서 이미
-        # 한 번 봤다. 여기서 다시 보면 왼쪽 결합 사슬이 2^깊이 로 터진다
-        if op == "+" and isinstance(lt, Ptr):
-            self.coerce(e.rhs, U32)
-            e.opnd_ty = lt
-            e.ptr_stride = self.size_of(lt.inner)
-            return lt
-
         rt = self.check_expr(e.rhs, lt if lt is not INTLIT else (None if cmp else int_want))
         if lt is INTLIT and rt is not INTLIT:
             self.retype(e.lhs, rt)
@@ -2531,6 +2550,13 @@ class Emitter:
             self.emit_expr(e.ptr)
             self.emit_expr(e.length)
             return
+        if isinstance(e, OffsetExpr):
+            self.emit_expr(e.ptr)
+            self.emit_expr(e.index)
+            self.b.i32const(e.stride)
+            self.b.op(OP_I32_MUL)
+            self.b.op(OP_I32_ADD)
+            return
         if isinstance(e, Ident):
             if getattr(e, "local", None) is not None:
                 self.emit_place_load(e, e.local.ty)
@@ -2595,11 +2621,6 @@ class Emitter:
             return
         self.emit_expr(e.lhs)
         self.emit_expr(e.rhs)
-        if hasattr(e, "ptr_stride"):
-            self.b.i32const(e.ptr_stride)
-            self.b.op(OP_I32_MUL)
-            self.b.op(OP_I32_ADD)
-            return
         if e.op in CMP_OPS:
             # 비교는 피연산자 타입이, 나머지는 결과 타입이 부호를 정한다.
             # 산술과 시프트는 결과 타입이 곧 왼쪽 피연산자 타입이다
