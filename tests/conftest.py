@@ -28,8 +28,8 @@ def compile_err(src: str) -> str:
     if status != STATUS_ERR:
         pytest.fail("expected a diagnostic, but compilation succeeded")
     text = out.decode("ascii")
-    assert text.endswith("\n"), "진단은 개행으로 끝난다 (§12)"
-    assert text.count("\n") == 1, "첫 오류에서 멈춘다 (§12)"
+    assert text.endswith("\n"), "진단은 개행으로 끝난다 (implementation.md §9)"
+    assert text.count("\n") == 1, "첫 오류에서 멈춘다 (implementation.md §9)"
     return text.strip()
 
 
@@ -67,7 +67,7 @@ def instantiate(src: str) -> Instance:
 
 
 def run_compiler(compiler_wasm: bytes, src: bytes) -> tuple[int, bytes]:
-    """어떤 cool0 컴파일러든 §8 의 ABI 로 부른다.
+    """어떤 cool0 컴파일러든 implementation.md §7 의 ABI 로 부른다.
 
     호스트가 하는 일이 이것뿐이다 -- 소스를 0x1000 에 놓고, `compile(src_len)` 을
     부르고, `out_ptr`/`out_len` 이 가리키는 바이트를 꺼낸다. 파일도 인자도 없다.

@@ -4,7 +4,7 @@
 40년간 밝혀진 실수들을 처음부터 피한다.
 
 이 저장소는 아직 **cool0** 하나만 다룬다. cool0 는 cool 의 **동결된 부트스트랩
-부분집합**이며, 명세는 [`src/cool0/SPEC.md`](src/cool0/SPEC.md) 다.
+부분집합**이며, 명세는 [`src/cool0/spec/`](src/cool0/spec/) 다.
 
 ---
 
@@ -134,7 +134,10 @@ cool0c.wasm(src)   → (status, bytes)      완전히 같아야 한다
 ## 저장소
 
 ```
-src/cool0/SPEC.md        cool0 명세. 동결
+src/cool0/spec/          cool0 명세. 동결
+  language.md            언어 그 자체
+  grammar.ebnf           문법
+  implementation.md      공식 구현이 wasm 으로 옮기는 방법
 src/cool0/cool0.py       참조 구현
 src/cool0/cool0c.cool0   컴파일러, cool0 로
 src/cool0/cool0c.wat     컴파일러, WAT 로

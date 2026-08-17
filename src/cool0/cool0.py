@@ -1,6 +1,6 @@
 """cool0 reference implementation.
 
-SPEC.md 의 참조 구현이다. 신뢰 사슬에는 없다 -- 오라클이다.
+spec/ 의 참조 구현이다. 신뢰 사슬에는 없다 -- 오라클이다.
 
 핵심 진입점은 순수 함수 하나다:
 
@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 # ============================================================================
-# 0. 상수 -- 호스트 ABI (SPEC.md §8, §11)
+# 0. 상수 -- 호스트 ABI (implementation.md §7)
 # ============================================================================
 
 MEM_PAGES = 512  # 32 MiB, 고정
@@ -63,7 +63,7 @@ def _err(pos, msg: str) -> CompileError:
 
 
 # ============================================================================
-# 1. 어휘 분석 (SPEC.md §2)
+# 1. 어휘 분석 (language.md §2)
 # ============================================================================
 
 KEYWORDS = frozenset(
@@ -85,7 +85,7 @@ STR_ESCAPES = dict(ESCAPES, **{'"': 0x22})
 
 
 # 파이썬의 str.isalpha() 는 ASCII 를 넘어선다 -- 'ü'.isalnum() 은 참이다.
-# 소스는 ASCII 전용이므로 (§2) 바이트로 직접 판정한다.
+# 소스는 ASCII 전용이므로 (language.md §2) 바이트로 직접 판정한다.
 def is_alpha(b: int) -> bool:
     return 0x41 <= b <= 0x5A or 0x61 <= b <= 0x7A
 
@@ -272,7 +272,7 @@ def lex(src: bytes) -> list[Token]:
 
 
 # ============================================================================
-# 2. 타입 (SPEC.md §3)
+# 2. 타입 (language.md §3)
 # ============================================================================
 
 
@@ -347,7 +347,7 @@ def slot_count(t: Ty) -> int:
 
 
 def read_ty(t: Ty) -> Ty:
-    """장소의 타입 -> 읽었을 때의 값 타입. u8 은 u32 로 읽힌다 (§3)."""
+    """장소의 타입 -> 읽었을 때의 값 타입. u8 은 u32 로 읽힌다 (language.md §3)."""
     return U32 if t is U8 else t
 
 
@@ -360,7 +360,7 @@ def align_up(x: int, a: int) -> int:
 # ============================================================================
 
 
-# 중첩 한계 (§6). 재귀 하강 컴파일러가 고정 크기 섀도 스택 위에서 돌아야 하므로
+# 중첩 한계 (language.md §6). 재귀 하강 컴파일러가 고정 크기 섀도 스택 위에서 돌아야 하므로
 # 식과 블록의 깊이에 한계가 있다. 잎은 깊이 1 이다.
 MAX_DEPTH = 64
 
@@ -590,10 +590,10 @@ class ConstDecl(Node):
 
 
 # ============================================================================
-# 4. 구문 분석 (SPEC.md §4, §5, §6)
+# 4. 구문 분석 (language.md §4, §5, §6)
 # ============================================================================
 
-# 낮은 것부터 (§5 를 뒤집은 순서). 비교는 비결합이라 자리만 잡아 두고 따로 다룬다.
+# 낮은 것부터 (language.md §5 를 뒤집은 순서). 비교는 비결합이라 자리만 잡아 두고 따로 다룬다.
 CMP_LEVEL = 2
 BIN_LEVELS = [
     ["||"],
@@ -618,7 +618,7 @@ class Parser:
         self.expr_depth = 0
 
     def deep(self, node: Node, *kids: Node) -> Node:
-        """합성 식의 깊이를 매기고 한계를 지킨다 (§6).
+        """합성 식의 깊이를 매기고 한계를 지킨다 (language.md §6).
 
         여기서 막아 두면 검사기와 방출기의 재귀도 같이 묶인다 -- 왼쪽으로 깊은
         `1+1+1+...` 도 파서에서는 반복이지만 트리로는 깊다.
@@ -938,7 +938,7 @@ class Parser:
         return lhs
 
     def parse_unary(self, asl: bool) -> Node:
-        """`as` 단계. 단항이 `as` 보다 세게 묶는다 (§5) -- `-x as u32` 는 `(-x) as u32`."""
+        """`as` 단계. 단항이 `as` 보다 세게 묶는다 (language.md §5) -- `-x as u32` 는 `(-x) as u32`."""
         e = self.parse_prefix(asl)
         while self.at("as"):
             pos = self.tok.pos
@@ -1045,7 +1045,7 @@ class Parser:
 
 
 # ============================================================================
-# 5. 의미 분석 (SPEC.md §3, §4, §6, §7)
+# 5. 의미 분석 (language.md §3, §4, §6, §7)
 # ============================================================================
 
 
@@ -1152,7 +1152,7 @@ class Checker:
         self.taken[name] = pos
 
     def run(self):
-        # 1패스: 선언 수집. 최상위는 순서에 상관없다 (§4)
+        # 1패스: 선언 수집. 최상위는 순서에 상관없다 (language.md §4)
         struct_decls, enum_decls, const_decls, fn_decls = [], [], [], []
         for d in self.decls:
             self.claim(d.name, d.pos)
@@ -1166,7 +1166,7 @@ class Checker:
                 fn_decls.append(d)
 
         # 타입 이름을 먼저 전부 등록한다. `struct Node { next: *Node }` 가 되어야 한다.
-        # 필드는 집합체가 될 수 없으므로 배치는 서로를 필요로 하지 않는다 (§4)
+        # 필드는 집합체가 될 수 없으므로 배치는 서로를 필요로 하지 않는다 (language.md §4)
         for d in struct_decls + enum_decls:
             self.type_names.add(d.name)
         for d in struct_decls:
@@ -1229,14 +1229,14 @@ class Checker:
         return self.structs.get(name) or self.enums[name]
 
     def check_field_ty(self, t: Ty, pos, what: str):
-        """필드·페이로드 타입 제약 (§11): 집합체와 대여는 담을 수 없다."""
+        """필드·페이로드 타입 제약 (language.md §4): 집합체와 대여는 담을 수 없다."""
         if is_aggregate(t):
             raise _err(pos, f"{what} cannot have aggregate type `{ty_str(t)}`")
         if isinstance(t, Ref):
             raise _err(pos, f"{what} cannot have borrow type `{ty_str(t)}`")
 
     def layout(self, entries, base: int):
-        """(pos, name, Ty) 목록을 선언 순서대로 배치한다 (§4)."""
+        """(pos, name, Ty) 목록을 선언 순서대로 배치한다 (language.md §4)."""
         off, align = base, 1
         out = []
         for _, name, t in entries:
@@ -1278,7 +1278,7 @@ class Checker:
             fields, size, _ = self.layout(entries, 0)
             slot = max(slot, size)
             variants.append(VariantInfo(name, tag, fields))
-        # 태그(u32) + 페이로드 슬롯. 슬롯은 오프셋 4 에서 시작한다 (§4)
+        # 태그(u32) + 페이로드 슬롯. 슬롯은 오프셋 4 에서 시작한다 (language.md §4)
         for v in variants:
             v.payload = [FieldInfo(f.name, f.ty, f.off + 4) for f in v.payload]
         size = align_up(4 + slot, 4)
@@ -1629,7 +1629,7 @@ class Checker:
     # --- 식 ---------------------------------------------------------------
 
     def check_init(self, e: Node, want: Optional[Ty]) -> Ty:
-        """let 초기화·대입 우변. 여기서만 집합체 리터럴이 허용된다 (§11)."""
+        """let 초기화·대입 우변. 여기서만 집합체 리터럴이 허용된다 (language.md §5)."""
         if isinstance(e, StructLit):
             return self.check_struct_lit(e, want)
         if self.is_enum_lit(e):
@@ -1907,7 +1907,7 @@ class Checker:
         b.ty = Ref(ty, b.mut)
 
     def check_aliasing(self, e: Call):
-        """§7 -- 한 인자 목록에서 `&mut` 로 빌린 지역변수가 다른 곳에도 나오면 오류."""
+        """language.md §7 -- 한 인자 목록에서 `&mut` 로 빌린 지역변수가 다른 곳에도 나오면 오류."""
         mentions = [self.mentioned_locals(a) for a in e.args]
         for i, a in enumerate(e.args):
             if not (isinstance(a, Borrow) and a.mut and a.root is not None):
@@ -2152,7 +2152,7 @@ def section(sid: int, payload: bytes) -> bytes:
 
 
 # ============================================================================
-# 7. 코드 생성 (SPEC.md §11)
+# 7. 코드 생성 (implementation.md §5)
 # ============================================================================
 
 
@@ -2401,7 +2401,7 @@ class Emitter:
             self.b.idx(OP_LOCAL_SET, tp)
             self.emit_expr(e.index)
             self.b.idx(OP_LOCAL_SET, ti)
-            self.b.idx(OP_LOCAL_GET, ti)  # 경계 검사 (§5)
+            self.b.idx(OP_LOCAL_GET, ti)  # 경계 검사 (language.md §5)
             self.b.idx(OP_LOCAL_GET, tl)
             self.b.op(CMP_OPCODE[(">=", False)])
             self.b.op(OP_IF, BLOCK_VOID)
@@ -2587,7 +2587,7 @@ class Emitter:
         self.load_op(ty)
 
     def emit_field_store(self, addr_temp: int, off: int, ty: Ty, value: Node):
-        """addr_temp + off 에 값 하나를 쓴다. 슬라이스는 두 조각이다 (§11)."""
+        """addr_temp + off 에 값 하나를 쓴다. 슬라이스는 두 조각이다 (implementation.md §2)."""
         if isinstance(ty, Slice):
             tp, tl = self.temp(), self.temp()
             self.emit_expr(value)  # ptr, len
@@ -2806,7 +2806,7 @@ def local_stub(loc: Local, pos) -> Ident:
 
 
 def compile(src: bytes) -> tuple[int, bytes]:
-    """cool0 소스를 wasm 으로. 순수 함수다 (SPEC.md §8).
+    """cool0 소스를 wasm 으로. 순수 함수다 (implementation.md §7).
 
     무슨 바이트가 들어와도 `(0, wasm)` 아니면 `(1, 진단)` 이다. 예외는 새지 않는다.
     """

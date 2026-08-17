@@ -1,4 +1,4 @@
-"""실행 의미 (SPEC.md §3, §5, §6, §7).
+"""실행 의미 (language.md §3, §5, §6, §7).
 
 wasmtime 으로 실제로 돌린다. 컴파일이 되는 것과 옳은 것은 다르다.
 """
@@ -16,7 +16,7 @@ def i32(v: int) -> int:
     return v - 0x1_00000000 if v >= 0x80000000 else v
 
 
-# --- 산술 (§3) -------------------------------------------------------------
+# --- 산술 (language.md §3) -------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -88,7 +88,7 @@ def test_as_is_a_bit_reinterpretation():
     assert run(src, "f", -1) & U32_MAX == U32_MAX
 
 
-# --- 트랩 (§3, §5) ----------------------------------------------------------
+# --- 트랩 (language.md §3, §5) ----------------------------------------------------------
 
 
 def test_division_by_zero_traps():
@@ -122,7 +122,7 @@ def test_bounds_check_uses_element_size():
     assert not traps(inst, "f", 0x3000, 1, 0)
 
 
-# --- bool 과 단축 평가 (§5) --------------------------------------------------
+# --- bool 과 단축 평가 (language.md §5) --------------------------------------------------
 
 
 def test_bool_operations():
@@ -160,7 +160,7 @@ def test_or_does_not_evaluate_the_right_side_when_true():
     assert int.from_bytes(inst.read(0x2000, 4), "little") == 1
 
 
-# --- 흐름 (§6) -------------------------------------------------------------
+# --- 흐름 (language.md §6) -------------------------------------------------------------
 
 
 def test_infinite_for_with_break():
@@ -271,7 +271,7 @@ fn odd(n: u32) -> bool { if n == 0 { return false; } return even(n - 1); }
     assert [run(src, "even", n) for n in range(4)] == [1, 0, 1, 0]
 
 
-# --- struct 와 대여 (§4, §7) ------------------------------------------------
+# --- struct 와 대여 (language.md §4, §7) ------------------------------------------------
 
 POINT = """
 struct Point { x: i32, y: i32 }
@@ -381,7 +381,7 @@ fn f() -> i32 {
     assert i32(run(src, "f")) == 7
 
 
-# --- enum 과 match (§4, §6) -------------------------------------------------
+# --- enum 과 match (language.md §4, §6) -------------------------------------------------
 
 SHAPE = """
 enum Shape { Dot, Line(i32), Rect(i32, i32) }
@@ -453,7 +453,7 @@ fn f(k: u32) -> u32 {
     assert [run(src, "f", k) for k in (0, 1, 2)] == [1, 2, 3]
 
 
-# --- 슬라이스 (§3) ----------------------------------------------------------
+# --- 슬라이스 (language.md §3) ----------------------------------------------------------
 
 
 def test_string_literal_contents():
@@ -514,7 +514,7 @@ fn f() -> u32 {
     assert run(src, "f") == 2 * 1000 + ord("d")
 
 
-# --- 생 포인터와 unsafe (§6) ------------------------------------------------
+# --- 생 포인터와 unsafe (language.md §6) ------------------------------------------------
 
 
 def test_raw_pointer_round_trip():
@@ -554,7 +554,7 @@ fn f(a: u32) -> bool { let p: *u8 = a as *u8; return p == 0 as *u8; }
     assert [run(src, "f", a) for a in (0, 16)] == [1, 0]
 
 
-# --- 호스트 ABI (§8) --------------------------------------------------------
+# --- 호스트 ABI (implementation.md §7) --------------------------------------------------------
 
 
 def test_memory_is_32_mib():
@@ -564,7 +564,7 @@ def test_memory_is_32_mib():
 
 
 def test_a_program_can_satisfy_the_abi():
-    """§8 의 모양을 그대로 흉내낸다 -- 결과를 out_ptr/out_len 에 남기고 0 을 돌려준다."""
+    """implementation.md §7 의 모양을 그대로 흉내낸다 -- 결과를 out_ptr/out_len 에 남기고 0 을 돌려준다."""
     src = """
 const OUT_PTR: u32 = 0;
 const OUT_LEN: u32 = 4;
@@ -738,7 +738,7 @@ fn f() -> u32 { return sum("abc"); }
 
 
 def test_parameters_are_immutable():
-    """매개변수는 `mut` 로 선언되지 않았으므로 가변 장소가 아니다 (§6)."""
+    """매개변수는 `mut` 로 선언되지 않았으므로 가변 장소가 아니다 (language.md §6)."""
     from conftest import compile_err
 
     src = """
@@ -828,7 +828,7 @@ fn f() -> i32 {
 
 
 def test_slice_field_reads_back_its_initializer():
-    """리터럴이 슬라이스 필드를 두 조각으로 제대로 쓰는지 (§11).
+    """리터럴이 슬라이스 필드를 두 조각으로 제대로 쓰는지 (implementation.md §2).
 
     덮어쓰고 나서 읽으면 이 결함이 가려진다. 초기값을 그대로 읽어야 한다.
     """

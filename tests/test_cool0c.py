@@ -103,7 +103,7 @@ def reference_tokens(src: bytes) -> list[tuple]:
     return out
 
 
-# --- 1 단계: 렉서 (SPEC.md §2) ----------------------------------------------
+# --- 1 단계: 렉서 (language.md §2) ----------------------------------------------
 
 LEX_CASES = [
     "",
@@ -173,7 +173,7 @@ def test_lexer_handles_its_own_source(cc):
     assert cc.tokens() == reference_tokens(src)
 
 
-# --- 2 단계: 파서 (SPEC.md §4, §5, §6) ---------------------------------------
+# --- 2 단계: 파서 (language.md §4, §5, §6) ---------------------------------------
 #
 # 양쪽 AST 를 같은 S-식으로 찍어서 문자열로 비교한다. 위치와 깊이까지 들어간다.
 
@@ -571,10 +571,10 @@ def test_parser_handles_its_own_source(cc):
     assert Dump(cc).program() == RefDump().program(src)
 
 
-# --- 3 단계: 검사기 (SPEC.md §3, §4, §6, §7) ---------------------------------
+# --- 3 단계: 검사기 (language.md §3, §4, §6, §7) ---------------------------------
 #
 # 방출이 아직 없으니 여기서 보는 것은 진단이다. 첫 오류의 위치와 문구가 바이트까지
-# 같아야 한다 (§12).
+# 같아야 한다 (implementation.md §9).
 
 CHECK_SOURCES = [
     # 타입 일치
@@ -776,7 +776,7 @@ def test_checker_agrees_on_generated_programs(cc):
             assert got[1] == want[1]
 
 
-# --- 4 단계: 방출 (SPEC.md §9, §11) ------------------------------------------
+# --- 4 단계: 방출 (implementation.md §8, §5) ------------------------------------------
 #
 # 여기서부터는 바이트 비교다.
 

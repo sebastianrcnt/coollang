@@ -1,7 +1,7 @@
 // ===========================================================================
 // cool0c -- the cool0 compiler, written in cool0
 //
-// It implements SPEC.md and must emit byte-identical output to cool0.py (S9).
+// It implements spec/ and must emit byte-identical output to cool0.py (implementation.md S8).
 //
 // This file uses only a narrow subset of cool0:
 //
@@ -19,7 +19,7 @@
 // field access through ld/st.
 // ===========================================================================
 
-// --- memory map (SPEC.md S8) ----------------------------------------------
+// --- memory map (implementation.md S7) ----------------------------------------------
 
 const OUT_PTR_ADDR: u32 = 0x0000;
 const OUT_LEN_ADDR: u32 = 0x0004;
@@ -86,7 +86,7 @@ fn put_num(v: u32) {
     put_ch('0' + v % 10);
 }
 
-// --- diagnostics (SPEC.md S12) ---------------------------------------------
+// --- diagnostics (implementation.md S9) ---------------------------------------------
 
 fn failed() -> bool { return ld(G_ERR) != 0; }
 
@@ -110,7 +110,7 @@ fn err_msg(line: u32, col: u32, s: []u8) {
     if err_open(line, col) { put_str(s); err_end(); }
 }
 
-// --- tokens (SPEC.md S2) ---------------------------------------------------
+// --- tokens (language.md S2) ---------------------------------------------------
 
 const TK_EOF: u32 = 0;
 const TK_IDENT: u32 = 1;
@@ -134,7 +134,7 @@ fn tok(i: u32) -> u32 { return ld(G_TOKS) + i * TOK_SIZE; }
 
 fn tk(i: u32, f: u32) -> u32 { return ld(tok(i) + f); }
 
-// keyword ids -- the order SPEC.md S2 lists them in
+// keyword ids -- the order language.md S2 lists them in
 const K_FN: u32 = 0;
 const K_STRUCT: u32 = 1;
 const K_ENUM: u32 = 2;
@@ -199,7 +199,7 @@ const P_NOT: u32 = 41;
 
 const NONE: u32 = 0xFFFF_FFFF;
 
-// --- lexer (SPEC.md S2) ----------------------------------------------------
+// --- lexer (language.md S2) ----------------------------------------------------
 
 // Byte predicates. Source is ASCII only.
 fn is_alpha(b: u32) -> bool {
@@ -267,7 +267,7 @@ fn kw_id(start: u32, len: u32) -> u32 {
     return NONE;
 }
 
-// longest match (S2)
+// longest match (language.md S2)
 fn punct_id(i: u32) -> u32 {
     if src_has(i, "<<=") { return P_SHLEQ; }
     if src_has(i, ">>=") { return P_SHREQ; }
@@ -332,7 +332,7 @@ fn push_tok(kind: u32, start: u32, len: u32, value: u32, line: u32, col: u32, au
     st(G_NTOK, ld(G_NTOK) + 1);
 }
 
-// One escape. Strings allow one more than chars do (S2).
+// One escape. Strings allow one more than chars do (language.md S2).
 fn escape_of(e: u32, in_string: bool) -> u32 {
     if e == 'n' { return 10; }
     if e == 't' { return 9; }
@@ -584,7 +584,7 @@ const N_NEXT: u32 = 32;    // sibling in a list
 const N_TY: u32 = 36;      // checker: type id
 const N_AUX: u32 = 40;     // checker: local, field, fn, ...
 const N_AUX2: u32 = 44;
-const N_DEPTH: u32 = 48;   // expression tree depth (S6)
+const N_DEPTH: u32 = 48;   // expression tree depth (language.md S6)
 
 // expressions
 const E_INT: u32 = 1;        // A value
@@ -603,7 +603,7 @@ const E_DEREF: u32 = 13;     // A base
 const E_STRUCTLIT: u32 = 14; // A name start, B name len, C fields, D struct info
 const E_LITFIELD: u32 = 15;  // A name start, B name len, C value
 
-// type syntax (SPEC.md S3)
+// type syntax (language.md S3)
 const T_PRIM: u32 = 20;      // A 0=i32 1=u32 2=bool 3=u8
 const T_NAMED: u32 = 21;     // A name start, B name len
 const T_SLICE: u32 = 22;     // A inner, B mut
@@ -812,7 +812,7 @@ fn expect_ident() -> u32 {
     return i;
 }
 
-// --- depth guards (SPEC.md S6) ---------------------------------------------
+// --- depth guards (language.md S6) ---------------------------------------------
 
 fn e_deep_expr(line: u32, col: u32) { err_msg(line, col, "expression nests too deeply"); }
 
@@ -840,7 +840,7 @@ fn depth_list(head: u32) -> u32 {
     return d;
 }
 
-// --- types (SPEC.md S3) ----------------------------------------------------
+// --- types (language.md S3) ----------------------------------------------------
 
 fn parse_ty() -> u32 {
     if failed() { return 0; }
@@ -892,7 +892,7 @@ fn parse_ty_inner() -> u32 {
     return 0;
 }
 
-// --- expressions (SPEC.md S5) ----------------------------------------------
+// --- expressions (language.md S5) ----------------------------------------------
 
 const CMP_LEVEL: u32 = 2;
 const NLEVELS: u32 = 9;
@@ -958,7 +958,7 @@ fn parse_cmp(asl: bool) -> u32 {
     return lhs;
 }
 
-// The `as` level. Unary binds tighter than `as` (S5).
+// The `as` level. Unary binds tighter than `as` (language.md S5).
 fn parse_unary(asl: bool) -> u32 {
     let mut e: u32 = parse_prefix(asl);
     for !failed() && at_kw(K_AS) {
@@ -1022,7 +1022,7 @@ fn parse_postfix(asl: bool) -> u32 {
         let line: u32 = cur_line();
         let col: u32 = cur_col();
         if at_p(P_LPAREN) {
-            // inside brackets the struct-literal restriction lifts (S5)
+            // inside brackets the struct-literal restriction lifts (language.md S5)
             bump();
             let mut head: u32 = 0;
             let mut tail: u32 = 0;
@@ -1151,7 +1151,7 @@ fn parse_struct_lit(line: u32, col: u32, s: u32, l: u32) -> u32 {
     return deep(n, depth_list(head));
 }
 
-// --- statements (SPEC.md S6) -----------------------------------------------
+// --- statements (language.md S6) -----------------------------------------------
 
 fn parse_block() -> u32 {
     if failed() { return 0; }
@@ -1363,7 +1363,7 @@ fn parse_match() -> u32 {
     return n;
 }
 
-// --- declarations (SPEC.md S4) ---------------------------------------------
+// --- declarations (language.md S4) ---------------------------------------------
 
 fn parse_fn() -> u32 {
     let line: u32 = cur_line();
@@ -1515,7 +1515,7 @@ fn parse_program() {
     st(G_DECLS, head);
 }
 
-// --- types, interned (SPEC.md S3) ------------------------------------------
+// --- types, interned (language.md S3) ------------------------------------------
 //
 // Structural types are hash-consed so that equality is address equality.
 
@@ -1605,7 +1605,7 @@ const LOC_NL: u32 = 4;
 const LOC_TY: u32 = 8;
 const LOC_MUT: u32 = 12;
 const LOC_PARAM: u32 = 16;
-const LOC_ADDR: u32 = 20;    // address-taken (S11)
+const LOC_ADDR: u32 = 20;    // address-taken (implementation.md S4)
 const LOC_SLOT: u32 = 24;
 const LOC_FOFF: u32 = 28;
 const LOC_NEXT: u32 = 32;
@@ -1723,7 +1723,7 @@ fn is_int_ty(t: u32) -> bool {
 
 fn is_aggregate(t: u32) -> bool { return ty_kind(t) == TYK_NAMED; }
 
-// The type a place yields when read: u8 reads as u32 (S3).
+// The type a place yields when read: u8 reads as u32 (language.md S3).
 fn read_ty(t: u32) -> u32 {
     if ty_kind(t) == TYK_U8 { return ty_u32(); }
     return t;
@@ -1892,7 +1892,7 @@ fn resolve_ty(t: u32) -> u32 {
     return ty_intern(TYK_PTR, resolve_ty(nd(t, N_A)), 0);
 }
 
-// --- string interning (S11) ------------------------------------------------
+// --- string interning (implementation.md S4) ------------------------------------------------
 
 fn bytes_eq(p1: u32, l1: u32, p2: u32, l2: u32) -> bool {
     if l1 != l2 { return false; }
@@ -1918,7 +1918,7 @@ fn intern_string(ptr: u32, len: u32) -> u32 {
     return ld(n + STR_ADDR);
 }
 
-// --- declaration collection (SPEC.md S4) -----------------------------------
+// --- declaration collection (language.md S4) -----------------------------------
 
 fn e_dup_toplevel(line: u32, col: u32, s: u32, l: u32) {
     if err_open(line, col) {
@@ -1973,7 +1973,7 @@ fn e_field_ty(line: u32, col: u32, what: u32, kind: u32, t: u32) {
     }
 }
 
-// Fields and payloads hold no aggregates and no borrows (S4).
+// Fields and payloads hold no aggregates and no borrows (language.md S4).
 fn check_field_ty(t: u32, line: u32, col: u32, what: u32) {
     if is_aggregate(t) { e_field_ty(line, col, what, 0, t); return; }
     if ty_kind(t) == TYK_REF { e_field_ty(line, col, what, 1, t); }
@@ -2073,7 +2073,7 @@ fn declare_enum(d: u32) {
         st(vi + VI_NS, nd(v, N_A));
         st(vi + VI_NL, nd(v, N_B));
         st(vi + VI_TAG, tag);
-        // the payload lays out like a struct, then sits at offset 4 (S4)
+        // the payload lays out like a struct, then sits at offset 4 (language.md S4)
         let mut phead: u32 = 0;
         let mut ptail: u32 = 0;
         let mut off: u32 = 0;
@@ -2168,7 +2168,7 @@ fn force_const(ci: u32, line: u32, col: u32) -> u32 {
     return ci;
 }
 
-// --- constant expressions (SPEC.md S4) -------------------------------------
+// --- constant expressions (language.md S4) -------------------------------------
 
 fn e_expected_ty(line: u32, col: u32, want: u32, got: u32) {
     if err_open(line, col) {
@@ -2465,7 +2465,7 @@ fn const_expr(e: u32, want: u32) -> u32 {
     return 0;
 }
 
-// --- function declarations (SPEC.md S4) ------------------------------------
+// --- function declarations (language.md S4) ------------------------------------
 
 fn e_dup_param(line: u32, col: u32, s: u32, l: u32) {
     if err_open(line, col) {
@@ -2656,7 +2656,7 @@ fn declare_local(s: u32, l: u32, t: u32, mutable: u32, is_param: u32,
     return loc;
 }
 
-// --- flow analysis (SPEC.md S6) --------------------------------------------
+// --- flow analysis (language.md S6) --------------------------------------------
 
 fn has_break(head: u32) -> bool {
     let mut s: u32 = head;
@@ -2953,7 +2953,7 @@ fn check_stmt(s: u32) {
     }
 }
 
-// --- match (SPEC.md S6) ----------------------------------------------------
+// --- match (language.md S6) ----------------------------------------------------
 
 fn e_match_needs_enum(line: u32, col: u32, t: u32) {
     if err_open(line, col) {
@@ -3286,7 +3286,7 @@ fn check_enum_lit(e: u32, want: u32) -> u32 {
     return self_ty;
 }
 
-// --- integer literals that have not settled (S2) ----------------------------
+// --- integer literals that have not settled (language.md S2) ----------------------------
 
 fn retype(e: u32, t: u32) {
     if ty_kind(nd(e, N_TY)) != TYK_INTLIT { return; }
@@ -3314,7 +3314,7 @@ fn coerce(e: u32, want: u32) -> u32 {
     return want;
 }
 
-// --- expressions (SPEC.md S5) ----------------------------------------------
+// --- expressions (language.md S5) ----------------------------------------------
 
 const G_PLACE_MUT: u32 = 0x00C0;
 const G_PLACE_ROOT: u32 = 0x00C4;
@@ -3514,7 +3514,7 @@ fn e_alias(line: u32, col: u32, s: u32, l: u32, twice: u32) {
     }
 }
 
-// SPEC.md S7 -- one rule.
+// language.md S7 -- one rule.
 fn check_aliasing(e: u32) {
     let line: u32 = nd(e, N_LINE);
     let col: u32 = nd(e, N_COL);
@@ -3765,7 +3765,7 @@ fn check_place(e: u32) -> u32 {
     return ty_i32();
 }
 
-// `s.len` is the one built-in field a slice has (S3).
+// `s.len` is the one built-in field a slice has (language.md S3).
 fn is_slice_len(e: u32) -> bool {
     if !src_eq(nd(e, N_B), nd(e, N_C), "len") { return false; }
     let base: u32 = nd(e, N_A);
@@ -3894,7 +3894,7 @@ fn check_expr_inner(e: u32, want: u32) -> u32 {
     return ty_i32();
 }
 
-// --- the whole check (SPEC.md S4) ------------------------------------------
+// --- the whole check (language.md S4) ------------------------------------------
 
 fn check_program() {
     st(G_TYPES, 0);
@@ -3925,7 +3925,7 @@ fn check_program() {
     st(G_SCOPE_N, 0);
     st(G_MARKS_N, 0);
 
-    // pass one: gather declarations. Top level is order-independent (S4)
+    // pass one: gather declarations. Top level is order-independent (language.md S4)
     let mut d: u32 = ld(G_DECLS);
     for d != 0 && !failed() {
         claim(d);
@@ -3985,7 +3985,7 @@ fn check_program() {
     }
 }
 
-// --- wasm encoding (SPEC.md S11) -------------------------------------------
+// --- wasm encoding (implementation.md S5) -------------------------------------------
 
 const SEC_TYPE: u32 = 1;
 const SEC_FUNC: u32 = 3;
@@ -4109,7 +4109,7 @@ fn b_idx(op: u32, i: u32) {
     w_u(G_B, i);
 }
 
-// memarg: alignment, then an offset that is always 0 (S11)
+// memarg: alignment, then an offset that is always 0 (implementation.md S5)
 fn b_mem(op: u32, align: u32) {
     w_ch(G_B, op);
     w_u(G_B, align);
@@ -4126,7 +4126,7 @@ fn s_ch(c: u32) { w_ch(G_S, c); }
 
 fn s_u(n: u32) { w_u(G_S, n); }
 
-// --- temporaries (S11) -----------------------------------------------------
+// --- temporaries (implementation.md S4) -----------------------------------------------------
 
 fn temp() -> u32 {
     if ld(G_FREE_N) != 0 {
@@ -4184,7 +4184,7 @@ fn depth_to(k: u32) -> u32 {
     return 0;
 }
 
-// --- storage assignment (S11) ----------------------------------------------
+// --- storage assignment (implementation.md S4) ----------------------------------------------
 
 fn loc_in_memory(loc: u32) -> bool {
     return is_aggregate(ld(loc + LOC_TY)) || ld(loc + LOC_ADDR) != 0;
@@ -4277,7 +4277,7 @@ fn emit_addr(e: u32) {
         return;
     }
     if k == E_DEREF { emit_expr(nd(e, N_A)); return; }
-    // E_INDEX -- bounds checked (S5)
+    // E_INDEX -- bounds checked (language.md S5)
     let tp: u32 = temp();
     let tl: u32 = temp();
     let tix: u32 = temp();
@@ -4542,7 +4542,7 @@ fn is_agg_lit(e: u32) -> bool {
     return false;
 }
 
-// The literal is written straight into the destination -- no copy (S5).
+// The literal is written straight into the destination -- no copy (language.md S5).
 fn emit_agg_init(ta: u32, init: u32) {
     if nd(init, N_KIND) == E_STRUCTLIT {
         let mut lf: u32 = nd(init, N_C);
@@ -4764,7 +4764,7 @@ fn emit_fn(fi: u32) {
         b_op(OP_I32_SUB);
         b_idx(OP_GLOBAL_SET, 0);
     }
-    // a parameter whose address is taken is copied into the frame (S11)
+    // a parameter whose address is taken is copied into the frame (implementation.md S6)
     let mut loc: u32 = ld(fi + FN_LOCALS);
     for loc != 0 {
         if ld(loc + LOC_PARAM) != 0 && ld(loc + LOC_FOFF) != NONE {
@@ -4809,7 +4809,7 @@ fn emit_fn(fi: u32) {
     w_copy(G_S, S1, codelen);
 }
 
-// --- the module (SPEC.md S11) ----------------------------------------------
+// --- the module (implementation.md S4) ----------------------------------------------
 
 fn sig_of(fi: u32) -> u32 {
     let mut n: u32 = 0;
@@ -4968,7 +4968,7 @@ fn emit_module() {
     }
 }
 
-// --- entry point (SPEC.md S8) ----------------------------------------------
+// --- entry point (implementation.md S7) ----------------------------------------------
 
 fn compile(src_len_in: u32) -> i32 {
     st(G_SRCLEN, src_len_in);

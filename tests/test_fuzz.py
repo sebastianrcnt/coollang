@@ -39,7 +39,7 @@ def check_total(src: bytes):
     if status == STATUS_ERR:
         assert out.endswith(b"\n")
         assert out.count(b"\n") == 1
-        out.decode("ascii")  # 진단은 ASCII 다 (§8)
+        out.decode("ascii")  # 진단은 ASCII 다 (implementation.md §7)
     else:
         wasmtime.Module(ENGINE, bytes(out))  # 성공했으면 검증을 통과해야 한다
     return status, out
@@ -157,7 +157,7 @@ class ProgramGen:
                 vars = dict(vars, **{name: ty})
                 mut = mut | {name}
             elif kind == "assign":
-                pool = sorted(mut)  # 매개변수는 불변이다 (§6)
+                pool = sorted(mut)  # 매개변수는 불변이다 (language.md §6)
                 if not pool:
                     continue
                 name = self.choice(pool)
@@ -312,7 +312,7 @@ def run_u32(src: str, name: str, *args) -> int:
     return inst.exports(store)[name](store, *args) & U32
 
 
-# --- 전역성: 어떤 입력에도 재귀로 죽지 않는다 (§6 중첩 한계) ------------------
+# --- 전역성: 어떤 입력에도 재귀로 죽지 않는다 (language.md §6 중첩 한계) ------------------
 
 
 @pytest.mark.parametrize(

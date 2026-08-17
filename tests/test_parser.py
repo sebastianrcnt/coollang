@@ -1,4 +1,4 @@
-"""구문 분석 (SPEC.md §4, §5, §6)."""
+"""구문 분석 (language.md §4, §5, §6)."""
 
 import pytest
 
@@ -53,7 +53,7 @@ def shape(e):
     return type(e).__name__
 
 
-# --- 우선순위 (§5) ---------------------------------------------------------
+# --- 우선순위 (language.md §5) ---------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -110,7 +110,7 @@ def test_comparison_chain_via_parens_is_fine():
     assert shape(expr("(a < b) < c")) == "((a < b) < c)"
 
 
-# --- 선언 (§4) -------------------------------------------------------------
+# --- 선언 (language.md §4) -------------------------------------------------------------
 
 
 def test_function_without_return_type():
@@ -169,7 +169,7 @@ def test_nested_types():
     assert t.kind == "slice" and t.mut and t.inner.kind == "ptr"
 
 
-# --- 문 (§6) ---------------------------------------------------------------
+# --- 문 (language.md §6) ---------------------------------------------------------------
 
 
 def test_let_forms():

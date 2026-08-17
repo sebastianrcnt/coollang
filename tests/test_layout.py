@@ -1,6 +1,6 @@
-"""배치와 상수 접기 (SPEC.md §4).
+"""배치와 상수 접기 (language.md §4).
 
-배치가 결정적이지 않으면 §9 의 바이트 패리티가 성립하지 않는다. 그래서 오프셋을
+배치가 결정적이지 않으면 implementation.md §8 의 바이트 패리티가 성립하지 않는다. 그래서 오프셋을
 직접 들여다본다.
 """
 
@@ -22,7 +22,7 @@ def offsets(src: str, name: str = "S"):
     return [(f.name, f.off) for f in s.fields], s.size, s.align
 
 
-# --- struct (§4) -----------------------------------------------------------
+# --- struct (language.md §4) -----------------------------------------------------------
 
 
 def test_fields_are_in_declaration_order():
@@ -77,7 +77,7 @@ def test_field_types_are_resolved():
     assert [f.ty for f in s.fields] == [I32, U32, BOOL, U8, Slice(U8, True)]
 
 
-# --- enum (§4) -------------------------------------------------------------
+# --- enum (language.md §4) -------------------------------------------------------------
 
 
 def enum_of(src: str, name: str = "E"):
@@ -116,7 +116,7 @@ def test_enum_alignment_is_always_four():
     assert enum_of("enum E { A(u8) }").align == 4
 
 
-# --- const 접기 (§4) -------------------------------------------------------
+# --- const 접기 (language.md §4) -------------------------------------------------------
 
 
 def const_value(src: str, name: str = "C"):
@@ -169,7 +169,7 @@ def test_const_cast_reinterprets():
     assert const_value("const C: u32 = -1 as u32;") == 0xFFFFFFFF
 
 
-# --- 문자열 상수 (§11) -----------------------------------------------------
+# --- 문자열 상수 (implementation.md §4) -----------------------------------------------------
 
 
 def test_identical_strings_share_an_address():

@@ -1,6 +1,6 @@
-"""방출 규약 (SPEC.md §9, §11).
+"""방출 규약 (implementation.md §8, §5).
 
-§9 가 요구하는 것은 바이트 단위 결정론이다. 그래서 여기서는 모듈을 직접 뜯어본다.
+implementation.md §8 이 요구하는 것은 바이트 단위 결정론이다. 그래서 여기서는 모듈을 직접 뜯어본다.
 """
 
 import pytest
@@ -90,7 +90,7 @@ def test_add_function_is_exact():
            20 01                     # local.get 1
            6a                        # i32.add
            0f                        # return
-           00                        # unreachable  (§11 -- 값 함수의 꼬리)
+           00                        # unreachable  (implementation.md §5 -- 값 함수의 꼬리)
            0b                        # end
         """
     )
@@ -129,7 +129,7 @@ def test_module_with_no_functions_is_valid():
     assert [n for n, _ in sections(wasm)] == ["memory", "global", "export"]
 
 
-# --- export (§8, §11) -------------------------------------------------------
+# --- export (implementation.md §7, §4) -------------------------------------------------------
 
 
 def export_names(wasm: bytes):
@@ -151,7 +151,7 @@ def test_export_order_follows_declaration_order():
     assert export_names(compile_ok(src)) == ["z", "a", "m", "memory"]
 
 
-# --- 타입 섹션 (§11) --------------------------------------------------------
+# --- 타입 섹션 (implementation.md §4) --------------------------------------------------------
 
 
 def test_signatures_are_deduplicated_in_first_use_order():
@@ -176,7 +176,7 @@ def test_borrow_parameters_are_one_i32():
     assert section(compile_ok(src), "type") == bytes([0x01, 0x60, 0x01, 0x7F, 0x00])
 
 
-# --- 결정론 (§9) ------------------------------------------------------------
+# --- 결정론 (implementation.md §8) ------------------------------------------------------------
 
 DETERMINISM_SRC = """
 struct Point { x: i32, y: i32 }
@@ -197,7 +197,7 @@ def test_same_source_gives_the_same_bytes():
 
 
 def test_comments_and_whitespace_do_not_change_the_bytes():
-    # 소스는 ASCII 전용이라 주석도 ASCII 다 (§2)
+    # 소스는 ASCII 전용이라 주석도 ASCII 다 (language.md §2)
     noisy = DETERMINISM_SRC.replace("\n", "  // noise\n").replace("{", "{\n\t")
     assert compile_ok(noisy) == compile_ok(DETERMINISM_SRC)
 
@@ -206,7 +206,7 @@ def test_everything_validates():
     validate(compile_ok(DETERMINISM_SRC))
 
 
-# --- 코드 생성의 균일함 (§11) ------------------------------------------------
+# --- 코드 생성의 균일함 (implementation.md §5) ------------------------------------------------
 
 
 def code_body(wasm: bytes) -> bytes:
@@ -217,7 +217,7 @@ def code_body(wasm: bytes) -> bytes:
 
 
 def test_memarg_offset_is_always_zero():
-    """§11 -- 오프셋 즉치값은 0 이고 주소는 i32.add 로 만든다."""
+    """implementation.md §5 -- 오프셋 즉치값은 0 이고 주소는 i32.add 로 만든다."""
     src = "struct S { a: i32, b: i32 } fn f(p: &S) -> i32 { return p.^.b; }"
     body = code_body(compile_ok(src))
     # local.get 0, i32.const 4, i32.add, i32.load align=2 offset=0
@@ -273,7 +273,7 @@ def test_void_function_does_not_end_with_unreachable():
 
 
 def test_slice_field_store_is_two_stores():
-    """§11 -- 슬라이스는 메모리에서도 두 조각이다."""
+    """implementation.md §2 -- 슬라이스는 메모리에서도 두 조각이다."""
     src = 'struct S { s: []u8 } fn f() { let x: S = S{ s: "hi" }; }'
     body = code_body(compile_ok(src))
     assert body.count(bytes([0x36, 0x02, 0x00])) == 2  # i32.store 두 번

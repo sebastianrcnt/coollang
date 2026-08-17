@@ -1,4 +1,4 @@
-"""패리티 (SPEC.md §9).
+"""패리티 (implementation.md §8).
 
     cool0.py(src)      -> (status, bytes)
     cool0c.wasm(src)   -> (status, bytes)      완전히 같아야 한다
@@ -46,7 +46,7 @@ needs_cool0c = pytest.mark.skipif(
 
 
 def cool0c_compile(src: bytes) -> tuple[int, bytes]:
-    """§8 의 ABI 그대로 호출한다."""
+    """implementation.md §7 의 ABI 그대로 호출한다."""
     return run_compiler(WASM, src)
 
 

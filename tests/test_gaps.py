@@ -1,8 +1,8 @@
-"""한 번도 실행된 적이 없던 경로들 (SPEC.md §9).
+"""한 번도 실행된 적이 없던 경로들 (implementation.md §8).
 
 참조 구현에 커버리지를 걸어 보면 어떤 줄은 어떤 테스트에도 걸리지 않았다. 그런 줄은
 "두 구현이 일치한다"가 **아직 증명되지 않은** 곳이다 -- 특히 주소를 취한 매개변수의
-프롤로그(§11)는 방출기의 열여섯 줄이 통째로 죽어 있었다.
+프롤로그(implementation.md §5)는 방출기의 열여섯 줄이 통째로 죽어 있었다.
 
 여기서는 그 자리를 하나씩 겨냥해서 세 구현을 모두 맞춰 본다:
 
@@ -78,7 +78,7 @@ def run(src: str, fn: str, *args):
 
 
 def test_address_taken_scalar_parameter():
-    """§11 -- 주소를 취한 매개변수는 프롤로그에서 프레임으로 복사된다."""
+    """implementation.md §6 -- 주소를 취한 매개변수는 프롤로그에서 프레임으로 복사된다."""
     src = "fn peek(x: &u32) -> u32 { return x.^; } fn f(n: u32) -> u32 { return peek(&n); }"
     assert run(src, "f", 12345) == 12345
 
@@ -158,7 +158,7 @@ fn f(a: []mut R) -> u32 { take(&mut a[0]); return a[0].id; }
     assert ex["f"](store, 0x7000, 2) == 1
 
 
-# --- 섀도 스택의 바닥 (SPEC.md §8, §11) ---------------------------------------
+# --- 섀도 스택의 바닥 (implementation.md §7) ---------------------------------------
 
 DEEP = """
 struct Frame { a: u32, b: u32 }
@@ -195,7 +195,7 @@ def test_shadow_stack_holds_to_the_documented_floor():
 
 
 def test_shadow_stack_overflow_corrupts_the_abi_before_it_traps():
-    """§11 은 "넘치면 결국 트랩"이라 하지만, 그 전에 out_ptr/out_len 을 덮는다.
+    """implementation.md §6 은 "넘치면 결국 트랩"이라 하지만, 그 전에 out_ptr/out_len 을 덮는다.
 
     이것은 문서화된 동작이 아니라 문서가 부정확했던 것이다. 여기서 그 창을 못박아
     둔다 -- 고치든 명세를 고치든, 먼저 재현이 있어야 한다.
@@ -220,7 +220,7 @@ def test_compound_shift_assignment_runs():
     src = ("fn f(a: u32, n: u32) -> u32 { let mut x: u32 = a; x <<= n; x >>= 1; return x; }"
            "fn g(a: i32, n: u32) -> i32 { let mut x: i32 = a; x >>= n; return x; }")
     assert run(src, "f", 1, 5) == 16
-    assert run(src, "g", -16, 2) == -4          # i32 는 산술 시프트다 (§5)
+    assert run(src, "g", -16, 2) == -4          # i32 는 산술 시프트다 (language.md §5)
     src2 = ("fn f(a: u32, n: u32) -> u32 { let mut x: u32 = a; x >>= n; return x; }")
     assert run(src2, "f", -1, 4) & 0xFFFFFFFF == 0x0FFFFFFF   # u32 는 논리 시프트
 

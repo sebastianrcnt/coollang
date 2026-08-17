@@ -29,7 +29,7 @@
 ;;   a[i] on []u8             bounds check, then i32.load8_u
 ;;
 ;; Named constants are inlined as numbers -- wat has none. The table is
-;; SPEC.md plus the const block at the top of cool0c.cool0.
+;; spec/language.md plus the const block at the top of cool0c.cool0.
 ;;
 ;; String literals live in one data segment at 0x1000000, laid out in first
 ;; appearance order, exactly as cool0c.cool0 lays out its own.
@@ -111,7 +111,7 @@
         (then (call $put_num (i32.div_u (local.get $v) (i32.const 10)))))
     (call $put_ch (i32.add (i32.const 48) (i32.rem_u (local.get $v) (i32.const 10)))))
 
-  ;; --- diagnostics (SPEC.md S12) ------------------------------------------
+  ;; --- diagnostics (implementation.md S9) ------------------------------------------
 
   (func $failed (export "failed") (result i32)
     (i32.ne (call $ld (i32.const 20)) (i32.const 0)))
@@ -144,7 +144,7 @@
   (func $tk (export "tk") (param $i i32) (param $f i32) (result i32)
     (call $ld (i32.add (call $tok (local.get $i)) (local.get $f))))
 
-  ;; --- lexer (SPEC.md S2) -------------------------------------------------
+  ;; --- lexer (language.md S2) -------------------------------------------------
 
   (func $is_alpha (export "is_alpha") (param $b i32) (result i32)
     (if (result i32)
@@ -839,7 +839,7 @@
     (call $bump)
     (local.get $i))
 
-  ;; --- depth guards (SPEC.md S6) ------------------------------------------
+  ;; --- depth guards (language.md S6) ------------------------------------------
 
   (func $e_deep_expr (export "e_deep_expr") (param $line i32) (param $col i32)
     (call $err_msg (local.get $line) (local.get $col)
@@ -873,7 +873,7 @@
       (br $cont)))
     (local.get $d))
 
-  ;; --- types (SPEC.md S3) -------------------------------------------------
+  ;; --- types (language.md S3) -------------------------------------------------
 
   (func $parse_ty (export "parse_ty") (result i32)
     (local $t i32)
@@ -939,7 +939,7 @@
     (call $e_expected_str (i32.const 0x1000257) (i32.const 13))
     (i32.const 0))
 
-  ;; --- expressions (SPEC.md S5) -------------------------------------------
+  ;; --- expressions (language.md S5) -------------------------------------------
 
   (func $is_cmp (export "is_cmp") (param $p i32) (result i32)
     (if (i32.eq (local.get $p) (i32.const 4)) (then (return (i32.const 1))))
@@ -1274,7 +1274,7 @@
     (call $nset (local.get $n) (i32.const 20) (local.get $head))
     (call $deep (local.get $n) (call $depth_list (local.get $head))))
 
-  ;; --- statements (SPEC.md S6) --------------------------------------------
+  ;; --- statements (language.md S6) --------------------------------------------
 
   (func $parse_block (export "parse_block") (result i32)
     (local $head i32) (local $tail i32) (local $s i32)
@@ -1520,7 +1520,7 @@
     (call $nset (local.get $n) (i32.const 16) (local.get $head))
     (local.get $n))
 
-  ;; --- declarations (SPEC.md S4) ------------------------------------------
+  ;; --- declarations (language.md S4) ------------------------------------------
 
   (func $parse_fn (export "parse_fn") (result i32)
     (local $line i32) (local $col i32) (local $n i32) (local $it i32)
@@ -1712,7 +1712,7 @@
       (br $cont)))
     (call $st (i32.const 64) (local.get $head)))
 
-  ;; --- types, interned (SPEC.md S3) ---------------------------------------
+  ;; --- types, interned (language.md S3) ---------------------------------------
 
   (func $ty_kind (export "ty_kind") (param $t i32) (result i32)
     (call $ld (i32.add (local.get $t) (i32.const 0))))
@@ -2043,7 +2043,7 @@
     (call $ty_intern (i32.const 8)
           (call $resolve_ty (call $nd (local.get $t) (i32.const 12))) (i32.const 0)))
 
-  ;; --- string interning (S11) ---------------------------------------------
+  ;; --- string interning (implementation.md S4) ---------------------------------------------
 
   (func $bytes_eq (export "bytes_eq") (param $p1 i32) (param $l1 i32)
                   (param $p2 i32) (param $l2 i32) (result i32)
@@ -2082,7 +2082,7 @@
     (call $list_append (i32.const 140) (i32.const 144) (local.get $n) (i32.const 12))
     (call $ld (i32.add (local.get $n) (i32.const 8))))
 
-  ;; --- declaration collection (SPEC.md S4) --------------------------------
+  ;; --- declaration collection (language.md S4) --------------------------------
 
   (func $e_dup_toplevel (export "e_dup_toplevel") (param $line i32) (param $col i32)
                         (param $s i32) (param $l i32)
@@ -2401,7 +2401,7 @@
     (call $st (i32.add (local.get $ci) (i32.const 16)) (i32.const 2))
     (local.get $ci))
 
-  ;; --- constant expressions (SPEC.md S4) ----------------------------------
+  ;; --- constant expressions (language.md S4) ----------------------------------
 
   (func $e_expected_ty (export "e_expected_ty") (param $line i32) (param $col i32)
                        (param $want i32) (param $got i32)
@@ -2806,7 +2806,7 @@
     (call $st (i32.const 180) (call $ty_i32))
     (i32.const 0))
 
-  ;; --- function declarations (SPEC.md S4) ---------------------------------
+  ;; --- function declarations (language.md S4) ---------------------------------
 
   (func $e_dup_param (export "e_dup_param") (param $line i32) (param $col i32)
                      (param $s i32) (param $l i32)
@@ -3033,7 +3033,7 @@
     (call $st (i32.add (local.get $fi) (i32.const 32)) (local.get $loc))
     (local.get $loc))
 
-  ;; --- flow analysis (SPEC.md S6) -----------------------------------------
+  ;; --- flow analysis (language.md S6) -----------------------------------------
 
   (func $has_break (export "has_break") (param $head i32) (result i32)
     (local $s i32) (local $k i32) (local $a i32)
@@ -3408,7 +3408,7 @@
           (call $st (i32.const 176) (i32.sub (call $ld (i32.const 176)) (i32.const 1)))
           (return))))
 
-  ;; --- match (SPEC.md S6) -------------------------------------------------
+  ;; --- match (language.md S6) -------------------------------------------------
 
   (func $e_match_needs_enum (export "e_match_needs_enum") (param $line i32)
                             (param $col i32) (param $t i32)
@@ -3828,7 +3828,7 @@
     (call $nset (local.get $e) (i32.const 36) (local.get $self_ty))
     (local.get $self_ty))
 
-  ;; --- integer literals that have not settled (S2) ------------------------
+  ;; --- integer literals that have not settled (language.md S2) ------------------------
 
   (func $retype (export "retype") (param $e i32) (param $t i32)
     (local $k i32) (local $op i32)
@@ -3866,7 +3866,7 @@
               (return (local.get $want))))
     (local.get $want))
 
-  ;; --- expressions (SPEC.md S5) -------------------------------------------
+  ;; --- expressions (language.md S5) -------------------------------------------
 
   (func $int_want (export "int_want") (param $want i32) (result i32)
     (local $k i32)
@@ -4605,7 +4605,7 @@
     (call $err_msg (local.get $line) (local.get $col) (i32.const 0x100028A) (i32.const 19))
     (call $ty_i32))
 
-  ;; --- the whole check (SPEC.md S4) ---------------------------------------
+  ;; --- the whole check (language.md S4) ---------------------------------------
 
   (func $check_program (export "check_program")
     (local $d i32) (local $k i32) (local $index i32) (local $fi i32)
@@ -4735,7 +4735,7 @@
         (local.set $fi (call $ld (i32.add (local.get $fi) (i32.const 48)))))
       (br $cont8))))
 
-  ;; --- byte writers (SPEC.md S11) -----------------------------------------
+  ;; --- byte writers (implementation.md S5) -----------------------------------------
 
   (func $w_ch (export "w_ch") (param $g i32) (param $c i32)
     (call $stb (call $ld (local.get $g)) (local.get $c))
@@ -4824,7 +4824,7 @@
 
   (func $s_u (export "s_u") (param $n i32) (call $w_u (i32.const 204) (local.get $n)))
 
-  ;; --- temporaries (S11) --------------------------------------------------
+  ;; --- temporaries (implementation.md S4) --------------------------------------------------
 
   (func $temp (export "temp") (result i32)
     (local $fi i32) (local $i i32)
@@ -4902,7 +4902,7 @@
       (br $cont)))
     (i32.const 0))
 
-  ;; --- storage assignment (S11) -------------------------------------------
+  ;; --- storage assignment (implementation.md S4) -------------------------------------------
 
   (func $loc_in_memory (export "loc_in_memory") (param $loc i32) (result i32)
     (if (result i32) (call $is_aggregate (call $ld (i32.add (local.get $loc) (i32.const 8))))
@@ -5641,7 +5641,7 @@
               (call $s_ch (i32.const 127))))
     (call $w_copy (i32.const 204) (i32.const 8388608) (local.get $codelen)))
 
-  ;; --- the module (SPEC.md S11) -------------------------------------------
+  ;; --- the module (implementation.md S4) -------------------------------------------
 
   (func $sig_of (export "sig_of") (param $fi i32) (result i32)
     (local $n i32) (local $p i32)
@@ -5837,7 +5837,7 @@
             (br $cont8)))
           (call $end_section (i32.const 11)))))
 
-  ;; --- entry point (SPEC.md S8) -------------------------------------------
+  ;; --- entry point (implementation.md S7) -------------------------------------------
 
   (func $compile (export "compile") (param $src_len_in i32) (result i32)
     (call $st (i32.const 16) (local.get $src_len_in))

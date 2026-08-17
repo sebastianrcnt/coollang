@@ -1,4 +1,4 @@
-"""의미 분석 (SPEC.md §3, §4, §6, §7).
+"""의미 분석 (language.md §3, §4, §6, §7).
 
 명세가 금지한 것 하나하나에 시험이 하나씩 붙는다.
 """
@@ -73,7 +73,7 @@ def test_can_equate_bools():
     compile_ok(fn("let a = true == false;"))
 
 
-# --- u8 은 저장 전용 (§3) ---------------------------------------------------
+# --- u8 은 저장 전용 (language.md §3) ---------------------------------------------------
 
 
 def test_no_u8_locals():
@@ -92,7 +92,7 @@ def test_u8_reads_as_u32():
     compile_ok("struct S { b: u8 } " + fn("let s: S = S{ b: 1 }; let x: u32 = s.b;"))
 
 
-# --- 집합체 (§3, §4) --------------------------------------------------------
+# --- 집합체 (language.md §3, §4) --------------------------------------------------------
 
 
 def test_cannot_pass_aggregate_by_value():
@@ -176,7 +176,7 @@ def test_string_literal_is_immutable_slice():
     )
 
 
-# --- 가변성 (§6) -----------------------------------------------------------
+# --- 가변성 (language.md §6) -----------------------------------------------------------
 
 
 def test_cannot_assign_to_immutable_local():
@@ -207,7 +207,7 @@ def test_field_mutability_follows_the_root():
     assert "immutable place" in compile_err(src)
 
 
-# --- 대여 (§7) -------------------------------------------------------------
+# --- 대여 (language.md §7) -------------------------------------------------------------
 
 
 def test_borrow_only_in_argument_position():
@@ -264,7 +264,7 @@ def test_distinct_variables_are_fine():
 
 
 def test_passing_a_borrow_parameter_twice_is_fine():
-    # 새 대여를 만드는 것이 아니다 (§7)
+    # 새 대여를 만드는 것이 아니다 (language.md §7)
     compile_ok(ALIAS_SRC + "fn g(p: &S) { two(p, p); }")
 
 
@@ -287,7 +287,7 @@ def test_borrow_type_must_match():
     assert "expected `&S`, found `&mut S`" in compile_err(src)
 
 
-# --- match (§6) ------------------------------------------------------------
+# --- match (language.md §6) ------------------------------------------------------------
 
 
 ENUM_SRC = "enum E { A, B(i32), C(i32, u32) }\n"
@@ -344,7 +344,7 @@ def test_enum_literal_only_as_initializer():
     assert "enum literal is only allowed as an initializer" in compile_err(src)
 
 
-# --- unsafe (§6) -----------------------------------------------------------
+# --- unsafe (language.md §6) -----------------------------------------------------------
 
 
 def test_raw_deref_needs_unsafe():
@@ -366,7 +366,7 @@ def test_unsafe_does_not_unlock_anything_else():
     assert "cannot pass aggregate" in compile_err(src)
 
 
-# --- 흐름 (§6) -------------------------------------------------------------
+# --- 흐름 (language.md §6) -------------------------------------------------------------
 
 
 def test_missing_return():
@@ -481,7 +481,7 @@ def test_mutual_recursion():
     )
 
 
-# --- const (§4) ------------------------------------------------------------
+# --- const (language.md §4) ------------------------------------------------------------
 
 
 def test_const_must_be_scalar():

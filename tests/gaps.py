@@ -60,7 +60,7 @@ GAPS = [
 
 # 컴파일에 성공해야 하는 것들. 방출기의 빈 경로를 때린다
 GAP_PROGRAMS = [
-    # 주소를 취한 매개변수 -- 프롤로그가 프레임으로 복사한다 (S11)
+    # 주소를 취한 매개변수 -- 프롤로그가 프레임으로 복사한다 (implementation.md S6)
     ("""
 fn peek(x: &u32) -> u32 { return x.^; }
 fn f(n: u32) -> u32 { return peek(&n); }

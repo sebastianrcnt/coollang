@@ -1,4 +1,4 @@
-"""어휘 분석 (SPEC.md §2)."""
+"""어휘 분석 (language.md §2)."""
 
 import pytest
 
