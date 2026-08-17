@@ -158,7 +158,12 @@ fn f(a: []mut R) -> u32 { take(&mut a[0]); return a[0].id; }
     assert ex["f"](store, 0x7000, 2) == 1
 
 
-# --- 섀도 스택의 바닥 (implementation.md §7) ---------------------------------------
+# --- 섀도 스택의 바닥 (implementation.md §6, §7) -----------------------------------
+#
+# 섀도 스택은 이제 0x0180_0000..0x0200_0000 (8 MiB) 이고, 프레임을 쓰는 함수의
+# 프롤로그는 $sp 가 SHADOW_FLOOR 아래로 내려가면 unreachable 로 트랩한다
+# (implementation.md §6). 그래서 넘치면 "언젠가 트랩"이 아니라 "ABI 슬롯을
+# 건드리기 전에 깨끗하게 트랩"이어야 한다.
 
 DEEP = """
 struct Frame { a: u32, b: u32 }
@@ -169,10 +174,32 @@ fn depth(n: u32) -> u32 {
 }
 """
 
+# 8바이트짜리 작은 프레임으로는 8 MiB 를 다 채우기 한참 전에 wasmtime 자신의
+# 고유 호출 스택 한계가 먼저 온다. 그 한계보다 훨씬 앞에서 우리 바닥 검사가
+# 걸리는 것을 보려면 프레임을 크게 만들어야 한다 -- 필드가 많은 struct 하나면
+# 된다.
+_BIG_NFIELDS = 150
+_BIG_FRAME_SIZE = _BIG_NFIELDS * 4  # 전부 u32
+DEEP_BIG = (
+    "struct Frame { " + ", ".join(f"f{i}: u32" for i in range(_BIG_NFIELDS)) + " }\n"
+    "fn depth(n: u32) -> u32 {\n"
+    "    let mut fr: Frame = Frame{ "
+    + ", ".join(f"f{i}: n" for i in range(_BIG_NFIELDS)) + " };\n"
+    "    if n == 0 { return fr.f0; }\n"
+    "    return depth(n - 1) + 1;\n"
+    "}\n"
+)
 
-def deep_call(n: int):
+# implementation.md §7: SHADOW_FLOOR = 0x0180_0000, $sp 초기값 = 0x0200_0000.
+# depth(n) 은 n+1 번 프레임을 민다 (n, n-1, ..., 0). 처음으로 $sp 가
+# SHADOW_FLOOR 아래로 내려가는 n 이 트랩하는 첫 깊이다.
+_SHADOW_RANGE = 0x0200_0000 - 0x0180_0000
+_BIG_TRIP_N = (_SHADOW_RANGE + _BIG_FRAME_SIZE - 1) // _BIG_FRAME_SIZE - 1
+
+
+def deep_call(src: str, n: int):
     """depth(n) 을 부르고, 호스트 ABI 슬롯이 성했는지 함께 돌려준다."""
-    status, wasm = reference_compile(DEEP.encode("ascii"))
+    status, wasm = reference_compile(src.encode("ascii"))
     assert status == STATUS_OK
     store = wasmtime.Store(ENGINE)
     inst = wasmtime.Instance(store, wasmtime.Module(ENGINE, wasm), [])
@@ -187,33 +214,29 @@ def deep_call(n: int):
 
 
 def test_shadow_stack_holds_to_the_documented_floor():
-    """프레임 8바이트 * 510 = 4080 = 0x1000 - 0x10. 거기까지는 성해야 한다."""
-    for n in (100, 400, 509):
-        outcome, abi = deep_call(n)
+    """8 MiB 짜리 영역이니, 작은 프레임(8바이트)으로는 wasmtime 의 고유 호출
+    스택 한계가 먼저 온다. 그 한계 안에서는 훨씬 깊이 들어가도 성해야 한다."""
+    for n in (1000, 8000, 15000):
+        outcome, abi = deep_call(DEEP, n)
         assert outcome == "ok", n
         assert abi == bytes([0xAA] * 8), n
 
 
-def test_shadow_stack_overflow_corrupts_the_abi_before_it_traps():
-    """implementation.md §6 은 "넘치면 결국 트랩"이라 하지만, 그 전에 out_ptr/out_len 을 덮는다.
-
-    이것은 문서화된 동작이 아니라 문서가 부정확했던 것이다. 여기서 그 창을 못박아
-    둔다 -- 고치든 명세를 고치든, 먼저 재현이 있어야 한다.
+def test_shadow_stack_overflow_traps_cleanly_without_corrupting_the_abi():
+    """implementation.md §6 -- 섀도 스택을 메모리 위쪽(8 MiB)으로 옮기고 프롤로그에
+    바닥 검사를 두었다. 큰 프레임을 써서 wasmtime 의 고유 호출 스택 한계보다 훨씬
+    앞에서 우리 검사가 걸리게 만들면, 넘칠 때 ABI 슬롯이 성한 채로 깨끗하게
+    트랩하는 것을 볼 수 있다 -- implementation.md §7 이 개정 전에 기록했던
+    "조용히 out_ptr/out_len 을 덮는다"는 더 이상 일어나지 않는다.
     """
-    # 511 프레임: sp 가 8 까지 내려가 예약 슬롯(0x08)을 덮는다. 조용하다
-    outcome, abi = deep_call(510)
+    outcome, abi = deep_call(DEEP_BIG, _BIG_TRIP_N - 1)
     assert outcome == "ok"
     assert abi == bytes([0xAA] * 8), "아직 ABI 슬롯은 성하다"
 
-    # 512 프레임: sp 가 0 이 되어 out_ptr 과 out_len 을 덮어쓴다. 그래도 "성공"이다
-    outcome, abi = deep_call(511)
-    assert outcome == "ok"
-    assert abi != bytes([0xAA] * 8), "여기서 호스트 ABI 가 조용히 깨진다"
-
-    # 513 프레임부터는 주소가 음수가 되어 트랩한다
-    for n in (512, 600, 1000):
-        outcome, _ = deep_call(n)
+    for n in (_BIG_TRIP_N, _BIG_TRIP_N + 1, _BIG_TRIP_N + 100):
+        outcome, abi = deep_call(DEEP_BIG, n)
         assert outcome == "trap", n
+        assert abi == bytes([0xAA] * 8), "ABI 슬롯이 깨지지 않은 채로 트랩해야 한다"
 
 
 def test_compound_shift_assignment_runs():

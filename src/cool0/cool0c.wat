@@ -5585,7 +5585,13 @@
         (then (call $b_idx (i32.const 35) (i32.const 0))
               (call $b_i32const (local.get $frame))
               (call $b_op (i32.const 107))
-              (call $b_idx (i32.const 36) (i32.const 0))))
+              (call $b_idx (i32.const 36) (i32.const 0))
+              (call $b_idx (i32.const 35) (i32.const 0))
+              (call $b_i32const (i32.const 25165824))
+              (call $b_op (i32.const 73))
+              (call $b_blocked (i32.const 4) (i32.const 64))
+              (call $b_op (i32.const 0))
+              (call $b_op (i32.const 11))))
     (local.set $loc (call $ld (i32.add (local.get $fi) (i32.const 28))))
     (block $brk (loop $cont
       (br_if $brk (i32.eqz (i32.ne (local.get $loc) (i32.const 0))))
@@ -5768,7 +5774,7 @@
     (call $s_ch (i32.const 127))
     (call $s_ch (i32.const 0x01))
     (call $s_ch (i32.const 65))
-    (call $w_s (i32.const 204) (i32.const 4096))
+    (call $w_s (i32.const 204) (i32.const 0x2000000))
     (call $s_ch (i32.const 11))
     (call $end_section (i32.const 6))
 

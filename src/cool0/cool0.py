@@ -36,10 +36,10 @@ from typing import Optional
 MEM_PAGES = 512  # 32 MiB, 고정
 OUT_PTR_ADDR = 0x0000
 OUT_LEN_ADDR = 0x0004
-SHADOW_BASE = 0x0010  # 섀도 스택 영역 하한
-SHADOW_TOP = 0x1000  # $sp 초기값. 아래로 자란다
 SRC_ADDR = 0x1000  # 호스트가 소스를 놓는 곳
 RODATA_ADDR = 0x0100_0000  # 문자열 리터럴. 위로 자란다
+SHADOW_FLOOR = 0x0180_0000  # 섀도 스택 영역 하한. 넘으면 트랩 (프롤로그가 검사한다)
+SHADOW_TOP = 0x0200_0000  # $sp 초기값. 아래로 자란다 (8 MiB)
 
 STATUS_OK = 0
 STATUS_ERR = 1
@@ -2324,6 +2324,12 @@ class Emitter:
             self.b.i32const(fb.frame_size)
             self.b.op(OP_I32_SUB)
             self.b.idx(OP_GLOBAL_SET, 0)
+            self.b.idx(OP_GLOBAL_GET, 0)
+            self.b.i32const(SHADOW_FLOOR)
+            self.b.op(CMP_OPCODE[("<", False)])
+            self.b.op(OP_IF, BLOCK_VOID)
+            self.b.op(OP_UNREACHABLE)
+            self.b.op(OP_END)
         # 주소를 가진 매개변수는 프레임으로 복사한다
         for loc in fb.locals:
             if loc.is_param and loc.in_memory:

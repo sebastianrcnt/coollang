@@ -65,7 +65,7 @@ def test_empty_function_module_is_exact():
         01 04 01 6000 00             # type:     () -> ()
         03 02 01 00                  # function: 함수 하나, 타입 0
         05 06 01 01 8004 8004        # memory:   min = max = 512
-        06 07 01 7f 01 41 8020 0b    # global:   mut i32 = 0x1000
+        06 09 01 7f 01 41 80808010 0b  # global: mut i32 = 0x0200_0000
         07 0e 02
            01 66 00 00               # export:   "f" -> 함수 0
            06 6d656d6f7279 02 00     #           "memory" -> 메모리 0
@@ -81,7 +81,7 @@ def test_add_function_is_exact():
         01 07 01 60 02 7f7f 01 7f    # type:  (i32, i32) -> i32
         03 02 01 00
         05 06 01 01 8004 8004
-        06 07 01 7f 01 41 8020 0b
+        06 09 01 7f 01 41 80808010 0b
         07 10 02
            03 616464 00 00           # "add"
            06 6d656d6f7279 02 00
@@ -249,9 +249,13 @@ def test_no_frame_means_no_prologue():
 def test_aggregate_local_creates_a_frame():
     src = "struct S { a: i32 } fn f() { let s: S = S{ a: 1 }; }"
     body = code_body(compile_ok(src))
-    # 프롤로그: global.get $sp, i32.const 4, i32.sub, global.set $sp
-    assert bytes([0x23, 0x00, 0x41, 0x04, 0x6B, 0x24, 0x00]) in body
-    # 에필로그: 같은 값을 도로 더한다
+    # 프롤로그: global.get $sp, i32.const 4, i32.sub, global.set $sp,
+    #          global.get $sp, i32.const FLOOR, i32.lt_u, if(void) unreachable end
+    assert bytes([
+        0x23, 0x00, 0x41, 0x04, 0x6B, 0x24, 0x00,
+        0x23, 0x00, 0x41, 0x80, 0x80, 0x80, 0x0C, 0x49, 0x04, 0x40, 0x00, 0x0B,
+    ]) in body
+    # 에필로그: 같은 값을 도로 더한다 (넘침 검사는 없다)
     assert body.endswith(bytes([0x23, 0x00, 0x41, 0x04, 0x6A, 0x24, 0x00, 0x0B]))
 
 

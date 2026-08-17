@@ -4016,6 +4016,7 @@ const OP_I32_STORE: u32 = 0x36;
 const OP_I32_STORE8: u32 = 0x3A;
 const OP_I32_CONST: u32 = 0x41;
 const OP_I32_EQZ: u32 = 0x45;
+const OP_I32_LT_U: u32 = 0x49;
 const OP_I32_GE_U: u32 = 0x4F;
 const OP_I32_ADD: u32 = 0x6A;
 const OP_I32_SUB: u32 = 0x6B;
@@ -4024,7 +4025,8 @@ const TYPE_I32: u32 = 0x7F;
 const BLOCK_VOID: u32 = 0x40;
 
 const MEM_PAGES: u32 = 512;
-const SHADOW_TOP: u32 = 0x1000;
+const SHADOW_FLOOR: u32 = 0x0180_0000;
+const SHADOW_TOP: u32 = 0x0200_0000;
 
 const G_B: u32 = 0x00C8;        // cursor into S1, one function body
 const G_S: u32 = 0x00CC;        // cursor into S2, one section payload
@@ -4763,6 +4765,12 @@ fn emit_fn(fi: u32) {
         b_i32const(frame);
         b_op(OP_I32_SUB);
         b_idx(OP_GLOBAL_SET, 0);
+        b_idx(OP_GLOBAL_GET, 0);
+        b_i32const(SHADOW_FLOOR);
+        b_op(OP_I32_LT_U);
+        b_blocked(OP_IF, BLOCK_VOID);
+        b_op(OP_UNREACHABLE);
+        b_op(OP_END);
     }
     // a parameter whose address is taken is copied into the frame (implementation.md S6)
     let mut loc: u32 = ld(fi + FN_LOCALS);
