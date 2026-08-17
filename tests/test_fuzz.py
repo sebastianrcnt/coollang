@@ -350,3 +350,293 @@ def test_the_nesting_limit_is_generous_enough_for_real_code():
     compile_ok("fn f() -> i32 { return " + "(" * 60 + "1" + ")" * 60 + "; }")
     compile_ok("fn f() -> i32 { return " + "1+" * 60 + "1; }")
     compile_ok("fn f() { " + "if true { " * 60 + "}" * 60 + " }")
+
+
+# --- 집합체까지 덮는 생성기 ---------------------------------------------------
+#
+# ProgramGen 은 스칼라와 if/for 만 만든다. 그 바깥 -- struct, enum, match, 슬라이스,
+# 대여, unsafe -- 이 손으로 쓴 케이스에만 기대고 있었다. cool0.py 의 실제 버그 둘이
+# 바로 거기서 나왔으므로, 무작위로도 때려 본다.
+
+
+class RichGen:
+    """cool0 의 거의 모든 문법을 쓰는 프로그램을 만든다.
+
+    타입이 맞는 것을 목표로 하지만 완벽하지 않아도 된다 -- 검사기가 거절하면 그것도
+    유효한 패리티 표본이다. 다만 충분히 많이 성공해야 방출 경로를 실제로 때린다.
+    """
+
+    FIELD_TYPES = ["i32", "u32", "bool", "u8", "[]u8", "[]mut u8", "*u8"]
+    SCALARS = ["i32", "u32", "bool"]
+
+    def __init__(self, rng):
+        self.rng = rng
+
+    def pick(self, xs):
+        return self.rng.choice(xs)
+
+    # --- 선언 ---------------------------------------------------------------
+
+    def gen_decls(self):
+        r = self.rng
+        self.structs = {}
+        self.enums = {}
+        out = []
+        for i in range(r.randrange(1, 4)):
+            name = "S%d" % i
+            n = r.randrange(0, 4)
+            fields = [("f%d" % j, self.pick(self.FIELD_TYPES)) for j in range(n)]
+            self.structs[name] = fields
+            body = ", ".join("%s: %s" % (f, t) for f, t in fields)
+            out.append("struct %s { %s }" % (name, body))
+        for i in range(r.randrange(1, 3)):
+            name = "E%d" % i
+            variants = []
+            for j in range(r.randrange(1, 4)):
+                k = r.randrange(0, 3)
+                variants.append(("V%d" % j, [self.pick(self.FIELD_TYPES) for _ in range(k)]))
+            self.enums[name] = variants
+            body = ", ".join(
+                v if not p else "%s(%s)" % (v, ", ".join(p)) for v, p in variants
+            )
+            out.append("enum %s { %s }" % (name, body))
+        out.append("const K0: u32 = 3;")
+        out.append("const K1: i32 = -7 / 2;")
+        return out
+
+    def helper_fns(self):
+        out = []
+        for s in self.structs:
+            out.append("fn ref_%s(p: &%s) -> u32 { return 1; }" % (s, s))
+            out.append("fn mut_%s(p: &mut %s) { }" % (s, s))
+        for e in self.enums:
+            out.append("fn ref_%s(p: &%s) -> u32 { return 2; }" % (e, e))
+            out.append("fn mut_%s(p: &mut %s) { }" % (e, e))
+        out.append("fn scal(a: i32, b: u32, c: bool) -> u32 { return b; }")
+        out.append("fn sl(s: []u8) -> u32 { return s.len; }")
+        out.append("fn slm(s: []mut u8) -> u32 { return s.len; }")
+        out.append("fn ptr(p: *u8) -> u32 { return 0; }")
+        out.append("fn noop() { }")
+        return out
+
+    # --- 식 -----------------------------------------------------------------
+
+    def scalar_expr(self, ty, env, depth):
+        """ty 는 i32/u32/bool. env 는 name -> type."""
+        r = self.rng
+        pool = [v for v, t in env.items() if t == ty]
+        # u8 필드/원소를 읽으면 u32 다
+        if ty == "u32":
+            for v, t in env.items():
+                if t in self.structs:
+                    pool += ["%s.%s" % (v, f) for f, ft in self.structs[t] if ft == "u8"]
+                    pool += ["%s.%s.len" % (v, f) for f, ft in self.structs[t]
+                             if ft in ("[]u8", "[]mut u8")]
+            pool += [v + ".len" for v, t in env.items() if t in ("[]u8", "[]mut u8")]
+            pool += ["%s[0]" % v for v, t in env.items() if t in ("[]u8", "[]mut u8")]
+        for v, t in env.items():
+            if t in self.structs:
+                pool += ["%s.%s" % (v, f) for f, ft in self.structs[t] if ft == ty]
+        if depth <= 0 or r.random() < 0.3:
+            if pool and r.random() < 0.65:
+                return self.pick(pool)
+            if ty == "bool":
+                return self.pick(["true", "false"])
+            if ty == "u32":
+                return self.pick([str(r.randrange(0, 1 << 20)), "K0", '"abc".len' ])
+            return self.pick([str(r.randrange(0, 1 << 20)), "K1"])
+        kind = r.random()
+        if ty == "bool":
+            if kind < 0.3:
+                return "(!%s)" % self.scalar_expr("bool", env, depth - 1)
+            if kind < 0.6:
+                op = self.pick(["&&", "||"])
+                return "(%s %s %s)" % (self.scalar_expr("bool", env, depth - 1), op,
+                                       self.scalar_expr("bool", env, depth - 1))
+            it = self.pick(["i32", "u32"])
+            op = self.pick(["==", "!=", "<", ">", "<=", ">="])
+            return "(%s %s %s)" % (self.scalar_expr(it, env, depth - 1), op,
+                                   self.scalar_expr(it, env, depth - 1))
+        if kind < 0.12:
+            other = "u32" if ty == "i32" else "i32"
+            return "(%s as %s)" % (self.scalar_expr(other, env, depth - 1), ty)
+        if kind < 0.2:
+            return "(%s << %s)" % (self.scalar_expr(ty, env, depth - 1),
+                                   self.scalar_expr("u32", env, 0))
+        if kind < 0.26:
+            return "(0 - %s)" % self.scalar_expr(ty, env, depth - 1)
+        if kind < 0.34 and ty == "u32":
+            return self.call_expr(env, depth)
+        op = self.pick(["+", "-", "*", "&", "|", "^"])
+        return "(%s %s %s)" % (self.scalar_expr(ty, env, depth - 1), op,
+                               self.scalar_expr(ty, env, depth - 1))
+
+    def call_expr(self, env, depth):
+        """u32 를 내는 호출. 대여 규칙을 지킨다 -- 인자에 같은 지역변수를 두 번 쓰지 않는다."""
+        r = self.rng
+        opts = []
+        for v, t in env.items():
+            if t in self.structs:
+                opts.append("ref_%s(&%s)" % (t, v))
+            if t in self.enums:
+                opts.append("ref_%s(&%s)" % (t, v))
+        opts += [v + ".len" for v, t in env.items() if t in ("[]u8", "[]mut u8")]
+        opts.append('sl("hello")')
+        for v, t in env.items():
+            if t == "[]u8":
+                opts.append("sl(%s)" % v)
+            if t == "[]mut u8":
+                opts.append("slm(%s)" % v)
+            if t == "*u8":
+                opts.append("ptr(%s)" % v)
+        opts.append("scal(%s, %s, %s)" % (self.scalar_expr("i32", env, 0),
+                                          self.scalar_expr("u32", env, 0),
+                                          self.scalar_expr("bool", env, 0)))
+        return self.pick(opts)
+
+    def struct_lit(self, name, env, depth):
+        parts = []
+        for f, ft in self.structs[name]:
+            parts.append("%s: %s" % (f, self.value_of(ft, env, depth)))
+        return "%s{ %s }" % (name, ", ".join(parts))
+
+    def enum_lit(self, name, env, depth):
+        v, payload = self.pick(self.enums[name])
+        if not payload:
+            return "%s.%s" % (name, v)
+        args = ", ".join(self.value_of(t, env, depth) for t in payload)
+        return "%s.%s(%s)" % (name, v, args)
+
+    def value_of(self, ty, env, depth):
+        """필드/페이로드에 넣을 값."""
+        if ty == "u8":
+            return self.scalar_expr("u32", env, min(depth, 1))
+        if ty in ("i32", "u32", "bool"):
+            return self.scalar_expr(ty, env, min(depth, 1))
+        if ty == "[]u8":
+            pool = [v for v, t in env.items() if t == "[]u8"]
+            return self.pick(pool + ['"lit"', '"abc"']) if pool else self.pick(['"lit"', '"abc"'])
+        if ty == "[]mut u8":
+            pool = [v for v, t in env.items() if t == "[]mut u8"]
+            return self.pick(pool) if pool else "m"
+        return "0 as *u8"
+
+    # --- 문 -----------------------------------------------------------------
+
+    def block(self, env, depth, in_loop, nvar):
+        r = self.rng
+        out = []
+        env = dict(env)
+        mut = set(v for v in env if v.startswith("v"))
+        for _ in range(r.randrange(1, 5)):
+            kinds = ["let", "assign", "if", "call", "unsafe"]
+            if depth > 0:
+                kinds += ["for", "match"]
+            if in_loop:
+                kinds += ["break", "continue"]
+            kind = self.pick(kinds)
+            if kind == "let":
+                name = "v%d" % nvar[0]
+                nvar[0] += 1
+                choices = self.SCALARS + list(self.structs) + list(self.enums) + ["[]u8"]
+                ty = self.pick(choices)
+                if ty in self.structs:
+                    out.append("let mut %s: %s = %s;" % (name, ty, self.struct_lit(ty, env, depth)))
+                elif ty in self.enums:
+                    out.append("let mut %s: %s = %s;" % (name, ty, self.enum_lit(ty, env, depth)))
+                elif ty == "[]u8":
+                    out.append('let mut %s: []u8 = "seed";' % name)
+                else:
+                    out.append("let mut %s: %s = %s;" % (name, ty, self.scalar_expr(ty, env, depth)))
+                env[name] = ty
+                mut.add(name)
+            elif kind == "assign":
+                pool = [v for v in mut if env[v] in self.SCALARS]
+                fields = []
+                for v in mut:
+                    if env[v] in self.structs:
+                        fields += [("%s.%s" % (v, f), ft) for f, ft in self.structs[env[v]]]
+                for v, t in env.items():
+                    if t == "[]mut u8":
+                        fields.append(("%s[0]" % v, "u8"))
+                if pool and r.random() < 0.5:
+                    v = self.pick(pool)
+                    ops = ["="] if env[v] == "bool" else ["=", "+=", "-=", "*=", "&=", "|=", "^="]
+                    op = self.pick(ops)
+                    out.append("%s %s %s;" % (v, op, self.scalar_expr(env[v], env, depth)))
+                elif fields:
+                    place, ft = self.pick(fields)
+                    out.append("%s = %s;" % (place, self.value_of(ft, env, depth)))
+                else:
+                    out.append("noop();")
+            elif kind == "if":
+                cond = self.scalar_expr("bool", env, depth)
+                then = self.block(env, depth - 1, in_loop, nvar) if depth > 0 else ["noop();"]
+                if r.random() < 0.5:
+                    els = self.block(env, depth - 1, in_loop, nvar) if depth > 0 else ["noop();"]
+                    out.append("if %s { %s } else { %s }" % (cond, " ".join(then), " ".join(els)))
+                else:
+                    out.append("if %s { %s }" % (cond, " ".join(then)))
+            elif kind == "for":
+                body = self.block(env, depth - 1, True, nvar)
+                form = r.random()
+                if form < 0.4:
+                    out.append("for let mut i%d: u32 = 0; i%d < 3; i%d += 1 { %s }"
+                               % (nvar[0], nvar[0], nvar[0], " ".join(body)))
+                    nvar[0] += 1
+                elif form < 0.7:
+                    out.append("for %s { %s break; }" % (self.scalar_expr("bool", env, 1),
+                                                         " ".join(body)))
+                else:
+                    out.append("for { %s break; }" % " ".join(body))
+            elif kind == "match":
+                pool = [v for v, t in env.items() if t in self.enums]
+                if not pool:
+                    out.append("noop();")
+                    continue
+                v = self.pick(pool)
+                en = env[v]
+                arms = []
+                variants = self.enums[en]
+                use_wild = r.random() < 0.4 and len(variants) > 1
+                shown = variants[:-1] if use_wild else variants
+                for vn, payload in shown:
+                    binds = ["b%d" % i for i in range(len(payload))]
+                    henv = dict(env)
+                    for b, t in zip(binds, payload):
+                        henv[b] = "u32" if t == "u8" else t
+                    body = " ".join(self.block(henv, depth - 1, in_loop, nvar))
+                    head = vn if not binds else "%s(%s)" % (vn, ", ".join(binds))
+                    arms.append("%s => { %s }" % (head, body))
+                if use_wild:
+                    arms.append("_ => { noop(); }")
+                out.append("match %s { %s }" % (v, " ".join(arms)))
+            elif kind == "unsafe":
+                out.append("unsafe { let p%d: *u32 = 0x2000 as *u32; p%d.^ = %s; }"
+                           % (nvar[0], nvar[0], self.scalar_expr("u32", env, 1)))
+                nvar[0] += 1
+            elif kind == "call":
+                out.append("noop();")
+                if r.random() < 0.6:
+                    muts = [v for v, t in env.items() if t in self.structs or t in self.enums]
+                    if muts:
+                        v = self.pick(muts)
+                        out.append("mut_%s(&mut %s);" % (env[v], v))
+            elif kind == "break":
+                out.append("break;")
+                break
+            elif kind == "continue":
+                out.append("continue;")
+                break
+        return out or ["noop();"]
+
+    def program(self) -> str:
+        parts = self.gen_decls() + self.helper_fns()
+        nvar = [0]
+        env = {"a": "i32", "b": "u32", "c": "bool", "s": "[]u8", "m": "[]mut u8", "q": "*u8"}
+        body = self.block(env, 3, False, nvar)
+        parts.append(
+            "fn f(a: i32, b: u32, c: bool, s: []u8, m: []mut u8, q: *u8) -> u32 {\n  "
+            + "\n  ".join(body) + "\n  return b;\n}"
+        )
+        return "\n".join(parts) + "\n"
