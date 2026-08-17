@@ -107,6 +107,13 @@ struct Ctx {
     rodata: u32,
     cety: u32,      // const_expr's second result
 
+    // lexical scope: a stack of local ids, and a stack of marks into it
+    scope: []mut u32,
+    scope_n: u32,
+    marks: []mut u32,
+    marks_n: u32,
+    curfn: u32,
+
     // bump heap for string literal bodies. Nothing is ever freed -- the
     // compiler runs once and the host reclaims the memory.
     heap: u32,
@@ -2792,6 +2799,283 @@ fn const_expr(c: &mut Ctx, e: u32, want: u32) -> u32 {
 }
 
 // ===========================================================================
+// Function declarations (language.md S4)
+// ===========================================================================
+
+fn e_dup_param(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+    if err_open(c, line, col) {
+        put_str(c, "duplicate parameter ");
+        put_q_src(c, s, l);
+        err_end(c);
+    }
+}
+
+fn e_agg_by_value(c: &mut Ctx, line: u32, col: u32, t: u32) {
+    if err_open(c, line, col) {
+        put_str(c, "cannot pass aggregate ");
+        put_q_ty(c, t);
+        put_str(c, " by value");
+        err_end(c);
+    }
+}
+
+fn e_u8_storage(c: &mut Ctx, line: u32, col: u32) {
+    if err_open(c, line, col) {
+        put_ch(c, 96);
+        put_str(c, "u8");
+        put_ch(c, 96);
+        put_str(c, " is storage-only; use ");
+        put_ch(c, 96);
+        put_str(c, "u32");
+        put_ch(c, 96);
+        err_end(c);
+    }
+}
+
+fn e_ret_agg(c: &mut Ctx, line: u32, col: u32, t: u32) {
+    if err_open(c, line, col) {
+        put_str(c, "cannot return aggregate ");
+        put_q_ty(c, t);
+        put_str(c, " by value");
+        err_end(c);
+    }
+}
+
+fn param_named(c: &Ctx, head: u32, s: u32, l: u32) -> u32 {
+    let mut p: u32 = head;
+    for p != 0 {
+        let ns: u32 = c.^.params[p].ns;
+        let nl: u32 = c.^.params[p].nl;
+        if src_eq2(c, ns, nl, s, l) { return p; }
+        p = c.^.params[p].next;
+    }
+    return 0;
+}
+
+fn declare_fn(c: &mut Ctx, d: u32, index: u32) {
+    let ns: u32 = c.^.nodes[d].a;
+    let nl: u32 = c.^.nodes[d].b;
+    let fi: u32 = c.^.nfn;
+    c.^.fns[fi] = FnI{
+        ns: ns, nl: nl, params: 0, nparams: 0, ret: 0, index: index, decl: d,
+        locals: 0, ltail: 0, frame: 0, npslot: 0, nlslot: 0, next: 0,
+    };
+    c.^.nfn = fi + 1;
+    let mut head: u32 = 0;
+    let mut tail: u32 = 0;
+    let mut n: u32 = 0;
+    let mut p: u32 = c.^.nodes[d].c;
+    for p != 0 && !failed(c) {
+        let ps: u32 = c.^.nodes[p].a;
+        let pl: u32 = c.^.nodes[p].b;
+        let pline: u32 = c.^.nodes[p].line;
+        let pcol: u32 = c.^.nodes[p].col;
+        if param_named(c, head, ps, pl) != 0 {
+            e_dup_param(c, pline, pcol, ps, pl);
+            return;
+        }
+        let ptn: u32 = c.^.nodes[p].c;
+        let t: u32 = resolve_ty(c, ptn);
+        if failed(c) { return; }
+        if is_aggregate(c, t) {
+            e_agg_by_value(c, pline, pcol, t);
+            return;
+        }
+        if ty_kind(c, t) == TYK_U8 {
+            e_u8_storage(c, pline, pcol);
+            return;
+        }
+        let pi: u32 = c.^.nparam;
+        c.^.params[pi] = ParamI{ ns: ps, nl: pl, ty: t, next: 0 };
+        c.^.nparam = pi + 1;
+        if head == 0 { head = pi; } else { c.^.params[tail].next = pi; }
+        tail = pi;
+        n += 1;
+        p = c.^.nodes[p].next;
+    }
+    c.^.fns[fi].params = head;
+    c.^.fns[fi].nparams = n;
+    let rn: u32 = c.^.nodes[d].d;
+    let ret: u32 = resolve_ty(c, rn);
+    if failed(c) { return; }
+    if rn != 0 {
+        let rl: u32 = c.^.nodes[rn].line;
+        let rc: u32 = c.^.nodes[rn].col;
+        if is_aggregate(c, ret) { e_ret_agg(c, rl, rc, ret); return; }
+        let rk: u32 = ty_kind(c, ret);
+        if rk == TYK_SLICE {
+            err_msg(c, rl, rc, "cannot return a slice (wasm 1.0 has a single result)");
+            return;
+        }
+        if rk == TYK_REF { err_msg(c, rl, rc, "cannot return a borrow"); return; }
+        if rk == TYK_U8 { e_u8_storage(c, rl, rc); return; }
+    }
+    c.^.fns[fi].ret = ret;
+    c.^.nodes[d].aux = fi;
+}
+
+// --- scopes ----------------------------------------------------------------
+
+fn push_scope(c: &mut Ctx) {
+    let m: u32 = c.^.marks_n;
+    c.^.marks[m] = c.^.scope_n;
+    c.^.marks_n = m + 1;
+}
+
+fn pop_scope(c: &mut Ctx) {
+    let m: u32 = c.^.marks_n - 1;
+    c.^.marks_n = m;
+    c.^.scope_n = c.^.marks[m];
+}
+
+fn lookup(c: &Ctx, s: u32, l: u32) -> u32 {
+    let mut i: u32 = c.^.scope_n;
+    for i > 0 {
+        i -= 1;
+        let loc: u32 = c.^.scope[i];
+        let ns: u32 = c.^.locals[loc].ns;
+        let nl: u32 = c.^.locals[loc].nl;
+        if src_eq2(c, ns, nl, s, l) { return loc; }
+    }
+    return 0;
+}
+
+fn lookup_in_scope(c: &Ctx, s: u32, l: u32) -> u32 {
+    let base: u32 = c.^.marks[c.^.marks_n - 1];
+    let mut i: u32 = c.^.scope_n;
+    for i > base {
+        i -= 1;
+        let loc: u32 = c.^.scope[i];
+        let ns: u32 = c.^.locals[loc].ns;
+        let nl: u32 = c.^.locals[loc].nl;
+        if src_eq2(c, ns, nl, s, l) { return loc; }
+    }
+    return 0;
+}
+
+fn e_dup_local(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+    if err_open(c, line, col) {
+        put_q_src(c, s, l);
+        put_str(c, " is already declared in this scope");
+        err_end(c);
+    }
+}
+
+fn e_shadow(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+    if err_open(c, line, col) {
+        put_q_src(c, s, l);
+        put_str(c, " shadows a top-level name");
+        err_end(c);
+    }
+}
+
+fn declare_local(c: &mut Ctx, s: u32, l: u32, t: u32, mutable: u32, is_param: u32,
+                 line: u32, col: u32) -> u32 {
+    if lookup_in_scope(c, s, l) != 0 {
+        e_dup_local(c, line, col, s, l);
+        return 0;
+    }
+    if find_taken(c, s, l) {
+        e_shadow(c, line, col, s, l);
+        return 0;
+    }
+    let loc: u32 = c.^.nlocal;
+    c.^.locals[loc] = LocalI{
+        ns: s, nl: l, ty: t, is_mut: mutable, is_param: is_param,
+        addr: 0, slot: NONE, foff: NONE, next: 0,
+    };
+    c.^.nlocal = loc + 1;
+    let sn: u32 = c.^.scope_n;
+    c.^.scope[sn] = loc;
+    c.^.scope_n = sn + 1;
+    let fi: u32 = c.^.curfn;
+    if c.^.fns[fi].locals == 0 {
+        c.^.fns[fi].locals = loc;
+    } else {
+        let lt: u32 = c.^.fns[fi].ltail;
+        c.^.locals[lt].next = loc;
+    }
+    c.^.fns[fi].ltail = loc;
+    return loc;
+}
+
+// --- flow analysis (language.md S9) ----------------------------------------
+
+fn has_break(c: &Ctx, head: u32) -> bool {
+    let mut s: u32 = head;
+    for s != 0 {
+        let k: u32 = c.^.nodes[s].kind;
+        if k == S_BREAK { return true; }
+        if k == S_IF {
+            if has_break(c, c.^.nodes[s].b) { return true; }
+            if c.^.nodes[s].d != 0 && has_break(c, c.^.nodes[s].c) { return true; }
+        }
+        if k == S_MATCH {
+            let mut a: u32 = c.^.nodes[s].b;
+            for a != 0 {
+                if has_break(c, c.^.nodes[a].d) { return true; }
+                a = c.^.nodes[a].next;
+            }
+        }
+        if k == S_UNSAFE {
+            if has_break(c, c.^.nodes[s].a) { return true; }
+        }
+        s = c.^.nodes[s].next;
+    }
+    return false;
+}
+
+fn arms_all_diverge(c: &Ctx, head: u32) -> bool {
+    let mut a: u32 = head;
+    for a != 0 {
+        if !diverges(c, c.^.nodes[a].d) { return false; }
+        a = c.^.nodes[a].next;
+    }
+    return true;
+}
+
+fn arm_count(c: &Ctx, head: u32) -> u32 {
+    let mut n: u32 = 0;
+    let mut a: u32 = head;
+    for a != 0 {
+        n += 1;
+        a = c.^.nodes[a].next;
+    }
+    return n;
+}
+
+fn diverges(c: &Ctx, head: u32) -> bool {
+    let mut s: u32 = head;
+    for s != 0 {
+        let k: u32 = c.^.nodes[s].kind;
+        if k == S_RETURN || k == S_BREAK || k == S_CONTINUE { return true; }
+        if k == S_IF {
+            if c.^.nodes[s].d != 0 && diverges(c, c.^.nodes[s].b)
+                && diverges(c, c.^.nodes[s].c) {
+                return true;
+            }
+        }
+        if k == S_FOR {
+            if c.^.nodes[s].b == 0 && !has_break(c, c.^.nodes[s].d) { return true; }
+        }
+        if k == S_MATCH {
+            let ei: u32 = c.^.nodes[s].c;
+            let arms: u32 = c.^.nodes[s].b;
+            let mut full: bool = c.^.nodes[s].d != 0;
+            if !full && ei != 0 {
+                full = arm_count(c, arms) == c.^.enums[ei].nvar;
+            }
+            if full && arms_all_diverge(c, arms) { return true; }
+        }
+        if k == S_UNSAFE {
+            if diverges(c, c.^.nodes[s].a) { return true; }
+        }
+        s = c.^.nodes[s].next;
+    }
+    return false;
+}
+
+// ===========================================================================
 // Arena sizing
 // ===========================================================================
 //
@@ -2895,6 +3179,11 @@ fn compile(src_len_in: u32) -> i32 {
             ntyname: 1,
             rodata: RODATA,
             cety: 0,
+            scope: slice_mut(heap0 as *u32, 0),
+            scope_n: 0,
+            marks: slice_mut(heap0 as *u32, 0),
+            marks_n: 0,
+            curfn: 0,
             heap: heap0 + tok_bytes,
             err: 0,
             out: OUT,
@@ -2967,6 +3256,13 @@ fn compile(src_len_in: u32) -> i32 {
             c.heap = c.heap + n_name * 12;
             c.tynames = slice_mut(c.heap as *NameI, n_name);
             c.heap = c.heap + n_name * 12;
+
+            let n_scope: u32 = n_local + 2;
+            c.scope = slice_mut(c.heap as *u32, n_scope);
+            c.heap = c.heap + n_scope * 4;
+            let n_mark: u32 = MAX_DEPTH + MAX_DEPTH + 8;
+            c.marks = slice_mut(c.heap as *u32, n_mark);
+            c.heap = c.heap + n_mark * 4;
 
             init_types(&mut c);
         }
