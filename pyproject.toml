@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "pytest>=9.1.1",
+    "pytest-timeout>=2.4.0",
     "wasmtime>=47.0.1",
 ]
 
@@ -14,3 +15,12 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 # wasmtime 은 윈도우에서 트랩을 SEH 로 올린다. faulthandler 가 그걸 크래시로 찍는다
 addopts = "-p no:faulthandler"
+
+# 매달림 방지용 안전망이다. 알고리즘 회귀를 잡는 장치가 아니다 -- 그건 해당
+# 테스트에 @pytest.mark.timeout(N) 이나 명시적 시간 단언으로 좁게 조준한다.
+#
+# 윈도우에는 SIGALRM 이 없어 thread 방식으로 떨어지고, 걸리면 그 테스트만
+# 빨간불이 아니라 os._exit() 로 **스위트 전체가 죽는다.** 그래서 경계를 넉넉히
+# 잡는다 -- 진짜 행은 무한이라 15초면 충분히 걸리고, 멀쩡한 느린 테스트
+# (test_milestone 은 145 KB 소스를 세 번 컴파일한다) 때문에 전체 결과를 잃지 않는다.
+timeout = 15
