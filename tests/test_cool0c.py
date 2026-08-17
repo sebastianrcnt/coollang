@@ -181,14 +181,16 @@ from cool0.cool0 import (  # noqa: E402
     Deref, EnumDecl, Field, FnDecl, For, Ident, If, Index, Int, Let, Match,
     Parser, Return, Str, StructDecl, StructLit, TyNode, Unary, Unsafe,
 )
+from cool0.cool0 import OffsetExpr, SliceExpr  # noqa: E402
 from cool0.cool0 import ExprStmt  # noqa: E402
 
 G_DECLS = 0x0040
+G_NODES = 0x0044
 
 NK = {
     1: "int", 2: "char", 3: "str", 4: "bool", 5: "ident", 6: "unary", 7: "binary",
     8: "borrow", 9: "cast", 10: "call", 11: "index", 12: "field", 13: "deref",
-    14: "structlit", 15: "litfield",
+    14: "structlit", 15: "litfield", 16: "sliceexpr", 17: "offset",
     20: "prim", 21: "named", 22: "slice", 23: "ref", 24: "ptr",
     30: "let", 31: "assign", 32: "expr", 33: "if", 34: "for", 35: "break",
     36: "continue", 37: "return", 38: "match", 39: "unsafe", 40: "arm", 41: "bind",
@@ -201,13 +203,18 @@ F = {"KIND": 0, "LINE": 4, "COL": 8, "A": 12, "B": 16, "C": 20, "D": 24,
 
 
 class Dump:
-    """cool0c 의 노드 아레나를 S-식으로."""
+    """cool0c 의 노드 아레나를 S-식으로.
+
+    노드 참조는 주소가 아니라 아레나 인덱스다 (0 이 "없음"). 아레나 밑동은
+    G_NODES 에 있다.
+    """
 
     def __init__(self, cc: Cool0c):
         self.cc = cc
+        self.base = cc.u32(G_NODES)
 
     def f(self, n: int, name: str) -> int:
-        return self.cc.u32(n + F[name])
+        return self.cc.u32(self.base + n * NODE_SIZE + F[name])
 
     def name(self, n: int, sf="A", lf="B") -> str:
         return self.cc.read(SRC_ADDR + self.f(n, sf), self.f(n, lf)).decode("ascii")
@@ -271,6 +278,11 @@ class Dump:
         if k == "structlit":
             fs = " ".join(self.lst(self.f(n, "C"), self.litfield))
             return f"(structlit {p} {d} {self.name(n)} [{fs}])"
+        if k == "sliceexpr":
+            return (f"(sliceexpr {p} {d} {self.f(n, 'A')} "
+                    f"{self.ex(self.f(n, 'B'))} {self.ex(self.f(n, 'C'))})")
+        if k == "offset":
+            return f"(offset {p} {d} {self.ex(self.f(n, 'A'))} {self.ex(self.f(n, 'B'))})"
         raise AssertionError(k)
 
     def litfield(self, n: int) -> str:
@@ -398,6 +410,11 @@ class RefDump:
             return f"(field {p} {d} {self.ex(e.base)} {e.name})"
         if isinstance(e, Deref):
             return f"(deref {p} {d} {self.ex(e.base)})"
+        if isinstance(e, SliceExpr):
+            return (f"(sliceexpr {p} {d} {1 if e.mut else 0} "
+                    f"{self.ex(e.ptr)} {self.ex(e.length)})")
+        if isinstance(e, OffsetExpr):
+            return f"(offset {p} {d} {self.ex(e.ptr)} {self.ex(e.index)})"
         if isinstance(e, StructLit):
             fs = " ".join(
                 f"(f {fp[0]} {fp[1]} {self.d(v)} {nm} {self.ex(v)})"

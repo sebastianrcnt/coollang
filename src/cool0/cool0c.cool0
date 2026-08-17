@@ -35,6 +35,8 @@ const SRC: u32 = 0x1000;
 const G_ERR: u32 = 0x0014;
 const G_NTOK: u32 = 0x002C;
 const G_TOKS: u32 = 0x0030;
+const G_DECLS: u32 = 0x0040;
+const G_NODES: u32 = 0x0044;
 
 // regions
 const S1: u32 = 0x0080_0000;   // scratch for one function body
@@ -68,6 +70,14 @@ struct Ctx {
     // tokens
     toks: []mut Token,
     ntok: u32,
+
+    // AST arena and parser cursor. Node index 0 means "none".
+    nodes: []mut Node,
+    nnode: u32,
+    ti: u32,
+    edepth: u32,
+    bdepth: u32,
+    decls: u32,
 
     // bump heap for string literal bodies. Nothing is ever freed -- the
     // compiler runs once and the host reclaims the memory.
@@ -610,6 +620,1118 @@ fn lex(c: &mut Ctx) {
 }
 
 // ===========================================================================
+// AST (language.md S4, S5, S6)
+// ===========================================================================
+//
+// One arena of one record shape, indexed by u32. Index 0 means "none" -- the
+// arena starts filling at 1 so a real node can never be 0.
+//
+// This is a struct and not an enum, and the reason is worth writing down: the
+// checker annotates nodes in place (ty, aux, aux2) and language.md S4 forbids
+// a struct field from holding an aggregate, so an enum's payload cannot carry
+// mutable annotations. The sum type that *is* an enum here is Ty -- see below.
+
+struct Node {
+    kind: u32,
+    line: u32,
+    col: u32,
+    a: u32,
+    b: u32,
+    c: u32,
+    d: u32,
+    e: u32,
+    next: u32,   // sibling in a list
+    ty: u32,     // checker: type id
+    aux: u32,    // checker: local, field, fn, ...
+    aux2: u32,
+    depth: u32,  // expression tree depth (language.md S9)
+}
+
+// expressions
+const E_INT: u32 = 1;        // A value
+const E_CHAR: u32 = 2;       // A value
+const E_STR: u32 = 3;        // A bytes, B len; AUX rodata address
+const E_BOOL: u32 = 4;       // A 0/1
+const E_IDENT: u32 = 5;      // A name start, B name len; AUX local or const value
+const E_UNARY: u32 = 6;      // A op(punct), B operand
+const E_BINARY: u32 = 7;     // A op(punct), B lhs, C rhs, D operand type
+const E_BORROW: u32 = 8;     // A mut, B operand, D root local
+const E_CAST: u32 = 9;       // A operand, B type node
+const E_CALL: u32 = 10;      // A callee, B args, D fn info
+const E_INDEX: u32 = 11;     // A base, B index, D element size
+const E_FIELD: u32 = 12;     // A base, B name start, C name len, D field info
+const E_DEREF: u32 = 13;     // A base
+const E_STRUCTLIT: u32 = 14; // A name start, B name len, C fields, D struct info
+const E_LITFIELD: u32 = 15;  // A name start, B name len, C value
+const E_SLICE: u32 = 16;     // A mut, B ptr, C len          (language.md S5)
+const E_OFFSET: u32 = 17;    // A ptr, B index, D stride     (language.md S5)
+
+// type syntax (language.md S3)
+const T_PRIM: u32 = 20;      // A 0=i32 1=u32 2=bool 3=u8
+const T_NAMED: u32 = 21;     // A name start, B name len
+const T_SLICE: u32 = 22;     // A inner, B mut
+const T_REF: u32 = 23;       // A inner, B mut
+const T_PTR: u32 = 24;       // A inner
+
+// statements
+const S_LET: u32 = 30;       // A name start, B name len, C type, D init, E mut
+const S_ASSIGN: u32 = 31;    // A target, B op(punct), C value
+const S_EXPR: u32 = 32;      // A call; AUX discard
+const S_IF: u32 = 33;        // A cond, B then, C else, D has-else
+const S_FOR: u32 = 34;       // A init, B cond, C post, D body
+const S_BREAK: u32 = 35;
+const S_CONTINUE: u32 = 36;
+const S_RETURN: u32 = 37;    // A value
+const S_MATCH: u32 = 38;     // A scrutinee, B arms, C enum info, D has-wild
+const S_UNSAFE: u32 = 39;    // A body
+const S_ARM: u32 = 40;       // A name start, B name len, C binds, D body, E wild
+const S_BIND: u32 = 41;      // A name start, B name len; AUX local
+
+// declarations
+const D_FN: u32 = 50;        // A name start, B name len, C params, D ret, E body
+const D_STRUCT: u32 = 51;    // A name start, B name len, C fields; AUX struct info
+const D_ENUM: u32 = 52;      // A name start, B name len, C variants; AUX enum info
+const D_CONST: u32 = 53;     // A name start, B name len, C type, D value
+const D_PARAM: u32 = 54;     // A name start, B name len, C type; AUX local
+const D_FIELD: u32 = 55;     // A name start, B name len, C type
+const D_VARIANT: u32 = 56;   // A name start, B name len, C payload types
+
+const MAX_DEPTH: u32 = 64;
+
+fn node(c: &mut Ctx, kind: u32, line: u32, col: u32) -> u32 {
+    let n: u32 = c.^.nnode;
+    c.^.nodes[n] = Node{
+        kind: kind, line: line, col: col,
+        a: 0, b: 0, c: 0, d: 0, e: 0,
+        next: 0, ty: 0, aux: 0, aux2: 0, depth: 1,
+    };
+    c.^.nnode = n + 1;
+    return n;
+}
+
+// --- token cursor ----------------------------------------------------------
+
+fn cur_kind(c: &Ctx) -> u32 { return c.^.toks[c.^.ti].kind; }
+
+fn cur_val(c: &Ctx) -> u32 { return c.^.toks[c.^.ti].value; }
+
+fn cur_line(c: &Ctx) -> u32 { return c.^.toks[c.^.ti].line; }
+
+fn cur_col(c: &Ctx) -> u32 { return c.^.toks[c.^.ti].col; }
+
+fn bump(c: &mut Ctx) { c.^.ti = c.^.ti + 1; }
+
+fn at_p(c: &Ctx, p: u32) -> bool {
+    return cur_kind(c) == TK_PUNCT && cur_val(c) == p;
+}
+
+fn at_kw(c: &Ctx, k: u32) -> bool {
+    return cur_kind(c) == TK_KW && cur_val(c) == k;
+}
+
+fn eat_p(c: &mut Ctx, p: u32) -> bool {
+    if at_p(c, p) { bump(c); return true; }
+    return false;
+}
+
+fn eat_kw(c: &mut Ctx, k: u32) -> bool {
+    if at_kw(c, k) { bump(c); return true; }
+    return false;
+}
+
+// --- rendering tokens into diagnostics -------------------------------------
+
+fn put_punct(c: &mut Ctx, p: u32) {
+    if p == P_SHLEQ { put_str(c, "<<="); return; }
+    if p == P_SHREQ { put_str(c, ">>="); return; }
+    if p == P_ARROW { put_str(c, "->"); return; }
+    if p == P_FATARROW { put_str(c, "=>"); return; }
+    if p == P_EQEQ { put_str(c, "=="); return; }
+    if p == P_NE { put_str(c, "!="); return; }
+    if p == P_LE { put_str(c, "<="); return; }
+    if p == P_GE { put_str(c, ">="); return; }
+    if p == P_ANDAND { put_str(c, "&&"); return; }
+    if p == P_OROR { put_str(c, "||"); return; }
+    if p == P_SHL { put_str(c, "<<"); return; }
+    if p == P_SHR { put_str(c, ">>"); return; }
+    if p == P_ADDEQ { put_str(c, "+="); return; }
+    if p == P_SUBEQ { put_str(c, "-="); return; }
+    if p == P_MULEQ { put_str(c, "*="); return; }
+    if p == P_DIVEQ { put_str(c, "/="); return; }
+    if p == P_MODEQ { put_str(c, "%="); return; }
+    if p == P_ANDEQ { put_str(c, "&="); return; }
+    if p == P_OREQ { put_str(c, "|="); return; }
+    if p == P_XOREQ { put_str(c, "^="); return; }
+    if p == P_LPAREN { put_str(c, "("); return; }
+    if p == P_RPAREN { put_str(c, ")"); return; }
+    if p == P_LBRACE { put_str(c, "{"); return; }
+    if p == P_RBRACE { put_str(c, "}"); return; }
+    if p == P_LBRACK { put_str(c, "["); return; }
+    if p == P_RBRACK { put_str(c, "]"); return; }
+    if p == P_COMMA { put_str(c, ","); return; }
+    if p == P_SEMI { put_str(c, ";"); return; }
+    if p == P_COLON { put_str(c, ":"); return; }
+    if p == P_DOT { put_str(c, "."); return; }
+    if p == P_EQ { put_str(c, "="); return; }
+    if p == P_LT { put_str(c, "<"); return; }
+    if p == P_GT { put_str(c, ">"); return; }
+    if p == P_ADD { put_str(c, "+"); return; }
+    if p == P_SUB { put_str(c, "-"); return; }
+    if p == P_MUL { put_str(c, "*"); return; }
+    if p == P_DIV { put_str(c, "/"); return; }
+    if p == P_MOD { put_str(c, "%"); return; }
+    if p == P_AND { put_str(c, "&"); return; }
+    if p == P_OR { put_str(c, "|"); return; }
+    if p == P_XOR { put_str(c, "^"); return; }
+    put_str(c, "!");
+}
+
+fn put_kw(c: &mut Ctx, k: u32) {
+    if k == K_FN { put_str(c, "fn"); return; }
+    if k == K_STRUCT { put_str(c, "struct"); return; }
+    if k == K_ENUM { put_str(c, "enum"); return; }
+    if k == K_CONST { put_str(c, "const"); return; }
+    if k == K_LET { put_str(c, "let"); return; }
+    if k == K_MUT { put_str(c, "mut"); return; }
+    if k == K_IF { put_str(c, "if"); return; }
+    if k == K_ELSE { put_str(c, "else"); return; }
+    if k == K_FOR { put_str(c, "for"); return; }
+    if k == K_BREAK { put_str(c, "break"); return; }
+    if k == K_CONTINUE { put_str(c, "continue"); return; }
+    if k == K_RETURN { put_str(c, "return"); return; }
+    if k == K_MATCH { put_str(c, "match"); return; }
+    if k == K_UNSAFE { put_str(c, "unsafe"); return; }
+    if k == K_AS { put_str(c, "as"); return; }
+    if k == K_TRUE { put_str(c, "true"); return; }
+    if k == K_FALSE { put_str(c, "false"); return; }
+    if k == K_SLICE { put_str(c, "slice"); return; }
+    if k == K_SLICE_MUT { put_str(c, "slice_mut"); return; }
+    put_str(c, "offset");
+}
+
+// Token.describe() in cool0.py
+fn put_describe(c: &mut Ctx, i: u32) {
+    let k: u32 = c.^.toks[i].kind;
+    if k == TK_EOF { put_str(c, "end of file"); return; }
+    if k == TK_INT { put_str(c, "integer literal"); return; }
+    if k == TK_CHAR { put_str(c, "character literal"); return; }
+    if k == TK_STR { put_str(c, "string literal"); return; }
+    let s: u32 = c.^.toks[i].start;
+    let l: u32 = c.^.toks[i].len;
+    put_ch(c, 96);
+    put_src(c, s, l);
+    put_ch(c, 96);
+}
+
+fn e_expected_p(c: &mut Ctx, p: u32) {
+    let line: u32 = cur_line(c);
+    let col: u32 = cur_col(c);
+    let i: u32 = c.^.ti;
+    if err_open(c, line, col) {
+        put_str(c, "expected ");
+        put_ch(c, 96);
+        put_punct(c, p);
+        put_ch(c, 96);
+        put_str(c, ", found ");
+        put_describe(c, i);
+        err_end(c);
+    }
+}
+
+fn e_expected_kw(c: &mut Ctx, k: u32) {
+    let line: u32 = cur_line(c);
+    let col: u32 = cur_col(c);
+    let i: u32 = c.^.ti;
+    if err_open(c, line, col) {
+        put_str(c, "expected ");
+        put_ch(c, 96);
+        put_kw(c, k);
+        put_ch(c, 96);
+        put_str(c, ", found ");
+        put_describe(c, i);
+        err_end(c);
+    }
+}
+
+fn e_expected_str(c: &mut Ctx, s: []u8) {
+    let line: u32 = cur_line(c);
+    let col: u32 = cur_col(c);
+    let i: u32 = c.^.ti;
+    if err_open(c, line, col) {
+        put_str(c, s);
+        put_str(c, ", found ");
+        put_describe(c, i);
+        err_end(c);
+    }
+}
+
+fn expect_p(c: &mut Ctx, p: u32) {
+    if failed(c) { return; }
+    if at_p(c, p) { bump(c); return; }
+    e_expected_p(c, p);
+}
+
+fn expect_kw(c: &mut Ctx, k: u32) {
+    if failed(c) { return; }
+    if at_kw(c, k) { bump(c); return; }
+    e_expected_kw(c, k);
+}
+
+// Returns the token index of the identifier, or NONE.
+fn expect_ident(c: &mut Ctx) -> u32 {
+    if failed(c) { return NONE; }
+    if cur_kind(c) != TK_IDENT {
+        e_expected_str(c, "expected identifier");
+        return NONE;
+    }
+    let i: u32 = c.^.ti;
+    bump(c);
+    return i;
+}
+
+// --- depth guards (language.md S9) -----------------------------------------
+
+fn e_deep_expr(c: &mut Ctx, line: u32, col: u32) {
+    err_msg(c, line, col, "expression nests too deeply");
+}
+
+// Set a composite node's tree depth, guarding the limit.
+fn deep(c: &mut Ctx, n: u32, maxd: u32) -> u32 {
+    if maxd + 1 > MAX_DEPTH {
+        let line: u32 = c.^.nodes[n].line;
+        let col: u32 = c.^.nodes[n].col;
+        e_deep_expr(c, line, col);
+        return n;
+    }
+    c.^.nodes[n].depth = maxd + 1;
+    return n;
+}
+
+fn depth_of(c: &Ctx, n: u32) -> u32 {
+    if n == 0 { return 0; }
+    return c.^.nodes[n].depth;
+}
+
+fn max2(a: u32, b: u32) -> u32 { if a > b { return a; } return b; }
+
+fn depth_list(c: &Ctx, head: u32) -> u32 {
+    let mut d: u32 = 0;
+    let mut p: u32 = head;
+    for p != 0 {
+        d = max2(d, depth_of(c, p));
+        p = c.^.nodes[p].next;
+    }
+    return d;
+}
+
+// --- types (language.md S3) ------------------------------------------------
+
+fn parse_ty(c: &mut Ctx) -> u32 {
+    if failed(c) { return 0; }
+    if c.^.edepth >= MAX_DEPTH {
+        let line: u32 = cur_line(c);
+        let col: u32 = cur_col(c);
+        err_msg(c, line, col, "type nests too deeply");
+        return 0;
+    }
+    c.^.edepth = c.^.edepth + 1;
+    let t: u32 = parse_ty_inner(c);
+    c.^.edepth = c.^.edepth - 1;
+    return t;
+}
+
+fn parse_ty_inner(c: &mut Ctx) -> u32 {
+    let line: u32 = cur_line(c);
+    let col: u32 = cur_col(c);
+    if eat_p(c, P_LBRACK) {
+        expect_p(c, P_RBRACK);
+        let n: u32 = node(c, T_SLICE, line, col);
+        if eat_kw(c, K_MUT) { c.^.nodes[n].b = 1; }
+        let inner: u32 = parse_ty(c);
+        c.^.nodes[n].a = inner;
+        return n;
+    }
+    if eat_p(c, P_AND) {
+        let n: u32 = node(c, T_REF, line, col);
+        if eat_kw(c, K_MUT) { c.^.nodes[n].b = 1; }
+        let inner: u32 = parse_ty(c);
+        c.^.nodes[n].a = inner;
+        return n;
+    }
+    if eat_p(c, P_MUL) {
+        let n: u32 = node(c, T_PTR, line, col);
+        let inner: u32 = parse_ty(c);
+        c.^.nodes[n].a = inner;
+        return n;
+    }
+    if cur_kind(c) == TK_IDENT {
+        let s: u32 = c.^.toks[c.^.ti].start;
+        let l: u32 = c.^.toks[c.^.ti].len;
+        bump(c);
+        if src_eq(c, s, l, "i32") {
+            let n: u32 = node(c, T_PRIM, line, col);
+            c.^.nodes[n].a = 0;
+            return n;
+        }
+        if src_eq(c, s, l, "u32") {
+            let n: u32 = node(c, T_PRIM, line, col);
+            c.^.nodes[n].a = 1;
+            return n;
+        }
+        if src_eq(c, s, l, "bool") {
+            let n: u32 = node(c, T_PRIM, line, col);
+            c.^.nodes[n].a = 2;
+            return n;
+        }
+        if src_eq(c, s, l, "u8") {
+            let n: u32 = node(c, T_PRIM, line, col);
+            c.^.nodes[n].a = 3;
+            return n;
+        }
+        let n: u32 = node(c, T_NAMED, line, col);
+        c.^.nodes[n].a = s;
+        c.^.nodes[n].b = l;
+        return n;
+    }
+    e_expected_str(c, "expected type");
+    return 0;
+}
+
+// --- expressions (language.md S5) ------------------------------------------
+
+const CMP_LEVEL: u32 = 2;
+const NLEVELS: u32 = 9;
+
+fn is_cmp(p: u32) -> bool {
+    return p == P_EQEQ || p == P_NE || p == P_LT || p == P_GT || p == P_LE || p == P_GE;
+}
+
+fn op_at_level(p: u32, level: u32) -> bool {
+    if level == 0 { return p == P_OROR; }
+    if level == 1 { return p == P_ANDAND; }
+    if level == 3 { return p == P_OR; }
+    if level == 4 { return p == P_XOR; }
+    if level == 5 { return p == P_AND; }
+    if level == 6 { return p == P_SHL || p == P_SHR; }
+    if level == 7 { return p == P_ADD || p == P_SUB; }
+    if level == 8 { return p == P_MUL || p == P_DIV || p == P_MOD; }
+    return false;
+}
+
+fn parse_expr(c: &mut Ctx, asl: bool) -> u32 { return parse_bin(c, 0, asl); }
+
+fn parse_bin(c: &mut Ctx, level: u32, asl: bool) -> u32 {
+    if failed(c) { return 0; }
+    if level == CMP_LEVEL { return parse_cmp(c, asl); }
+    if level >= NLEVELS { return parse_unary(c, asl); }
+    let mut lhs: u32 = parse_bin(c, level + 1, asl);
+    for !failed(c) && cur_kind(c) == TK_PUNCT && op_at_level(cur_val(c), level) {
+        let line: u32 = cur_line(c);
+        let col: u32 = cur_col(c);
+        let op: u32 = cur_val(c);
+        bump(c);
+        let rhs: u32 = parse_bin(c, level + 1, asl);
+        let n: u32 = node(c, E_BINARY, line, col);
+        c.^.nodes[n].a = op;
+        c.^.nodes[n].b = lhs;
+        c.^.nodes[n].c = rhs;
+        let dl: u32 = depth_of(c, lhs);
+        let dr: u32 = depth_of(c, rhs);
+        lhs = deep(c, n, max2(dl, dr));
+    }
+    return lhs;
+}
+
+fn parse_cmp(c: &mut Ctx, asl: bool) -> u32 {
+    let lhs: u32 = parse_bin(c, CMP_LEVEL + 1, asl);
+    if failed(c) { return 0; }
+    if cur_kind(c) == TK_PUNCT && is_cmp(cur_val(c)) {
+        let line: u32 = cur_line(c);
+        let col: u32 = cur_col(c);
+        let op: u32 = cur_val(c);
+        bump(c);
+        let rhs: u32 = parse_bin(c, CMP_LEVEL + 1, asl);
+        if failed(c) { return 0; }
+        if cur_kind(c) == TK_PUNCT && is_cmp(cur_val(c)) {
+            let el: u32 = cur_line(c);
+            let ec: u32 = cur_col(c);
+            err_msg(c, el, ec, "comparison operators cannot be chained");
+            return 0;
+        }
+        let n: u32 = node(c, E_BINARY, line, col);
+        c.^.nodes[n].a = op;
+        c.^.nodes[n].b = lhs;
+        c.^.nodes[n].c = rhs;
+        let dl: u32 = depth_of(c, lhs);
+        let dr: u32 = depth_of(c, rhs);
+        return deep(c, n, max2(dl, dr));
+    }
+    return lhs;
+}
+
+// The `as` level. Unary binds tighter than `as` (language.md S5).
+fn parse_unary(c: &mut Ctx, asl: bool) -> u32 {
+    let mut e: u32 = parse_prefix(c, asl);
+    for !failed(c) && at_kw(c, K_AS) {
+        let line: u32 = cur_line(c);
+        let col: u32 = cur_col(c);
+        bump(c);
+        let t: u32 = parse_ty(c);
+        let n: u32 = node(c, E_CAST, line, col);
+        c.^.nodes[n].a = e;
+        c.^.nodes[n].b = t;
+        let d: u32 = depth_of(c, e);
+        e = deep(c, n, d);
+    }
+    return e;
+}
+
+fn parse_prefix(c: &mut Ctx, asl: bool) -> u32 {
+    if failed(c) { return 0; }
+    if c.^.edepth >= MAX_DEPTH {
+        let line: u32 = cur_line(c);
+        let col: u32 = cur_col(c);
+        e_deep_expr(c, line, col);
+        return 0;
+    }
+    c.^.edepth = c.^.edepth + 1;
+    let e: u32 = parse_prefix_inner(c, asl);
+    c.^.edepth = c.^.edepth - 1;
+    return e;
+}
+
+fn parse_prefix_inner(c: &mut Ctx, asl: bool) -> u32 {
+    let line: u32 = cur_line(c);
+    let col: u32 = cur_col(c);
+    if at_p(c, P_SUB) {
+        bump(c);
+        let k: u32 = parse_prefix(c, asl);
+        let n: u32 = node(c, E_UNARY, line, col);
+        c.^.nodes[n].a = P_SUB;
+        c.^.nodes[n].b = k;
+        let d: u32 = depth_of(c, k);
+        return deep(c, n, d);
+    }
+    if at_p(c, P_NOT) {
+        bump(c);
+        let k: u32 = parse_prefix(c, asl);
+        let n: u32 = node(c, E_UNARY, line, col);
+        c.^.nodes[n].a = P_NOT;
+        c.^.nodes[n].b = k;
+        let d: u32 = depth_of(c, k);
+        return deep(c, n, d);
+    }
+    if at_p(c, P_AND) {
+        bump(c);
+        let n: u32 = node(c, E_BORROW, line, col);
+        if eat_kw(c, K_MUT) { c.^.nodes[n].a = 1; }
+        let k: u32 = parse_prefix(c, asl);
+        c.^.nodes[n].b = k;
+        let d: u32 = depth_of(c, k);
+        return deep(c, n, d);
+    }
+    return parse_postfix(c, asl);
+}
+
+fn parse_postfix(c: &mut Ctx, asl: bool) -> u32 {
+    let mut e: u32 = parse_primary(c, asl);
+    for !failed(c) {
+        let line: u32 = cur_line(c);
+        let col: u32 = cur_col(c);
+        if at_p(c, P_LPAREN) {
+            // inside brackets the struct-literal restriction lifts (language.md S5)
+            bump(c);
+            let mut head: u32 = 0;
+            let mut tail: u32 = 0;
+            for !failed(c) && !at_p(c, P_RPAREN) {
+                let a: u32 = parse_expr(c, true);
+                if head == 0 { head = a; } else { c.^.nodes[tail].next = a; }
+                tail = a;
+                if !eat_p(c, P_COMMA) { break; }
+            }
+            expect_p(c, P_RPAREN);
+            let n: u32 = node(c, E_CALL, line, col);
+            c.^.nodes[n].a = e;
+            c.^.nodes[n].b = head;
+            let de: u32 = depth_of(c, e);
+            let dh: u32 = depth_list(c, head);
+            e = deep(c, n, max2(de, dh));
+        } else if at_p(c, P_LBRACK) {
+            bump(c);
+            let idx: u32 = parse_expr(c, true);
+            expect_p(c, P_RBRACK);
+            let n: u32 = node(c, E_INDEX, line, col);
+            c.^.nodes[n].a = e;
+            c.^.nodes[n].b = idx;
+            let de: u32 = depth_of(c, e);
+            let di: u32 = depth_of(c, idx);
+            e = deep(c, n, max2(de, di));
+        } else if at_p(c, P_DOT) {
+            bump(c);
+            if eat_p(c, P_XOR) {
+                let n: u32 = node(c, E_DEREF, line, col);
+                c.^.nodes[n].a = e;
+                let d: u32 = depth_of(c, e);
+                e = deep(c, n, d);
+            } else {
+                let it: u32 = expect_ident(c);
+                if it == NONE { return e; }
+                let n: u32 = node(c, E_FIELD, line, col);
+                c.^.nodes[n].a = e;
+                let s: u32 = c.^.toks[it].start;
+                let l: u32 = c.^.toks[it].len;
+                c.^.nodes[n].b = s;
+                c.^.nodes[n].c = l;
+                let d: u32 = depth_of(c, e);
+                e = deep(c, n, d);
+            }
+        } else {
+            return e;
+        }
+    }
+    return e;
+}
+
+fn parse_primary(c: &mut Ctx, asl: bool) -> u32 {
+    if failed(c) { return 0; }
+    let line: u32 = cur_line(c);
+    let col: u32 = cur_col(c);
+    let k: u32 = cur_kind(c);
+    if k == TK_INT {
+        let n: u32 = node(c, E_INT, line, col);
+        let v: u32 = cur_val(c);
+        c.^.nodes[n].a = v;
+        bump(c);
+        return n;
+    }
+    if k == TK_CHAR {
+        let n: u32 = node(c, E_CHAR, line, col);
+        let v: u32 = cur_val(c);
+        c.^.nodes[n].a = v;
+        bump(c);
+        return n;
+    }
+    if k == TK_STR {
+        let n: u32 = node(c, E_STR, line, col);
+        let v: u32 = cur_val(c);
+        let aux: u32 = c.^.toks[c.^.ti].aux;
+        c.^.nodes[n].a = v;
+        c.^.nodes[n].b = aux;
+        bump(c);
+        return n;
+    }
+    if at_kw(c, K_TRUE) {
+        let n: u32 = node(c, E_BOOL, line, col);
+        c.^.nodes[n].a = 1;
+        bump(c);
+        return n;
+    }
+    if at_kw(c, K_FALSE) {
+        let n: u32 = node(c, E_BOOL, line, col);
+        c.^.nodes[n].a = 0;
+        bump(c);
+        return n;
+    }
+    if at_kw(c, K_SLICE) || at_kw(c, K_SLICE_MUT) {
+        let is_mut: bool = at_kw(c, K_SLICE_MUT);
+        bump(c);
+        expect_p(c, P_LPAREN);
+        let p: u32 = parse_expr(c, true);
+        expect_p(c, P_COMMA);
+        let ln: u32 = parse_expr(c, true);
+        expect_p(c, P_RPAREN);
+        let n: u32 = node(c, E_SLICE, line, col);
+        if is_mut { c.^.nodes[n].a = 1; }
+        c.^.nodes[n].b = p;
+        c.^.nodes[n].c = ln;
+        let dp: u32 = depth_of(c, p);
+        let dl: u32 = depth_of(c, ln);
+        return deep(c, n, max2(dp, dl));
+    }
+    if at_kw(c, K_OFFSET) {
+        bump(c);
+        expect_p(c, P_LPAREN);
+        let p: u32 = parse_expr(c, true);
+        expect_p(c, P_COMMA);
+        let ix: u32 = parse_expr(c, true);
+        expect_p(c, P_RPAREN);
+        let n: u32 = node(c, E_OFFSET, line, col);
+        c.^.nodes[n].a = p;
+        c.^.nodes[n].b = ix;
+        let dp: u32 = depth_of(c, p);
+        let di: u32 = depth_of(c, ix);
+        return deep(c, n, max2(dp, di));
+    }
+    if at_p(c, P_LPAREN) {
+        bump(c);
+        let e: u32 = parse_expr(c, true);
+        expect_p(c, P_RPAREN);
+        return e;
+    }
+    if k == TK_IDENT {
+        let s: u32 = c.^.toks[c.^.ti].start;
+        let l: u32 = c.^.toks[c.^.ti].len;
+        bump(c);
+        if asl && at_p(c, P_LBRACE) { return parse_struct_lit(c, line, col, s, l); }
+        let n: u32 = node(c, E_IDENT, line, col);
+        c.^.nodes[n].a = s;
+        c.^.nodes[n].b = l;
+        return n;
+    }
+    e_expected_str(c, "expected expression");
+    return 0;
+}
+
+fn parse_struct_lit(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) -> u32 {
+    expect_p(c, P_LBRACE);
+    let mut head: u32 = 0;
+    let mut tail: u32 = 0;
+    for !failed(c) && !at_p(c, P_RBRACE) {
+        let fline: u32 = cur_line(c);
+        let fcol: u32 = cur_col(c);
+        let it: u32 = expect_ident(c);
+        if it == NONE { break; }
+        expect_p(c, P_COLON);
+        let v: u32 = parse_expr(c, true);
+        let f: u32 = node(c, E_LITFIELD, fline, fcol);
+        let fs: u32 = c.^.toks[it].start;
+        let fl: u32 = c.^.toks[it].len;
+        c.^.nodes[f].a = fs;
+        c.^.nodes[f].b = fl;
+        c.^.nodes[f].c = v;
+        let dv: u32 = depth_of(c, v);
+        c.^.nodes[f].depth = dv;
+        if head == 0 { head = f; } else { c.^.nodes[tail].next = f; }
+        tail = f;
+        if !eat_p(c, P_COMMA) { break; }
+    }
+    expect_p(c, P_RBRACE);
+    let n: u32 = node(c, E_STRUCTLIT, line, col);
+    c.^.nodes[n].a = s;
+    c.^.nodes[n].b = l;
+    c.^.nodes[n].c = head;
+    let dh: u32 = depth_list(c, head);
+    return deep(c, n, dh);
+}
+
+// --- statements (language.md S6) -------------------------------------------
+
+fn parse_block(c: &mut Ctx) -> u32 {
+    if failed(c) { return 0; }
+    if c.^.bdepth >= MAX_DEPTH {
+        let line: u32 = cur_line(c);
+        let col: u32 = cur_col(c);
+        err_msg(c, line, col, "block nests too deeply");
+        return 0;
+    }
+    c.^.bdepth = c.^.bdepth + 1;
+    expect_p(c, P_LBRACE);
+    let mut head: u32 = 0;
+    let mut tail: u32 = 0;
+    for !failed(c) && !at_p(c, P_RBRACE) {
+        if cur_kind(c) == TK_EOF {
+            e_expected_p(c, P_RBRACE);
+            return 0;
+        }
+        let s: u32 = parse_stmt(c);
+        if failed(c) { return 0; }
+        if head == 0 { head = s; } else { c.^.nodes[tail].next = s; }
+        tail = s;
+    }
+    expect_p(c, P_RBRACE);
+    c.^.bdepth = c.^.bdepth - 1;
+    return head;
+}
+
+fn is_assign_op(p: u32) -> bool {
+    return p == P_EQ || p == P_ADDEQ || p == P_SUBEQ || p == P_MULEQ || p == P_DIVEQ
+        || p == P_MODEQ || p == P_ANDEQ || p == P_OREQ || p == P_XOREQ
+        || p == P_SHLEQ || p == P_SHREQ;
+}
+
+fn parse_stmt(c: &mut Ctx) -> u32 {
+    if failed(c) { return 0; }
+    let line: u32 = cur_line(c);
+    let col: u32 = cur_col(c);
+    if at_kw(c, K_LET) {
+        let s: u32 = parse_let(c);
+        expect_p(c, P_SEMI);
+        return s;
+    }
+    if at_kw(c, K_IF) { return parse_if(c); }
+    if at_kw(c, K_FOR) { return parse_for(c); }
+    if at_kw(c, K_MATCH) { return parse_match(c); }
+    if at_kw(c, K_UNSAFE) {
+        bump(c);
+        let n: u32 = node(c, S_UNSAFE, line, col);
+        let b: u32 = parse_block(c);
+        c.^.nodes[n].a = b;
+        return n;
+    }
+    if eat_kw(c, K_BREAK) {
+        expect_p(c, P_SEMI);
+        return node(c, S_BREAK, line, col);
+    }
+    if eat_kw(c, K_CONTINUE) {
+        expect_p(c, P_SEMI);
+        return node(c, S_CONTINUE, line, col);
+    }
+    if eat_kw(c, K_RETURN) {
+        let n: u32 = node(c, S_RETURN, line, col);
+        if eat_p(c, P_SEMI) { return n; }
+        let v: u32 = parse_expr(c, false);
+        c.^.nodes[n].a = v;
+        expect_p(c, P_SEMI);
+        return n;
+    }
+    let s: u32 = parse_simple_stmt(c);
+    expect_p(c, P_SEMI);
+    return s;
+}
+
+// Assignment or a call statement. The caller eats the `;` -- the for header
+// needs the same production without one.
+fn parse_simple_stmt(c: &mut Ctx) -> u32 {
+    if failed(c) { return 0; }
+    let line: u32 = cur_line(c);
+    let col: u32 = cur_col(c);
+    let e: u32 = parse_expr(c, false);
+    if failed(c) { return 0; }
+    if cur_kind(c) == TK_PUNCT && is_assign_op(cur_val(c)) {
+        let op: u32 = cur_val(c);
+        bump(c);
+        let v: u32 = parse_expr(c, true);
+        let n: u32 = node(c, S_ASSIGN, line, col);
+        c.^.nodes[n].a = e;
+        c.^.nodes[n].b = op;
+        c.^.nodes[n].c = v;
+        return n;
+    }
+    if c.^.nodes[e].kind != E_CALL {
+        err_msg(c, line, col, "expression statement must be a call");
+        return 0;
+    }
+    let n: u32 = node(c, S_EXPR, line, col);
+    c.^.nodes[n].a = e;
+    return n;
+}
+
+fn parse_let(c: &mut Ctx) -> u32 {
+    let line: u32 = cur_line(c);
+    let col: u32 = cur_col(c);
+    expect_kw(c, K_LET);
+    let n: u32 = node(c, S_LET, line, col);
+    if eat_kw(c, K_MUT) { c.^.nodes[n].e = 1; }
+    let it: u32 = expect_ident(c);
+    if it == NONE { return n; }
+    let s: u32 = c.^.toks[it].start;
+    let l: u32 = c.^.toks[it].len;
+    c.^.nodes[n].a = s;
+    c.^.nodes[n].b = l;
+    if eat_p(c, P_COLON) {
+        let t: u32 = parse_ty(c);
+        c.^.nodes[n].c = t;
+    }
+    expect_p(c, P_EQ);
+    let init: u32 = parse_expr(c, true);
+    c.^.nodes[n].d = init;
+    return n;
+}
+
+fn parse_if(c: &mut Ctx) -> u32 {
+    let line: u32 = cur_line(c);
+    let col: u32 = cur_col(c);
+    expect_kw(c, K_IF);
+    let n: u32 = node(c, S_IF, line, col);
+    let cond: u32 = parse_expr(c, false);
+    c.^.nodes[n].a = cond;
+    let then: u32 = parse_block(c);
+    c.^.nodes[n].b = then;
+    if eat_kw(c, K_ELSE) {
+        c.^.nodes[n].d = 1;
+        if at_kw(c, K_IF) {
+            // an else-if chain is recursion too; it counts as block nesting
+            if c.^.bdepth >= MAX_DEPTH {
+                let el: u32 = cur_line(c);
+                let ec: u32 = cur_col(c);
+                err_msg(c, el, ec, "block nests too deeply");
+                return n;
+            }
+            c.^.bdepth = c.^.bdepth + 1;
+            let els: u32 = parse_if(c);
+            c.^.nodes[n].c = els;
+            c.^.bdepth = c.^.bdepth - 1;
+        } else {
+            let els: u32 = parse_block(c);
+            c.^.nodes[n].c = els;
+        }
+    }
+    return n;
+}
+
+fn parse_for(c: &mut Ctx) -> u32 {
+    let line: u32 = cur_line(c);
+    let col: u32 = cur_col(c);
+    expect_kw(c, K_FOR);
+    let n: u32 = node(c, S_FOR, line, col);
+    if at_p(c, P_LBRACE) {
+        let body: u32 = parse_block(c);
+        c.^.nodes[n].d = body;
+        return n;
+    }
+    if at_kw(c, K_LET) {
+        let init: u32 = parse_let(c);
+        c.^.nodes[n].a = init;
+        expect_p(c, P_SEMI);
+        let cond: u32 = parse_expr(c, false);
+        c.^.nodes[n].b = cond;
+        expect_p(c, P_SEMI);
+        let post: u32 = parse_simple_stmt(c);
+        c.^.nodes[n].c = post;
+        let body: u32 = parse_block(c);
+        c.^.nodes[n].d = body;
+        return n;
+    }
+    let cond: u32 = parse_expr(c, false);
+    c.^.nodes[n].b = cond;
+    let body: u32 = parse_block(c);
+    c.^.nodes[n].d = body;
+    return n;
+}
+
+fn parse_match(c: &mut Ctx) -> u32 {
+    let line: u32 = cur_line(c);
+    let col: u32 = cur_col(c);
+    expect_kw(c, K_MATCH);
+    let n: u32 = node(c, S_MATCH, line, col);
+    let scr: u32 = parse_expr(c, false);
+    c.^.nodes[n].a = scr;
+    expect_p(c, P_LBRACE);
+    let mut head: u32 = 0;
+    let mut tail: u32 = 0;
+    for !failed(c) && !at_p(c, P_RBRACE) {
+        let aline: u32 = cur_line(c);
+        let acol: u32 = cur_col(c);
+        let arm: u32 = node(c, S_ARM, aline, acol);
+        let ts: u32 = c.^.toks[c.^.ti].start;
+        let tl: u32 = c.^.toks[c.^.ti].len;
+        if cur_kind(c) == TK_IDENT && src_eq(c, ts, tl, "_") {
+            bump(c);
+            c.^.nodes[arm].e = 1;
+        } else {
+            let it: u32 = expect_ident(c);
+            if it == NONE { break; }
+            let s: u32 = c.^.toks[it].start;
+            let l: u32 = c.^.toks[it].len;
+            c.^.nodes[arm].a = s;
+            c.^.nodes[arm].b = l;
+            if eat_p(c, P_LPAREN) {
+                let mut bh: u32 = 0;
+                let mut bt: u32 = 0;
+                for !failed(c) && !at_p(c, P_RPAREN) {
+                    let bline: u32 = cur_line(c);
+                    let bcol: u32 = cur_col(c);
+                    let bi: u32 = expect_ident(c);
+                    if bi == NONE { break; }
+                    let b: u32 = node(c, S_BIND, bline, bcol);
+                    let bs: u32 = c.^.toks[bi].start;
+                    let bl: u32 = c.^.toks[bi].len;
+                    c.^.nodes[b].a = bs;
+                    c.^.nodes[b].b = bl;
+                    if bh == 0 { bh = b; } else { c.^.nodes[bt].next = b; }
+                    bt = b;
+                    if !eat_p(c, P_COMMA) { break; }
+                }
+                expect_p(c, P_RPAREN);
+                c.^.nodes[arm].c = bh;
+            }
+        }
+        expect_p(c, P_FATARROW);
+        let body: u32 = parse_block(c);
+        c.^.nodes[arm].d = body;
+        if head == 0 { head = arm; } else { c.^.nodes[tail].next = arm; }
+        tail = arm;
+    }
+    expect_p(c, P_RBRACE);
+    c.^.nodes[n].b = head;
+    return n;
+}
+
+// --- declarations (language.md S4) -----------------------------------------
+
+fn parse_fn(c: &mut Ctx) -> u32 {
+    let line: u32 = cur_line(c);
+    let col: u32 = cur_col(c);
+    expect_kw(c, K_FN);
+    let n: u32 = node(c, D_FN, line, col);
+    let it: u32 = expect_ident(c);
+    if it == NONE { return n; }
+    let s: u32 = c.^.toks[it].start;
+    let l: u32 = c.^.toks[it].len;
+    c.^.nodes[n].a = s;
+    c.^.nodes[n].b = l;
+    expect_p(c, P_LPAREN);
+    let mut head: u32 = 0;
+    let mut tail: u32 = 0;
+    for !failed(c) && !at_p(c, P_RPAREN) {
+        let pline: u32 = cur_line(c);
+        let pcol: u32 = cur_col(c);
+        let pi: u32 = expect_ident(c);
+        if pi == NONE { break; }
+        expect_p(c, P_COLON);
+        let p: u32 = node(c, D_PARAM, pline, pcol);
+        let ps: u32 = c.^.toks[pi].start;
+        let pl: u32 = c.^.toks[pi].len;
+        c.^.nodes[p].a = ps;
+        c.^.nodes[p].b = pl;
+        let pt: u32 = parse_ty(c);
+        c.^.nodes[p].c = pt;
+        if head == 0 { head = p; } else { c.^.nodes[tail].next = p; }
+        tail = p;
+        if !eat_p(c, P_COMMA) { break; }
+    }
+    expect_p(c, P_RPAREN);
+    c.^.nodes[n].c = head;
+    if eat_p(c, P_ARROW) {
+        let r: u32 = parse_ty(c);
+        c.^.nodes[n].d = r;
+    }
+    let body: u32 = parse_block(c);
+    c.^.nodes[n].e = body;
+    return n;
+}
+
+fn parse_struct(c: &mut Ctx) -> u32 {
+    let line: u32 = cur_line(c);
+    let col: u32 = cur_col(c);
+    expect_kw(c, K_STRUCT);
+    let n: u32 = node(c, D_STRUCT, line, col);
+    let it: u32 = expect_ident(c);
+    if it == NONE { return n; }
+    let s: u32 = c.^.toks[it].start;
+    let l: u32 = c.^.toks[it].len;
+    c.^.nodes[n].a = s;
+    c.^.nodes[n].b = l;
+    expect_p(c, P_LBRACE);
+    let mut head: u32 = 0;
+    let mut tail: u32 = 0;
+    for !failed(c) && !at_p(c, P_RBRACE) {
+        let fline: u32 = cur_line(c);
+        let fcol: u32 = cur_col(c);
+        let fi: u32 = expect_ident(c);
+        if fi == NONE { break; }
+        expect_p(c, P_COLON);
+        let f: u32 = node(c, D_FIELD, fline, fcol);
+        let fs: u32 = c.^.toks[fi].start;
+        let fl: u32 = c.^.toks[fi].len;
+        c.^.nodes[f].a = fs;
+        c.^.nodes[f].b = fl;
+        let ft: u32 = parse_ty(c);
+        c.^.nodes[f].c = ft;
+        if head == 0 { head = f; } else { c.^.nodes[tail].next = f; }
+        tail = f;
+        if !eat_p(c, P_COMMA) { break; }
+    }
+    expect_p(c, P_RBRACE);
+    c.^.nodes[n].c = head;
+    return n;
+}
+
+fn parse_enum(c: &mut Ctx) -> u32 {
+    let line: u32 = cur_line(c);
+    let col: u32 = cur_col(c);
+    expect_kw(c, K_ENUM);
+    let n: u32 = node(c, D_ENUM, line, col);
+    let it: u32 = expect_ident(c);
+    if it == NONE { return n; }
+    let s: u32 = c.^.toks[it].start;
+    let l: u32 = c.^.toks[it].len;
+    c.^.nodes[n].a = s;
+    c.^.nodes[n].b = l;
+    expect_p(c, P_LBRACE);
+    let mut head: u32 = 0;
+    let mut tail: u32 = 0;
+    for !failed(c) && !at_p(c, P_RBRACE) {
+        let vline: u32 = cur_line(c);
+        let vcol: u32 = cur_col(c);
+        let vi: u32 = expect_ident(c);
+        if vi == NONE { break; }
+        let v: u32 = node(c, D_VARIANT, vline, vcol);
+        let vs: u32 = c.^.toks[vi].start;
+        let vl: u32 = c.^.toks[vi].len;
+        c.^.nodes[v].a = vs;
+        c.^.nodes[v].b = vl;
+        if eat_p(c, P_LPAREN) {
+            let mut ph: u32 = 0;
+            let mut pt: u32 = 0;
+            for !failed(c) && !at_p(c, P_RPAREN) {
+                let t: u32 = parse_ty(c);
+                if t == 0 { break; }
+                if ph == 0 { ph = t; } else { c.^.nodes[pt].next = t; }
+                pt = t;
+                if !eat_p(c, P_COMMA) { break; }
+            }
+            expect_p(c, P_RPAREN);
+            c.^.nodes[v].c = ph;
+        }
+        if head == 0 { head = v; } else { c.^.nodes[tail].next = v; }
+        tail = v;
+        if !eat_p(c, P_COMMA) { break; }
+    }
+    expect_p(c, P_RBRACE);
+    c.^.nodes[n].c = head;
+    return n;
+}
+
+fn parse_const(c: &mut Ctx) -> u32 {
+    let line: u32 = cur_line(c);
+    let col: u32 = cur_col(c);
+    expect_kw(c, K_CONST);
+    let n: u32 = node(c, D_CONST, line, col);
+    let it: u32 = expect_ident(c);
+    if it == NONE { return n; }
+    let s: u32 = c.^.toks[it].start;
+    let l: u32 = c.^.toks[it].len;
+    c.^.nodes[n].a = s;
+    c.^.nodes[n].b = l;
+    expect_p(c, P_COLON);
+    let t: u32 = parse_ty(c);
+    c.^.nodes[n].c = t;
+    expect_p(c, P_EQ);
+    let v: u32 = parse_expr(c, false);
+    c.^.nodes[n].d = v;
+    expect_p(c, P_SEMI);
+    return n;
+}
+
+fn parse_program(c: &mut Ctx) {
+    c.^.ti = 0;
+    c.^.edepth = 0;
+    c.^.bdepth = 0;
+    let mut head: u32 = 0;
+    let mut tail: u32 = 0;
+    for !failed(c) && cur_kind(c) != TK_EOF {
+        let mut d: u32 = 0;
+        if at_kw(c, K_FN) {
+            d = parse_fn(c);
+        } else if at_kw(c, K_STRUCT) {
+            d = parse_struct(c);
+        } else if at_kw(c, K_ENUM) {
+            d = parse_enum(c);
+        } else if at_kw(c, K_CONST) {
+            d = parse_const(c);
+        } else {
+            e_expected_str(c, "expected `fn`, `struct`, `enum` or `const`");
+            return;
+        }
+        if failed(c) { return; }
+        if head == 0 { head = d; } else { c.^.nodes[tail].next = d; }
+        tail = d;
+    }
+    c.^.decls = head;
+}
+
+// ===========================================================================
 // Entry point (implementation.md S7)
 // ===========================================================================
 
@@ -632,12 +1754,31 @@ fn compile(src_len_in: u32) -> i32 {
             col: 1,
             toks: slice_mut(heap0 as *Token, ntok_max),
             ntok: 0,
+            nodes: slice_mut(heap0 as *Node, 0),
+            nnode: 1,
+            ti: 0,
+            edepth: 0,
+            bdepth: 0,
+            decls: 0,
             heap: heap0 + tok_bytes,
             err: 0,
             out: OUT,
         };
 
         lex(&mut c);
+
+        // The node arena is sized from the token count, not the source length --
+        // there is at most one node per token and tokens are far fewer than
+        // bytes. Sizing it before lexing would reserve megabytes for nothing.
+        if c.err == 0 {
+            let nmax: u32 = c.ntok + 2;
+            c.nodes = slice_mut(c.heap as *Node, nmax);
+            let nodes_at: u32 = c.heap;
+            c.heap = c.heap + nmax * 52;
+            parse_program(&mut c);
+            stw(G_NODES, nodes_at);
+            stw(G_DECLS, c.decls);
+        }
 
         // debug window for the workbench
         let toks_at: u32 = heap0;
