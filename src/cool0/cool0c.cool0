@@ -113,6 +113,9 @@ struct Ctx {
     marks: []mut u32,
     marks_n: u32,
     curfn: u32,
+    loopd: u32,
+    unsafed: u32,
+    place_mut: u32,   // check_place's second result
 
     // bump heap for string literal bodies. Nothing is ever freed -- the
     // compiler runs once and the host reclaims the memory.
@@ -3076,6 +3079,695 @@ fn diverges(c: &Ctx, head: u32) -> bool {
 }
 
 // ===========================================================================
+// Checking a function body
+// ===========================================================================
+
+fn e_missing_return(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+    if err_open(c, line, col) {
+        put_str(c, "function ");
+        put_q_src(c, s, l);
+        put_str(c, " must return a value on every path");
+        err_end(c);
+    }
+}
+
+fn check_fn(c: &mut Ctx, fi: u32) {
+    let d: u32 = c.^.fns[fi].decl;
+    c.^.curfn = fi;
+    c.^.scope_n = 0;
+    c.^.marks_n = 0;
+    c.^.loopd = 0;
+    c.^.unsafed = 0;
+    push_scope(c);
+    let mut p: u32 = c.^.nodes[d].c;
+    let mut pi: u32 = c.^.fns[fi].params;
+    for p != 0 && pi != 0 && !failed(c) {
+        let ps: u32 = c.^.nodes[p].a;
+        let pl: u32 = c.^.nodes[p].b;
+        let pline: u32 = c.^.nodes[p].line;
+        let pcol: u32 = c.^.nodes[p].col;
+        let pt: u32 = c.^.params[pi].ty;
+        let loc: u32 = declare_local(c, ps, pl, pt, 0, 1, pline, pcol);
+        c.^.nodes[p].aux = loc;
+        p = c.^.nodes[p].next;
+        pi = c.^.params[pi].next;
+    }
+    let body: u32 = c.^.nodes[d].e;
+    check_block(c, body);
+    if failed(c) { return; }
+    let ret: u32 = c.^.fns[fi].ret;
+    if ty_kind(c, ret) != TYK_VOID && !diverges(c, body) {
+        let dl: u32 = c.^.nodes[d].line;
+        let dc: u32 = c.^.nodes[d].col;
+        let ns: u32 = c.^.nodes[d].a;
+        let nl: u32 = c.^.nodes[d].b;
+        e_missing_return(c, dl, dc, ns, nl);
+        return;
+    }
+    pop_scope(c);
+}
+
+fn check_block(c: &mut Ctx, head: u32) {
+    push_scope(c);
+    let mut s: u32 = head;
+    for s != 0 && !failed(c) {
+        check_stmt(c, s);
+        s = c.^.nodes[s].next;
+    }
+    pop_scope(c);
+}
+
+fn e_immutable_place(c: &mut Ctx, line: u32, col: u32) {
+    err_msg(c, line, col, "cannot assign to an immutable place");
+}
+
+fn e_op_needs_int(c: &mut Ctx, line: u32, col: u32, op: u32, t: u32) {
+    if err_open(c, line, col) {
+        put_q_punct(c, op);
+        put_str(c, " requires an integer, found ");
+        put_q_ty(c, t);
+        err_end(c);
+    }
+}
+
+fn e_no_value(c: &mut Ctx, line: u32, col: u32, t: u32) {
+    if err_open(c, line, col) {
+        put_str(c, "expected ");
+        put_q_ty(c, t);
+        put_str(c, ", found no value");
+        err_end(c);
+    }
+}
+
+fn e_u8_local(c: &mut Ctx, line: u32, col: u32) {
+    if err_open(c, line, col) {
+        put_ch(c, 96);
+        put_str(c, "u8");
+        put_ch(c, 96);
+        put_str(c, " is storage-only; there are no u8 locals");
+        err_end(c);
+    }
+}
+
+fn check_local_ty(c: &mut Ctx, t: u32, line: u32, col: u32) {
+    let k: u32 = ty_kind(c, t);
+    if k == TYK_U8 { e_u8_local(c, line, col); return; }
+    if k == TYK_REF {
+        err_msg(c, line, col, "a borrow cannot be bound to a local");
+        return;
+    }
+    if k == TYK_VOID {
+        if err_open(c, line, col) {
+            put_str(c, "local cannot have type ");
+            put_ch(c, 96);
+            put_str(c, "void");
+            put_ch(c, 96);
+            err_end(c);
+        }
+    }
+}
+
+// the base operator behind a compound assignment
+fn assign_base_op(p: u32) -> u32 {
+    if p == P_ADDEQ { return P_ADD; }
+    if p == P_SUBEQ { return P_SUB; }
+    if p == P_MULEQ { return P_MUL; }
+    if p == P_DIVEQ { return P_DIV; }
+    if p == P_MODEQ { return P_MOD; }
+    if p == P_ANDEQ { return P_AND; }
+    if p == P_OREQ { return P_OR; }
+    if p == P_XOREQ { return P_XOR; }
+    if p == P_SHLEQ { return P_SHL; }
+    return P_SHR;
+}
+
+fn check_stmt(c: &mut Ctx, s: u32) {
+    if failed(c) { return; }
+    let k: u32 = c.^.nodes[s].kind;
+    let line: u32 = c.^.nodes[s].line;
+    let col: u32 = c.^.nodes[s].col;
+    let sa: u32 = c.^.nodes[s].a;
+    let sb: u32 = c.^.nodes[s].b;
+    let sc: u32 = c.^.nodes[s].c;
+    let sd: u32 = c.^.nodes[s].d;
+
+    if k == S_LET {
+        let tn: u32 = sc;
+        let mut declared: u32 = 0;
+        if tn != 0 {
+            declared = resolve_ty(c, tn);
+            if failed(c) { return; }
+            check_local_ty(c, declared, line, col);
+            if failed(c) { return; }
+        }
+        let mut t: u32 = check_init(c, sd, declared);
+        if failed(c) { return; }
+        if declared == 0 {
+            if ty_kind(c, t) == TYK_INTLIT {
+                t = TY_I32;
+                retype(c, sd, t);
+            }
+            check_local_ty(c, t, line, col);
+            if failed(c) { return; }
+        } else {
+            t = declared;
+        }
+        let se: u32 = c.^.nodes[s].e;
+        let loc: u32 = declare_local(c, sa, sb, t, se, 0, line, col);
+        c.^.nodes[s].aux = loc;
+        return;
+    }
+
+    if k == S_ASSIGN {
+        let ty: u32 = check_place(c, sa);
+        if failed(c) { return; }
+        if c.^.place_mut == 0 { e_immutable_place(c, line, col); return; }
+        let want: u32 = read_ty(c, ty);
+        let op: u32 = sb;
+        if op == P_EQ {
+            check_init(c, sc, want);
+            return;
+        }
+        let base: u32 = assign_base_op(op);
+        if base == P_SHL || base == P_SHR {
+            if !is_int_ty(c, want) { e_op_needs_int(c, line, col, base, want); return; }
+            coerce(c, sc, TY_U32);
+            return;
+        }
+        coerce(c, sc, want);
+        if failed(c) { return; }
+        check_binop_types(c, line, col, base, want, want);
+        return;
+    }
+
+    if k == S_EXPR {
+        let t: u32 = check_expr(c, sa, 0);
+        if failed(c) { return; }
+        if ty_kind(c, t) != TYK_VOID { c.^.nodes[s].aux = 1; }
+        return;
+    }
+
+    if k == S_IF {
+        coerce(c, sa, TY_BOOL);
+        if failed(c) { return; }
+        check_block(c, sb);
+        if sd != 0 { check_block(c, sc); }
+        return;
+    }
+
+    if k == S_FOR {
+        push_scope(c);
+        if sa != 0 { check_stmt(c, sa); }
+        if sb != 0 { coerce(c, sb, TY_BOOL); }
+        c.^.loopd = c.^.loopd + 1;
+        check_block(c, sd);
+        if sc != 0 { check_stmt(c, sc); }
+        c.^.loopd = c.^.loopd - 1;
+        pop_scope(c);
+        return;
+    }
+
+    if k == S_BREAK || k == S_CONTINUE {
+        if c.^.loopd == 0 {
+            if err_open(c, line, col) {
+                put_ch(c, 96);
+                if k == S_BREAK { put_str(c, "break"); } else { put_str(c, "continue"); }
+                put_ch(c, 96);
+                put_str(c, " outside of a loop");
+                err_end(c);
+            }
+        }
+        return;
+    }
+
+    if k == S_RETURN {
+        let fi: u32 = c.^.curfn;
+        let ret: u32 = c.^.fns[fi].ret;
+        if sa == 0 {
+            if ty_kind(c, ret) != TYK_VOID { e_no_value(c, line, col, ret); }
+            return;
+        }
+        if ty_kind(c, ret) == TYK_VOID {
+            err_msg(c, line, col, "function has no return type");
+            return;
+        }
+        coerce(c, sa, ret);
+        return;
+    }
+
+    if k == S_MATCH { check_match(c, s); return; }
+
+    if k == S_UNSAFE {
+        c.^.unsafed = c.^.unsafed + 1;
+        check_block(c, sa);
+        c.^.unsafed = c.^.unsafed - 1;
+        return;
+    }
+}
+
+// ===========================================================================
+// match (language.md S6)
+// ===========================================================================
+
+fn e_match_needs_enum(c: &mut Ctx, line: u32, col: u32, t: u32) {
+    if err_open(c, line, col) {
+        put_ch(c, 96);
+        put_str(c, "match");
+        put_ch(c, 96);
+        put_str(c, " requires an enum, found ");
+        put_q_ty(c, t);
+        err_end(c);
+    }
+}
+
+fn e_no_variant(c: &mut Ctx, line: u32, col: u32, ens: u32, enl: u32,
+                vs: u32, vl: u32) {
+    if err_open(c, line, col) {
+        put_q_src(c, ens, enl);
+        put_str(c, " has no variant ");
+        put_q_src(c, vs, vl);
+        err_end(c);
+    }
+}
+
+fn e_dup_arm(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+    if err_open(c, line, col) {
+        put_str(c, "duplicate arm for ");
+        put_q_src(c, s, l);
+        err_end(c);
+    }
+}
+
+fn e_bind_arity(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32,
+                want: u32, got: u32) {
+    if err_open(c, line, col) {
+        put_str(c, "variant ");
+        put_q_src(c, s, l);
+        put_str(c, " takes ");
+        put_num(c, want);
+        put_str(c, " binding(s), found ");
+        put_num(c, got);
+        err_end(c);
+    }
+}
+
+fn e_nonexhaustive(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+    if err_open(c, line, col) {
+        put_str(c, "non-exhaustive match: missing ");
+        put_q_src(c, s, l);
+        err_end(c);
+    }
+}
+
+fn find_variant(c: &Ctx, ei: u32, s: u32, l: u32) -> u32 {
+    let mut v: u32 = c.^.enums[ei].variants;
+    for v != 0 {
+        let ns: u32 = c.^.variants[v].ns;
+        let nl: u32 = c.^.variants[v].nl;
+        if src_eq2(c, ns, nl, s, l) { return v; }
+        v = c.^.variants[v].next;
+    }
+    return 0;
+}
+
+fn arm_for_variant(c: &Ctx, head: u32, s: u32, l: u32) -> u32 {
+    let mut a: u32 = head;
+    for a != 0 {
+        if c.^.nodes[a].e == 0 {
+            let ns: u32 = c.^.nodes[a].a;
+            let nl: u32 = c.^.nodes[a].b;
+            if src_eq2(c, ns, nl, s, l) { return a; }
+        }
+        a = c.^.nodes[a].next;
+    }
+    return 0;
+}
+
+fn list_len(c: &Ctx, head: u32) -> u32 {
+    let mut n: u32 = 0;
+    let mut p: u32 = head;
+    for p != 0 {
+        n += 1;
+        p = c.^.nodes[p].next;
+    }
+    return n;
+}
+
+fn check_match(c: &mut Ctx, s: u32) {
+    let scr: u32 = c.^.nodes[s].a;
+    let ty: u32 = check_place(c, scr);
+    if failed(c) { return; }
+    let line: u32 = c.^.nodes[s].line;
+    let col: u32 = c.^.nodes[s].col;
+    if ty_kind(c, ty) != TYK_NAMED {
+        e_match_needs_enum(c, line, col, ty);
+        return;
+    }
+    let ei: u32 = agg_enum(c, ty);
+    if ei == 0 {
+        e_match_needs_enum(c, line, col, ty);
+        return;
+    }
+    c.^.nodes[s].c = ei;
+    let head: u32 = c.^.nodes[s].b;
+    let mut wild: u32 = 0;
+    let mut seen: u32 = 0;
+    let mut a: u32 = head;
+    for a != 0 && !failed(c) {
+        let al: u32 = c.^.nodes[a].line;
+        let ac: u32 = c.^.nodes[a].col;
+        let ans: u32 = c.^.nodes[a].a;
+        let anl: u32 = c.^.nodes[a].b;
+        if c.^.nodes[a].e != 0 {
+            if c.^.nodes[a].next != 0 {
+                if err_open(c, al, ac) {
+                    put_ch(c, 96);
+                    put_str(c, "_");
+                    put_ch(c, 96);
+                    put_str(c, " must be the last arm");
+                    err_end(c);
+                }
+                return;
+            }
+            wild = 1;
+            push_scope(c);
+            let ad: u32 = c.^.nodes[a].d;
+            check_block(c, ad);
+            pop_scope(c);
+            a = c.^.nodes[a].next;
+            continue;
+        }
+        let v: u32 = find_variant(c, ei, ans, anl);
+        if v == 0 {
+            let ens: u32 = c.^.enums[ei].ns;
+            let enl: u32 = c.^.enums[ei].nl;
+            e_no_variant(c, al, ac, ens, enl, ans, anl);
+            return;
+        }
+        if arm_for_variant(c, head, ans, anl) != a {
+            e_dup_arm(c, al, ac, ans, anl);
+            return;
+        }
+        c.^.nodes[a].aux = v;
+        let binds: u32 = c.^.nodes[a].c;
+        let nb: u32 = list_len(c, binds);
+        let nargs: u32 = c.^.variants[v].nargs;
+        if nb != nargs {
+            e_bind_arity(c, al, ac, ans, anl, nargs, nb);
+            return;
+        }
+        push_scope(c);
+        let mut b: u32 = binds;
+        let mut f: u32 = c.^.variants[v].payload;
+        for b != 0 && !failed(c) {
+            let bs: u32 = c.^.nodes[b].a;
+            let bl: u32 = c.^.nodes[b].b;
+            let bline: u32 = c.^.nodes[b].line;
+            let bcol: u32 = c.^.nodes[b].col;
+            let ft: u32 = c.^.fields[f].ty;
+            let bt: u32 = read_ty(c, ft);
+            let loc: u32 = declare_local(c, bs, bl, bt, 0, 0, bline, bcol);
+            c.^.nodes[b].aux = loc;
+            b = c.^.nodes[b].next;
+            f = c.^.fields[f].next;
+        }
+        let ad: u32 = c.^.nodes[a].d;
+        check_block(c, ad);
+        pop_scope(c);
+        seen += 1;
+        a = c.^.nodes[a].next;
+    }
+    if failed(c) { return; }
+    if wild == 0 && seen != c.^.enums[ei].nvar {
+        let mut v: u32 = c.^.enums[ei].variants;
+        for v != 0 {
+            let vs: u32 = c.^.variants[v].ns;
+            let vl: u32 = c.^.variants[v].nl;
+            if arm_for_variant(c, head, vs, vl) == 0 {
+                e_nonexhaustive(c, line, col, vs, vl);
+                return;
+            }
+            v = c.^.variants[v].next;
+        }
+    }
+    c.^.nodes[s].d = wild;
+}
+
+// ===========================================================================
+// Initializers
+// ===========================================================================
+
+fn is_enum_lit(c: &Ctx, e: u32) -> bool {
+    let mut b: u32 = e;
+    if c.^.nodes[e].kind == E_CALL { b = c.^.nodes[e].a; }
+    if c.^.nodes[b].kind != E_FIELD { return false; }
+    let base: u32 = c.^.nodes[b].a;
+    if c.^.nodes[base].kind != E_IDENT { return false; }
+    let s: u32 = c.^.nodes[base].a;
+    let l: u32 = c.^.nodes[base].b;
+    return find_enum(c, s, l) != 0;
+}
+
+fn e_copy_agg(c: &mut Ctx, line: u32, col: u32, t: u32) {
+    if err_open(c, line, col) {
+        put_str(c, "cannot copy aggregate ");
+        put_q_ty(c, t);
+        err_end(c);
+    }
+}
+
+fn check_init(c: &mut Ctx, e: u32, want: u32) -> u32 {
+    if failed(c) { return TY_I32; }
+    if c.^.nodes[e].kind == E_STRUCTLIT { return check_struct_lit(c, e, want); }
+    if is_enum_lit(c, e) { return check_enum_lit(c, e, want); }
+    if want != 0 && !is_aggregate(c, want) { return coerce(c, e, want); }
+    let t: u32 = check_expr(c, e, want);
+    if failed(c) { return TY_I32; }
+    let line: u32 = c.^.nodes[e].line;
+    let col: u32 = c.^.nodes[e].col;
+    if is_aggregate(c, t) {
+        e_copy_agg(c, line, col, t);
+        return TY_I32;
+    }
+    if want != 0 && t != want {
+        e_expected_ty(c, line, col, want, t);
+        return TY_I32;
+    }
+    return t;
+}
+
+fn e_unknown_struct(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+    if err_open(c, line, col) {
+        put_str(c, "unknown struct ");
+        put_q_src(c, s, l);
+        err_end(c);
+    }
+}
+
+fn e_field_count(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32, n: u32) {
+    if err_open(c, line, col) {
+        put_q_src(c, s, l);
+        put_str(c, " has ");
+        put_num(c, n);
+        put_str(c, " field(s)");
+        err_end(c);
+    }
+}
+
+fn e_field_order(c: &mut Ctx, line: u32, col: u32, ws: u32, wl: u32,
+                 gs: u32, gl: u32) {
+    if err_open(c, line, col) {
+        put_str(c, "expected field ");
+        put_q_src(c, ws, wl);
+        put_str(c, ", found ");
+        put_q_src(c, gs, gl);
+        err_end(c);
+    }
+}
+
+fn fi_count(c: &Ctx, head: u32) -> u32 {
+    let mut n: u32 = 0;
+    let mut p: u32 = head;
+    for p != 0 {
+        n += 1;
+        p = c.^.fields[p].next;
+    }
+    return n;
+}
+
+fn check_struct_lit(c: &mut Ctx, e: u32, want: u32) -> u32 {
+    let line: u32 = c.^.nodes[e].line;
+    let col: u32 = c.^.nodes[e].col;
+    let ns: u32 = c.^.nodes[e].a;
+    let nl: u32 = c.^.nodes[e].b;
+    let si: u32 = find_struct(c, ns, nl);
+    if si == 0 {
+        e_unknown_struct(c, line, col, ns, nl);
+        return TY_I32;
+    }
+    let self_ty: u32 = ty_named(c, ns, nl);
+    if want != 0 && want != self_ty {
+        if err_open(c, line, col) {
+            put_str(c, "expected ");
+            put_q_ty(c, want);
+            put_str(c, ", found ");
+            put_q_src(c, ns, nl);
+            err_end(c);
+        }
+        return TY_I32;
+    }
+    let fhead: u32 = c.^.structs[si].fields;
+    let nf: u32 = fi_count(c, fhead);
+    let lits: u32 = c.^.nodes[e].c;
+    if list_len(c, lits) != nf {
+        e_field_count(c, line, col, ns, nl, nf);
+        return TY_I32;
+    }
+    let mut lf: u32 = lits;
+    let mut f: u32 = fhead;
+    for lf != 0 && !failed(c) {
+        let ls: u32 = c.^.nodes[lf].a;
+        let ll: u32 = c.^.nodes[lf].b;
+        let fs: u32 = c.^.fields[f].ns;
+        let fl: u32 = c.^.fields[f].nl;
+        if !src_eq2(c, ls, ll, fs, fl) {
+            let lline: u32 = c.^.nodes[lf].line;
+            let lcol: u32 = c.^.nodes[lf].col;
+            e_field_order(c, lline, lcol, fs, fl, ls, ll);
+            return TY_I32;
+        }
+        let ft: u32 = c.^.fields[f].ty;
+        let v: u32 = c.^.nodes[lf].c;
+        let rt: u32 = read_ty(c, ft);
+        coerce(c, v, rt);
+        lf = c.^.nodes[lf].next;
+        f = c.^.fields[f].next;
+    }
+    c.^.nodes[e].d = si;
+    c.^.nodes[e].ty = self_ty;
+    return self_ty;
+}
+
+fn e_variant_arity(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32, n: u32) {
+    if err_open(c, line, col) {
+        put_str(c, "variant ");
+        put_q_src(c, s, l);
+        put_str(c, " takes ");
+        put_num(c, n);
+        put_str(c, " value(s)");
+        err_end(c);
+    }
+}
+
+fn check_enum_lit(c: &mut Ctx, e: u32, want: u32) -> u32 {
+    let line: u32 = c.^.nodes[e].line;
+    let col: u32 = c.^.nodes[e].col;
+    let mut fld: u32 = e;
+    let mut args: u32 = 0;
+    if c.^.nodes[e].kind == E_CALL {
+        fld = c.^.nodes[e].a;
+        args = c.^.nodes[e].b;
+    }
+    let base: u32 = c.^.nodes[fld].a;
+    let bs: u32 = c.^.nodes[base].a;
+    let bl: u32 = c.^.nodes[base].b;
+    let ei: u32 = find_enum(c, bs, bl);
+    let vs: u32 = c.^.nodes[fld].b;
+    let vl: u32 = c.^.nodes[fld].c;
+    let v: u32 = find_variant(c, ei, vs, vl);
+    let ens: u32 = c.^.enums[ei].ns;
+    let enl: u32 = c.^.enums[ei].nl;
+    if v == 0 {
+        let fline: u32 = c.^.nodes[fld].line;
+        let fcol: u32 = c.^.nodes[fld].col;
+        e_no_variant(c, fline, fcol, ens, enl, vs, vl);
+        return TY_I32;
+    }
+    let nargs: u32 = c.^.variants[v].nargs;
+    if list_len(c, args) != nargs {
+        let vns: u32 = c.^.variants[v].ns;
+        let vnl: u32 = c.^.variants[v].nl;
+        e_variant_arity(c, line, col, vns, vnl, nargs);
+        return TY_I32;
+    }
+    let self_ty: u32 = ty_named(c, ens, enl);
+    if want != 0 && want != self_ty {
+        if err_open(c, line, col) {
+            put_str(c, "expected ");
+            put_q_ty(c, want);
+            put_str(c, ", found ");
+            put_q_src(c, ens, enl);
+            err_end(c);
+        }
+        return TY_I32;
+    }
+    let mut a: u32 = args;
+    let mut f: u32 = c.^.variants[v].payload;
+    for a != 0 && !failed(c) {
+        let ft: u32 = c.^.fields[f].ty;
+        let rt: u32 = read_ty(c, ft);
+        coerce(c, a, rt);
+        a = c.^.nodes[a].next;
+        f = c.^.fields[f].next;
+    }
+    c.^.nodes[e].aux = v;
+    c.^.nodes[e].aux2 = 1;
+    c.^.nodes[e].ty = self_ty;
+    return self_ty;
+}
+
+// --- integer literals that have not settled (language.md S2) ---------------
+
+fn retype(c: &mut Ctx, e: u32, t: u32) {
+    if ty_kind(c, c.^.nodes[e].ty) != TYK_INTLIT { return; }
+    c.^.nodes[e].ty = t;
+    let k: u32 = c.^.nodes[e].kind;
+    if k == E_UNARY {
+        let b: u32 = c.^.nodes[e].b;
+        retype(c, b, t);
+        return;
+    }
+    if k == E_BINARY {
+        let b: u32 = c.^.nodes[e].b;
+        retype(c, b, t);
+        let op: u32 = c.^.nodes[e].a;
+        if op != P_SHL && op != P_SHR {
+            let rc: u32 = c.^.nodes[e].c;
+            retype(c, rc, t);
+        }
+    }
+}
+
+// `&mut T` in a `&T` position, and `[]mut T` in a `[]T` position, drop the
+// write permission and nothing else (language.md S3). No value changes, so
+// this costs no instructions.
+fn weakens_to(c: &Ctx, got: u32, want: u32) -> bool {
+    let gk: u32 = ty_kind(c, got);
+    if gk != ty_kind(c, want) { return false; }
+    if gk != TYK_REF && gk != TYK_SLICE { return false; }
+    if ty_flag(c, got) == 0 || ty_flag(c, want) != 0 { return false; }
+    return ty_arg(c, got) == ty_arg(c, want);
+}
+
+fn coerce(c: &mut Ctx, e: u32, want: u32) -> u32 {
+    let got: u32 = check_expr(c, e, want);
+    if failed(c) { return want; }
+    if ty_kind(c, got) == TYK_INTLIT && is_int_ty(c, want)
+        && ty_kind(c, want) != TYK_INTLIT {
+        retype(c, e, want);
+        return want;
+    }
+    if weakens_to(c, got, want) { return want; }
+    if got != want {
+        let line: u32 = c.^.nodes[e].line;
+        let col: u32 = c.^.nodes[e].col;
+        e_expected_ty(c, line, col, want, got);
+        return want;
+    }
+    return want;
+}
+
+// ===========================================================================
 // Arena sizing
 // ===========================================================================
 //
@@ -3184,6 +3876,9 @@ fn compile(src_len_in: u32) -> i32 {
             marks: slice_mut(heap0 as *u32, 0),
             marks_n: 0,
             curfn: 0,
+            loopd: 0,
+            unsafed: 0,
+            place_mut: 0,
             heap: heap0 + tok_bytes,
             err: 0,
             out: OUT,
