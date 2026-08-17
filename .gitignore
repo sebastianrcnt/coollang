@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# 커버리지 산출물
+.coverage

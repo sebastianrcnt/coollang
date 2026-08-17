@@ -4,4 +4,13 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "pytest>=9.1.1",
+    "wasmtime>=47.0.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+# wasmtime 은 윈도우에서 트랩을 SEH 로 올린다. faulthandler 가 그걸 크래시로 찍는다
+addopts = "-p no:faulthandler"
