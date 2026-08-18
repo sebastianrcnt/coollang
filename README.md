@@ -64,6 +64,27 @@ B(cool0c.cool0)       → C        B == C 여야 한다
 `A` 가 `cool0c.cool0` 의 충실한 전사라면 `A` 와 `B` 가 같은 코드를 뱉으므로 `B == C`
 가 바로 나온다. 어긋나면 전사가 틀린 것이다.
 
+### ⚠ `cool0c.wat` 은 지금 뒤처져 있다 (stale)
+
+`cool0c.cool0` 이 앞서 갔고 **전사는 의도적으로 미뤄 뒀다** — 여러 변경을 모아
+한 번에 옮겨 적기 위해서다. 그동안 위 고정점은 성립하지 않는다.
+
+이것은 조용히 썩지 않는다. `tests/conftest.py` 의 `wat_is_current()` 가 매번
+`cool0c.wat` 으로 `cool0c.cool0` 을 컴파일해 보고, 거절당하면 관련 시험을 통째로
+**스킵**시키면서 사유에 실제 오류 메시지를 적는다:
+
+```
+SKIPPED: cool0c.wat 이 cool0c.cool0 을 거절한다: <진짜 진단>
+```
+
+**실패가 아니라 스킵인 이유**는, 전사가 뒤처진 것은 결함이 아니라 알려진 상태이기
+때문이다. 하지만 스킵 수와 그 사유가 눈앞에 남으므로 "초록색이니 괜찮다"로는
+안 읽힌다. 전사가 끝나면 아무것도 안 고쳐도 스킵이 저절로 다시 켜진다.
+
+밀린 것: 스칼라 enum, `|` 패턴, `enum Punct`, Token/Node 배치 변경, `S1`/`S2`
+이동, 그리고 [gh #5](https://github.com/sebastianrcnt/coollang/issues/5) 의
+0/A/B/C.
+
 ### 신뢰 사슬
 
 ```
@@ -144,4 +165,4 @@ src/cool0/cool0c.wat     컴파일러, WAT 로
 tests/                   패리티와 퍼징
 ```
 
-`uv` 로 관리한다. primary 브랜치는 `master`.
+`uv` 로 관리한다. primary 브랜치는 `main`.
