@@ -2287,6 +2287,10 @@
     (if (i32.eq (local.get $k) (i32.const 6)) (then (return (i32.const 8))))
     (if (i32.eq (local.get $k) (i32.const 9))
         (then
+          ;; a field-less enum's tag *is* its value: one word, aligned like one
+          (if (call $find_scalar (local.get $c)
+                    (call $ty_arg (local.get $c) (local.get $t)))
+              (then (return (i32.const 4))))
           (local.set $s (call $agg_struct (local.get $c) (local.get $t)))
           (if (i32.ne (local.get $s) (i32.const 0))
               (then (return (call $rg (local.get $c) (i32.const 244) (local.get $s)
@@ -2305,6 +2309,10 @@
     (if (i32.eq (local.get $k) (i32.const 3)) (then (return (i32.const 1))))
     (if (i32.eq (local.get $k) (i32.const 9))
         (then
+          ;; a field-less enum's tag *is* its value: one word, aligned like one
+          (if (call $find_scalar (local.get $c)
+                    (call $ty_arg (local.get $c) (local.get $t)))
+              (then (return (i32.const 4))))
           (local.set $s (call $agg_struct (local.get $c) (local.get $t)))
           (if (i32.ne (local.get $s) (i32.const 0))
               (then (return (call $rg (local.get $c) (i32.const 244) (local.get $s)
@@ -3290,7 +3298,7 @@
                       (then (i32.ne (local.get $ei) (i32.const 0)))
                       (else (i32.const 0)))
                   (then (local.set $full
-                          (i32.eq (call $arm_count (local.get $c) (local.get $arms))
+                          (i32.eq (call $covered_count (local.get $c) (local.get $arms))
                                   (call $rg (local.get $c) (i32.const 268) (local.get $ei)
                                             (i32.const 28) (i32.const 16))))))
               (if (if (result i32) (local.get $full)
@@ -3616,6 +3624,13 @@
   (func $check_init (param $c i32) (param $e i32) (param $want i32) (result i32)
     (local $t i32) (local $line i32) (local $col i32)
     (if (call $failed (local.get $c)) (then (return (i32.const 1))))
+    ;; `E.A` where E is a scalar enum is a *value*, not an aggregate literal:
+    ;; it settles like any other one-word value (language.md S4).
+    (if (i32.ne (call $scalar_enum_lit (local.get $c) (local.get $e)) (i32.const 0))
+        (then (if (i32.ne (local.get $want) (i32.const 0))
+                  (then (return (call $coerce (local.get $c) (local.get $e)
+                                      (local.get $want)))))
+              (return (call $check_expr (local.get $c) (local.get $e) (i32.const 0)))))
     (if (i32.eq (call $nd (local.get $c) (local.get $e) (i32.const 0)) (i32.const 14))
         (then (return (call $check_struct_lit (local.get $c) (local.get $e)
                             (local.get $want)))))
@@ -3975,6 +3990,9 @@
             (then (i32.const 1))
             (else (i32.eq (local.get $op) (i32.const 5))))
         (then
+          ;; two tags compared as integers -- that is all a scalar enum is
+          (if (call $is_scalar_enum (local.get $c) (local.get $lt))
+              (then (return)))
           (if (if (result i32) (i32.ne (local.get $k) (i32.const 0))
                   (then (if (result i32) (i32.ne (local.get $k) (i32.const 1))
                             (then (if (result i32) (i32.ne (local.get $k) (i32.const 2))
