@@ -169,12 +169,12 @@ struct Ctx {
     nlocal: u32,
     strs: []mut StrI,
     nstr: u32,
-    taken: []mut NameI,
-    ntaken: u32,
-    tynames: []mut NameI,
-    ntyname: u32,
-    scalars: []mut NameI,   // names of the scalar enums, filled before layout
-    nscalar: u32,
+    // Three sets of interned names, indexed by the name id itself (gh #7).
+    // A name is already an integer, so a set of names is an array, not a list
+    // to walk.
+    taken: []mut u8,        // claimed at the top level
+    tynames: []mut u8,      // names a type may be written with
+    scalars: []mut u8,      // names of the scalar enums, filled before layout
     rodata: u32,
     cety: u32,      // const_expr's second result
 
@@ -817,16 +817,23 @@ fn lex_decl(c: &mut Ctx) {
 fn source_done(c: &Ctx) -> bool {
     return c.^.src_i + 1 >= c.^.nsrc && c.^.pos >= c.^.src.len;
 }
+// Function bodies are emitted in declaration order, so the cursor only ever
+// moves forward: over the whole run this walks the source once, not once per
+// body (gh #7). Rewinding is still here, so this does not depend on the caller
+// going in order -- it just costs nothing when the caller does.
+
 fn source_seek(c: &mut Ctx, bi: u32, seek_at: u32) {
-    source_rewind(c);
-    for let mut b: u32 = 0; b < bi; b += 1 {
-        let n: u32 = ldw(SRCTAB + b * 8 + 4);
-        for let mut i: u32 = 0; i < n; i += 1 {
-            if ldb(ldw(SRCTAB + b * 8) + i) == '\n' { c.^.line += 1; }
-        }
+    let past: bool = c.^.src_i > bi || (c.^.src_i == bi && c.^.pos > seek_at);
+    if past { source_rewind(c); }
+    // buffers join as if a newline sat between them (implementation.md S7)
+    for c.^.src_i < bi {
+        for c.^.pos < c.^.src.len { adv(c, 1); }
+        c.^.src_i += 1;
         c.^.line += 1;
+        load_source(c);
+        c.^.pos = 0;
+        c.^.col = 1;
     }
-    c.^.src_i = bi; load_source(c); c.^.pos = 0; c.^.col = 1;
     for c.^.pos < seek_at { adv(c, 1); }
 }
 
@@ -2593,11 +2600,6 @@ struct StrI {
     next: u32,
 }
 
-struct NameI {   // a claimed top-level name, or a type name
-    name: u32,
-    next: u32,
-}
-
 const RODATA: u32 = 0x1000_0000;
 
 // --- lookups ---------------------------------------------------------------
@@ -2634,31 +2636,15 @@ fn find_fn(c: &Ctx, s: u32) -> u32 {
     return 0;
 }
 
-fn find_type_name(c: &Ctx, s: u32) -> bool {
-    for let mut p: u32 = 1; p < c.^.ntyname; p += 1 {
-        let ns: u32 = c.^.tynames[p].name;
-        if ns == s { return true; }
-    }
-    return false;
-}
+fn find_type_name(c: &Ctx, s: u32) -> bool { return c.^.tynames[s] != 0; }
 
 // Scalar-ness is readable from the syntax alone, and a struct field or an enum
 // payload may name a scalar enum, so this has to answer before any layout runs.
-fn find_scalar(c: &Ctx, s: u32) -> bool {
-    for let mut p: u32 = 1; p < c.^.nscalar; p += 1 {
-        let ns: u32 = c.^.scalars[p].name;
-        if ns == s { return true; }
-    }
-    return false;
-}
+fn find_scalar(c: &Ctx, s: u32) -> bool { return c.^.scalars[s] != 0; }
 
-fn find_taken(c: &Ctx, s: u32) -> bool {
-    for let mut p: u32 = 1; p < c.^.ntaken; p += 1 {
-        let ns: u32 = c.^.taken[p].name;
-        if ns == s { return true; }
-    }
-    return false;
-}
+// Asked once per top-level name and once per local, so it cannot be a scan
+// (gh #7). declare_local alone made this O(locals x top-level names).
+fn find_taken(c: &Ctx, s: u32) -> bool { return c.^.taken[s] != 0; }
 
 // The aggregate info behind a named type
 fn agg_struct(c: &Ctx, t: u32) -> u32 {
@@ -2818,9 +2804,7 @@ fn claim(c: &mut Ctx, d: u32) {
         e_builtin_name(c, line, col, s);
         return;
     }
-    let n: u32 = c.^.ntaken;
-    c.^.taken[n] = NameI{ name: s, next: 0 };
-    c.^.ntaken = n + 1;
+    c.^.taken[s] = 1;
 }
 
 // Scalar when no variant carries a payload -- visible in the syntax alone.
@@ -2836,16 +2820,12 @@ fn if_scalar(c: &Ctx, d: u32) -> u32 {
 fn add_scalar_name(c: &mut Ctx, d: u32) {
     if if_scalar(c, d) == 0 { return; }
     let s: u32 = c.^.nodes[d].a;
-    let n: u32 = c.^.nscalar;
-    c.^.scalars[n] = NameI{ name: s, next: 0 };
-    c.^.nscalar = n + 1;
+    c.^.scalars[s] = 1;
 }
 
 fn add_type_name(c: &mut Ctx, d: u32) {
     let s: u32 = c.^.nodes[d].a;
-    let n: u32 = c.^.ntyname;
-    c.^.tynames[n] = NameI{ name: s, next: 0 };
-    c.^.ntyname = n + 1;
+    c.^.tynames[s] = 1;
 }
 
 fn e_field_ty(c: &mut Ctx, line: u32, col: u32, what: u32, kind: u32, t: u32) {
@@ -6933,13 +6913,16 @@ fn reserve_tables(c: &mut Ctx) {
         c.^.strs = slice_mut(c.^.heap as *StrI, n_str);
         c.^.heap = c.^.heap + n_str * 16;
 
-        let n_name: u32 = c.^.ck_structs + c.^.ck_enums + c.^.ck_consts + c.^.ck_fns + 2;
-        c.^.taken = slice_mut(c.^.heap as *NameI, n_name);
-        c.^.heap = c.^.heap + n_name * 12;
-        c.^.tynames = slice_mut(c.^.heap as *NameI, n_name);
-        c.^.heap = c.^.heap + n_name * 12;
-        c.^.scalars = slice_mut(c.^.heap as *NameI, n_name);
-        c.^.heap = c.^.heap + n_name * 12;
+        // Indexed by the interned name id, so the size is the name table's
+        // (gh #7). One byte each; the arrays are wider than the old lists and
+        // still smaller, because a list entry was three words.
+        let n_name: u32 = c.^.ntab.len;
+        c.^.taken = slice_mut(c.^.heap as *u8, n_name);
+        c.^.heap = align4(c.^.heap + n_name);
+        c.^.tynames = slice_mut(c.^.heap as *u8, n_name);
+        c.^.heap = align4(c.^.heap + n_name);
+        c.^.scalars = slice_mut(c.^.heap as *u8, n_name);
+        c.^.heap = align4(c.^.heap + n_name);
 
         let n_scope: u32 = n_local + 2;
         c.^.scope = slice_mut(c.^.heap as *u32, n_scope);
@@ -6957,7 +6940,15 @@ fn reserve_tables(c: &mut Ctx) {
         c.^.sigs = slice_mut(c.^.heap as *u32, n_sig);
         c.^.heap = c.^.heap + n_sig * 4;
 
-        if !heap_fits(c) { e_too_large(c); }
+        if !heap_fits(c) { e_too_large(c); return; }
+        // The heap is not zeroed -- it is whatever the last run left. Empty is
+        // a correctness precondition here, same as the name hash in
+        // reserve_names.
+        for let mut i: u32 = 0; i < n_name; i += 1 {
+            c.^.taken[i] = 0;
+            c.^.tynames[i] = 0;
+            c.^.scalars[i] = 0;
+        }
     }
 }
 
@@ -7068,12 +7059,9 @@ fn compile_n(nsrc: u32) -> i32 {
             nlocal: 1,
             strs: slice_mut(heap0 as *StrI, 0),
             nstr: 1,
-            taken: slice_mut(heap0 as *NameI, 0),
-            ntaken: 1,
-            tynames: slice_mut(heap0 as *NameI, 0),
-            ntyname: 1,
-            scalars: slice_mut(heap0 as *NameI, 0),
-            nscalar: 1,
+            taken: slice_mut(heap0 as *u8, 0),
+            tynames: slice_mut(heap0 as *u8, 0),
+            scalars: slice_mut(heap0 as *u8, 0),
             rodata: RODATA,
             cety: 0,
             scope: slice_mut(heap0 as *u32, 0),

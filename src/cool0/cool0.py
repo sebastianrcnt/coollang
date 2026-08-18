@@ -3252,7 +3252,6 @@ def bootstrap_heap_end(
 
     k = _count_arena_nodes(decls)
     n_local = k["params"] + k["lets"] + k["binds"] + 2
-    n_name = k["structs"] + k["enums"] + k["consts"] + k["fns"] + 2
     heap += (k["tys"] + 7 + 8) * 12  # 타입
     heap += (k["fields"] + k["tys"] + 2) * 20
     heap += (k["structs"] + 2) * 24
@@ -3263,7 +3262,9 @@ def bootstrap_heap_end(
     heap += (k["fns"] + 2) * 52
     heap += n_local * 36
     heap += (k["strs"] + 2) * 16
-    heap += n_name * 12 * 3          # taken, tynames, scalars
+    # taken, tynames, scalars -- 이름 id 로 색인하는 바이트 배열 (gh #7)
+    for _ in range(3):
+        heap = align_up(heap + name_count, 4)
     heap += (n_local + 2) * 4  # 스코프
     heap += (MAX_DEPTH + MAX_DEPTH + 8) * 4  # 표시
     heap += 512 * 4 * 2  # free, ctrl

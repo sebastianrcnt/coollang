@@ -62,6 +62,8 @@ WAT_ONLY = {
     "ntab_set": "이름 표 쓰기 (경계 검사)",
     "nhash_at": "이름 해시 읽기 (경계 검사)",
     "nhash_set": "이름 해시 쓰기 (경계 검사)",
+    "nameset_at": "이름 집합 읽기 (경계 검사). taken/tynames/scalars 셋이 쓴다",
+    "nameset_set": "이름 집합 쓰기 (경계 검사)",
     "scan_named": "아레나를 1 부터 훑어 이름으로 찾기",
     "walk_named": "next 사슬을 따라가며 이름으로 찾기",
 }
