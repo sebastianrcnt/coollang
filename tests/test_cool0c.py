@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import pathlib
 
+NL = chr(10)
+
 import pytest
 import wasmtime
 
@@ -23,7 +25,7 @@ G_ERR = 0x0014
 G_NTOK = 0x002C
 G_TOKS = 0x0030
 SRC_ADDR = 0x1000
-TOK_SIZE = 32  # kind start len value line col aux punct
+TOK_SIZE = 36  # kind start len value line col aux punct kw
 
 KIND_NAME = {0: "eof", 1: "ident", 2: "int", 3: "char", 4: "str", 5: "kw", 6: "punct"}
 
@@ -78,12 +80,12 @@ class Cool0c:
             kind = self.u32(t)
             start, ln, value = self.u32(t + 4), self.u32(t + 8), self.u32(t + 12)
             line, col, aux = self.u32(t + 16), self.u32(t + 20), self.u32(t + 24)
-            punct = self.u32(t + 28)
+            punct, kw = self.u32(t + 28), self.u32(t + 32)
             name = KIND_NAME[kind]
             if name in ("ident",):
                 v = self.read(SRC_ADDR + start, ln).decode("ascii")
             elif name == "kw":
-                v = KEYWORDS[value]
+                v = KEYWORDS[kw]
             elif name == "punct":
                 v = PUNCT[punct]
             elif name == "str":
@@ -196,16 +198,45 @@ G_NODES = 0x0044
 G_NMEM = 0x0048
 G_NTAB = 0x004C
 
-NK = {
-    1: "int", 2: "char", 3: "str", 4: "bool", 5: "ident", 6: "unary", 7: "binary",
-    8: "borrow", 9: "cast", 10: "call", 11: "index", 12: "field", 13: "deref",
-    14: "structlit", 15: "litfield", 16: "sliceexpr", 17: "offset",
-    20: "prim", 21: "named", 22: "slice", 23: "ref", 24: "ptr",
-    30: "let", 31: "assign", 32: "expr", 33: "if", 34: "for", 35: "break",
-    36: "continue", 37: "return", 38: "match", 39: "unsafe", 40: "arm", 41: "bind",
-    50: "fn", 51: "struct", 52: "enum", 53: "const", 54: "param", 55: "field",
-    56: "variant",
+# 노드 종류 이름표. 태그 번호는 cool0c.cool0 의 `enum NodeKind` 선언 순서에서
+# 읽어 온다 -- 손으로 적어 두었더니 그 enum 이 바뀔 때 조용히 어긋났고, 그때
+# S_ALT 는 아예 표에 없어서 KeyError 로만 드러났다. 이름표만 여기 남긴다.
+NK_LABEL = {
+    "E_INT": "int", "E_CHAR": "char", "E_STR": "str", "E_BOOL": "bool",
+    "E_IDENT": "ident", "E_UNARY": "unary", "E_BINARY": "binary",
+    "E_BORROW": "borrow", "E_CAST": "cast", "E_CALL": "call",
+    "E_INDEX": "index", "E_FIELD": "field", "E_DEREF": "deref",
+    "E_STRUCTLIT": "structlit", "E_LITFIELD": "litfield",
+    "E_SLICE": "sliceexpr", "E_OFFSET": "offset",
+    "T_PRIM": "prim", "T_NAMED": "named", "T_SLICE": "slice",
+    "T_REF": "ref", "T_PTR": "ptr",
+    "S_LET": "let", "S_ASSIGN": "assign", "S_EXPR": "expr", "S_IF": "if",
+    "S_FOR": "for", "S_BREAK": "break", "S_CONTINUE": "continue",
+    "S_RETURN": "return", "S_MATCH": "match", "S_UNSAFE": "unsafe",
+    "S_ARM": "arm", "S_BIND": "bind", "S_ALT": "alt",
+    "D_FN": "fn", "D_STRUCT": "struct", "D_ENUM": "enum", "D_CONST": "const",
+    "D_PARAM": "param", "D_FIELD": "field", "D_VARIANT": "variant",
 }
+
+
+def _node_kinds() -> dict[int, str]:
+    """`enum NodeKind` 의 선언 순서가 곧 태그다 (implementation.md §2)."""
+    src = COOL0C.read_text("ascii")
+    body = src.split("enum NodeKind {", 1)[1].split(NL + "}", 1)[0]
+    out, tag = {}, 0
+    for line in body.splitlines():
+        name = line.split("//")[0].strip().rstrip(",").strip()
+        if not name:
+            continue
+        if name in NK_LABEL:
+            out[tag] = NK_LABEL[name]
+        tag += 1
+    missing = set(NK_LABEL) - {n for n in NK_LABEL if NK_LABEL[n] in out.values()}
+    assert not missing, f"이름표 없는 변종: {sorted(missing)}"
+    return out
+
+
+NK = _node_kinds()
 NODE_SIZE = 56
 F = {"KIND": 0, "LINE": 4, "COL": 8, "A": 12, "B": 16, "C": 20, "D": 24,
      "E": 28, "NEXT": 32, "TY": 36, "AUX": 40, "AUX2": 44, "DEPTH": 48,

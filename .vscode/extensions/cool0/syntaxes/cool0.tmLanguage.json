@@ -1,0 +1,102 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "cool0",
+  "scopeName": "source.cool0",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#declarations" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#numbers" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.cool0",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.cool0",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.cool0", "match": "\\\\[ntr0\\\\'\"]" }
+          ]
+        },
+        {
+          "name": "string.quoted.single.cool0",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            { "name": "constant.character.escape.cool0", "match": "\\\\[ntr0\\\\']" }
+          ]
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.function.cool0" },
+            "2": { "name": "entity.name.function.cool0" }
+          }
+        },
+        {
+          "match": "\\b(struct|enum)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.cool0" },
+            "2": { "name": "entity.name.type.cool0" }
+          }
+        },
+        {
+          "match": "\\b(const)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.modifier.cool0" },
+            "2": { "name": "entity.name.constant.cool0" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        { "name": "keyword.control.cool0", "match": "\\b(?:if|else|for|break|continue|return|match)\\b" },
+        { "name": "keyword.other.unsafe.cool0", "match": "\\bunsafe\\b" },
+        { "name": "keyword.operator.cast.cool0", "match": "\\bas\\b" },
+        { "name": "storage.type.cool0", "match": "\\b(?:fn|struct|enum)\\b" },
+        { "name": "storage.modifier.cool0", "match": "\\b(?:const|let|mut)\\b" },
+        { "name": "support.function.builtin.cool0", "match": "\\b(?:slice|slice_mut|offset)\\b" }
+      ]
+    },
+    "types": {
+      "patterns": [
+        { "name": "storage.type.primitive.cool0", "match": "\\b(?:i32|u32|u8|bool)\\b" }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        { "name": "constant.language.boolean.cool0", "match": "\\b(?:true|false)\\b" }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.hex.cool0", "match": "\\b0[xX][0-9A-Fa-f](?:[0-9A-Fa-f_]*[0-9A-Fa-f])?\\b" },
+        { "name": "constant.numeric.binary.cool0", "match": "\\b0[bB][01](?:[01_]*[01])?\\b" },
+        { "name": "constant.numeric.decimal.cool0", "match": "\\b[0-9](?:[0-9_]*[0-9])?\\b" }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        { "name": "keyword.operator.cool0", "match": "<<=|>>=|->|=>|==|!=|<=|>=|&&|\\|\\||<<|>>|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|[=<>+*/%&|^!.-]" }
+      ]
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "cool0-syntax",
+  "displayName": "cool0 Syntax Highlighting",
+  "description": "Syntax highlighting for the cool0 language.",
+  "version": "0.0.1",
+  "publisher": "coollang",
+  "engines": {
+    "vscode": ">=1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "cool0",
+        "aliases": ["cool0", "Cool0"],
+        "extensions": [".cool0"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "cool0",
+        "scopeName": "source.cool0",
+        "path": "./syntaxes/cool0.tmLanguage.json"
+      }
+    ]
+  }
+}
