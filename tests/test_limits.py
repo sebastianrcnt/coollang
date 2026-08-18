@@ -108,3 +108,66 @@ def test_the_compiler_has_room_to_grow():
         f"cool0c.cool0 이 한계의 {100 * (1 - headroom):.0f}% 를 쓰고 있다. "
         f"스크래치 영역을 올리거나 소스를 줄여야 한다"
     )
+
+
+# --- 살아 있는 AST 의 크기 (gh #5 C) -------------------------------------------
+
+
+def arena_bound(src: bytes) -> tuple[int, int]:
+    """(전체 AST 상한, 동시에 살아 있는 AST 상한).
+
+    `cool0c.cool0` 의 `arena_bound()` 와 같은 계산이다. 함수 본문은 하나씩
+    파싱해서 내보내고 버리므로, 동시에 필요한 것은 **선언부 + 가장 큰 본문
+    하나**다. 여기서 다시 세는 이유는 그 성질이 조용히 사라지지 않게 하기
+    위해서다 -- 본문을 하나라도 붙들면 이 숫자가 전체로 되돌아간다.
+    """
+    from cool0.cool0 import lex
+
+    toks = lex(src)
+    depth = is_fn = 0
+    start = total = largest = 0
+    for i, t in enumerate(toks):
+        if depth == 0 and t.kind == "kw" and t.text == "fn":
+            is_fn = 1
+        if t.kind == "punct":
+            if t.text == "{":
+                if depth == 0 and is_fn:
+                    start = i
+                depth += 1
+            elif t.text == "}":
+                depth -= 1
+                if depth == 0 and is_fn:
+                    n = i - start + 1
+                    total += n
+                    largest = max(largest, n)
+                    is_fn = 0
+    return len(toks) + 2, len(toks) - total + largest + 2
+
+
+def test_only_one_function_body_is_alive_at_a_time():
+    """gh #5 C. 노드 아레나가 프로그램 전체가 아니라 가장 큰 함수에 맞춰진다.
+
+    `cool0c.cool0` 은 토큰의 86% 가 함수 본문 안에 있다. 본문을 전부 붙들면
+    노드 아레나가 3 MB 를 예약해야 하고, 하나씩 버리면 0.5 MB 다.
+    """
+    src = (SRC_DIR / "cool0c.cool0").read_bytes()
+    whole, alive = arena_bound(src)
+    assert alive * 4 < whole, (
+        f"동시에 살아 있는 AST 가 {alive:,} 노드로 전체 {whole:,} 의 "
+        f"{100 * alive // whole}% 다. gh #5 C 가 되돌아갔는지 확인하라"
+    )
+
+
+def test_a_program_of_many_small_functions_does_not_pay_for_all_of_them():
+    """함수가 늘어도 동시에 사는 AST 는 거의 안 는다 -- 선언부만 는다."""
+    unit = "fn f%d(n: u32) -> u32 { let a: u32 = n + %d; return a * 3 + n; }\n"
+    small = "".join(unit % (i, i) for i in range(50)).encode("ascii")
+    big = "".join(unit % (i, i) for i in range(500)).encode("ascii")
+
+    _, alive_small = arena_bound(small)
+    _, alive_big = arena_bound(big)
+    whole_big, _ = arena_bound(big)
+
+    assert alive_big < whole_big // 2
+    # 함수가 10 배가 돼도 동시에 사는 것은 선언부 몫만 는다
+    assert alive_big < alive_small * 10

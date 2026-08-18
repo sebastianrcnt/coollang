@@ -81,6 +81,21 @@ struct Ctx {
     line: u32,
     col: u32,
 
+    // Node counts, accumulated as bodies are parsed and dropped (gh #5 C).
+    // The checker tables are sized from these, so they have to survive the
+    // body whose nodes they counted.
+    ck_tys: u32,
+    ck_fields: u32,
+    ck_structs: u32,
+    ck_variants: u32,
+    ck_enums: u32,
+    ck_consts: u32,
+    ck_params: u32,
+    ck_fns: u32,
+    ck_lets: u32,
+    ck_binds: u32,
+    ck_strs: u32,
+
     // all of the buffers (gh #5 B)
     nsrc: u32,
     srctok: []mut u32,   // token index where each buffer's tokens start
@@ -1784,9 +1799,27 @@ fn parse_fn(c: &mut Ctx) -> u32 {
         let r: u32 = parse_ty(c);
         c.^.nodes[n].d = r;
     }
+    // The body is parsed here so that syntax errors still come out in source
+    // order, counted so the checker tables can be sized, and then dropped --
+    // only the token index where it starts survives. It is parsed again, one
+    // at a time, in the emit loop (gh #5 C).
+    c.^.nodes[n].b = c.^.ti;
+    let mark: u32 = c.^.nnode;
     let body: u32 = parse_block(c);
-    c.^.nodes[n].e = body;
+    count_range(c, mark, c.^.nnode);
+    c.^.nnode = mark;
+    c.^.nodes[n].e = 0;
     return n;
+}
+
+// Re-parse one body, into the space above the declarations.
+fn parse_fn_body(c: &mut Ctx, fi: u32) {
+    let d: u32 = c.^.fns[fi].decl;
+    c.^.ti = c.^.nodes[d].b;
+    c.^.edepth = 0;
+    c.^.bdepth = 0;
+    let body: u32 = parse_block(c);
+    c.^.nodes[d].e = body;
 }
 
 fn parse_struct(c: &mut Ctx) -> u32 {
@@ -4986,10 +5019,9 @@ fn check_program(c: &mut Ctx) {
     c.^.nfns = index;
     if failed(c) { return; }
 
-    // pass two: bodies
-    for let mut fi: u32 = 1; fi < c.^.nfn && !failed(c); fi += 1 {
-        check_fn(c, fi);
-    }
+    // Bodies are not checked here any more. Each one is parsed, checked,
+    // emitted and dropped inside emit_module's code loop (gh #5 C) -- the
+    // order is the same, so the first diagnostic is the same.
 }
 
 // ===========================================================================
@@ -6127,9 +6159,20 @@ fn emit_module(c: &mut Ctx) {
     if nfns != 0 {
         begin_section(c);
         s_u(c, nfns);
-        for let mut fi: u32 = 1; fi < c.^.nfn; fi += 1 {
-            emit_fn(c, fi);
+        // One body at a time: parse it above the declarations, check it,
+        // emit it, then hand the space back (gh #5 C). `nnode` is the
+        // watermark the declarations ended at.
+        let mark: u32 = c.^.nnode;
+        for let mut fi: u32 = 1; fi < c.^.nfn && !failed(c); fi += 1 {
+            c.^.nnode = mark;
+            parse_fn_body(c, fi);
+            if !failed(c) { check_fn(c, fi); }
+            if !failed(c) { emit_fn(c, fi); }
         }
+        // A body is checked while the module is already half written, so a
+        // diagnostic has to stop the writing too. err_open has reset `out`
+        // to the start; anything appended after it would trail the message.
+        if failed(c) { return; }
         end_section(c, SEC_CODE);
     }
 
@@ -6174,20 +6217,22 @@ struct Counts {
     strs: u32,
 }
 
-fn count_nodes(c: &Ctx, n: &mut Counts) {
-    for let mut i: u32 = 1; i < c.^.nnode; i += 1 {
+// Counts nodes [lo, hi). A body is counted just before its nodes are dropped,
+// so the tables it feeds are sized as if the whole AST had been kept.
+fn count_range(c: &mut Ctx, lo: u32, hi: u32) {
+    for let mut i: u32 = lo; i < hi; i += 1 {
         let k: u32 = c.^.nodes[i].kind;
-        if k >= T_PRIM && k <= T_PTR { n.^.tys += 1; }
-        else if k == D_FIELD { n.^.fields += 1; }
-        else if k == D_STRUCT { n.^.structs += 1; }
-        else if k == D_VARIANT { n.^.variants += 1; }
-        else if k == D_ENUM { n.^.enums += 1; }
-        else if k == D_CONST { n.^.consts += 1; }
-        else if k == D_PARAM { n.^.params += 1; }
-        else if k == D_FN { n.^.fns += 1; }
-        else if k == S_LET { n.^.lets += 1; }
-        else if k == S_BIND { n.^.binds += 1; }
-        else if k == E_STR { n.^.strs += 1; }
+        if k >= T_PRIM && k <= T_PTR { c.^.ck_tys += 1; }
+        else if k == D_FIELD { c.^.ck_fields += 1; }
+        else if k == D_STRUCT { c.^.ck_structs += 1; }
+        else if k == D_VARIANT { c.^.ck_variants += 1; }
+        else if k == D_ENUM { c.^.ck_enums += 1; }
+        else if k == D_CONST { c.^.ck_consts += 1; }
+        else if k == D_PARAM { c.^.ck_params += 1; }
+        else if k == D_FN { c.^.ck_fns += 1; }
+        else if k == S_LET { c.^.ck_lets += 1; }
+        else if k == S_BIND { c.^.ck_binds += 1; }
+        else if k == E_STR { c.^.ck_strs += 1; }
     }
 }
 
@@ -6210,6 +6255,45 @@ fn e_too_large(c: &mut Ctx) {
 }
 
 fn heap_fits(c: &Ctx) -> bool { return c.^.heap <= S1; }
+
+// How many nodes can be alive at once (gh #5 C): every declaration, plus the
+// largest single function body -- bodies are parsed one at a time and dropped.
+// There is at most one node per token, so counting tokens bounds it.
+//
+// A body is what sits between the braces that follow a top-level `fn`. Braces
+// belonging to a struct or enum declaration are at depth 0 with no `fn` in
+// front, so they count as declarations, which is right -- they stay.
+//
+// Unbalanced braces can only make `body_total` smaller and the answer larger,
+// so a malformed source is never under-reserved; it is rejected later by the
+// parser anyway.
+fn arena_bound(c: &Ctx) -> u32 {
+    let mut depth: u32 = 0;
+    let mut isfn: bool = false;
+    let mut bstart: u32 = 0;
+    let mut body_total: u32 = 0;
+    let mut body_max: u32 = 0;
+    for let mut i: u32 = 0; i < c.^.ntok; i += 1 {
+        let k: u32 = c.^.toks[i].kind;
+        if depth == 0 && k == TK_KW && c.^.toks[i].value == K_FN { isfn = true; }
+        if k == TK_PUNCT {
+            let p: Punct = c.^.toks[i].punct;
+            if p == Punct.LBrace {
+                if depth == 0 && isfn { bstart = i; }
+                depth += 1;
+            } else if p == Punct.RBrace {
+                if depth > 0 { depth -= 1; }
+                if depth == 0 && isfn {
+                    let n: u32 = i - bstart + 1;
+                    body_total = body_total + n;
+                    if n > body_max { body_max = n; }
+                    isfn = false;
+                }
+            }
+        }
+    }
+    return c.^.ntok - body_total + body_max + 2;
+}
 
 fn pow2_at_least(v: u32) -> u32 {
     let mut p: u32 = 8;
@@ -6260,6 +6344,17 @@ fn compile_n(nsrc: u32) -> i32 {
             pos: 0,
             line: 1,
             col: 1,
+            ck_tys: 0,
+            ck_fields: 0,
+            ck_structs: 0,
+            ck_variants: 0,
+            ck_enums: 0,
+            ck_consts: 0,
+            ck_params: 0,
+            ck_fns: 0,
+            ck_lets: 0,
+            ck_binds: 0,
+            ck_strs: 0,
             nsrc: nsrc,
             srctok: slice_mut(srctok_at as *u32, nsrc + 1),
             toks: slice_mut(heap0 as *Token, ntok_max),
@@ -6389,8 +6484,11 @@ fn compile_n(nsrc: u32) -> i32 {
         // The node arena is sized from the token count, not the source length --
         // there is at most one node per token and tokens are far fewer than
         // bytes. Sizing it before lexing would reserve megabytes for nothing.
+        //
+        // And not from *all* the tokens either: the declarations plus the
+        // largest single body is what is alive at once (gh #5 C).
         if c.err == 0 {
-            let nmax: u32 = c.ntok + 2;
+            let nmax: u32 = arena_bound(&c);
             c.nodes = slice_mut(c.heap as *Node, nmax);
             let nodes_at: u32 = c.heap;
             c.heap = c.heap + nmax * SIZEOF_NODE;
@@ -6401,11 +6499,23 @@ fn compile_n(nsrc: u32) -> i32 {
         }
 
         if c.err == 0 {
+            // The declarations are still in the arena; every body was counted
+            // into c.ck_* as it was parsed and dropped (gh #5 C).
+            let ndecl: u32 = c.nnode;
+            count_range(&mut c, 1, ndecl);
             let mut k: Counts = Counts{
-                tys: 0, fields: 0, structs: 0, variants: 0, enums: 0,
-                consts: 0, params: 0, fns: 0, lets: 0, binds: 0, strs: 0,
+                tys: c.ck_tys,
+                fields: c.ck_fields,
+                structs: c.ck_structs,
+                variants: c.ck_variants,
+                enums: c.ck_enums,
+                consts: c.ck_consts,
+                params: c.ck_params,
+                fns: c.ck_fns,
+                lets: c.ck_lets,
+                binds: c.ck_binds,
+                strs: c.ck_strs,
             };
-            count_nodes(&c, &mut k);
 
             let n_ty: u32 = k.tys + TY_FIRST + 8;
             c.types = slice_mut(c.heap as *Ty, n_ty);

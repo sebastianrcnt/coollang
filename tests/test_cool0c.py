@@ -219,9 +219,10 @@ class Dump:
     G_NODES 에 있다.
     """
 
-    def __init__(self, cc: Cool0c):
+    def __init__(self, cc: Cool0c, bodies: bool = True):
         self.cc = cc
         self.base = cc.u32(G_NODES)
+        self.bodies = bodies
 
     def f(self, n: int, name: str) -> int:
         return self.cc.u32(self.base + n * NODE_SIZE + F[name])
@@ -360,6 +361,8 @@ class Dump:
         if k == "fn":
             ps = " ".join(self.lst(self.f(n, "C"), self.param))
             ret = self.ty(self.f(n, "D"))
+            if not self.bodies:
+                return f"(fn {p} {self.name(n)} [{ps}] {ret} ...)"
             return f"(fn {p} {self.name(n)} [{ps}] {ret} {self.block(self.f(n, 'E'))})"
         if k == "struct":
             fs = " ".join(self.lst(self.f(n, "C"), self.param))
@@ -386,6 +389,9 @@ PRIM_IDX = {"i32": 0, "u32": 1, "bool": 2, "u8": 3}
 
 class RefDump:
     """cool0.py 의 AST 를 같은 S-식으로."""
+
+    def __init__(self, bodies: bool = True):
+        self.bodies = bodies
 
     def pos(self, n) -> str:
         return f"{n.pos[0]} {n.pos[1]}"
@@ -500,6 +506,8 @@ class RefDump:
         p = self.pos(d)
         if isinstance(d, FnDecl):
             ps = " ".join(f"({q[0]} {q[1]} {nm} {self.ty(t)})" for q, nm, t in d.params)
+            if not self.bodies:
+                return f"(fn {p} {d.name} [{ps}] {self.ty(d.ret)} ...)"
             return f"(fn {p} {d.name} [{ps}] {self.ty(d.ret)} {self.block(d.body)})"
         if isinstance(d, StructDecl):
             fs = " ".join(f"({q[0]} {q[1]} {nm} {self.ty(t)})" for q, nm, t in d.fields)
@@ -616,10 +624,21 @@ def test_parser_diagnostics_match_the_oracle(cc, src):
 
 @needs_cool0c
 def test_parser_handles_its_own_source(cc):
+    """자기 소스의 **선언부**를 오라클과 같게 파싱한다.
+
+    본문은 여기서 볼 수 없다. gh #5 C 이후 함수 본문의 노드는 그 함수를
+    내보내고 나면 회수되므로, 컴파일이 끝난 시점에 아레나에 남아 있는 본문은
+    마지막 함수의 것뿐이다. 프로그램 전체의 AST 가 동시에 존재한 적이 없으니
+    전체 AST 를 덤프할 수도 없다.
+
+    본문 파싱은 여기가 아니라 두 군데가 지킨다: 단일 함수 사례를 쓰는
+    test_parser_matches_the_oracle (본문이 하나뿐이라 남아 있다) 와, 이
+    파일 전체를 바이트로 재생산하는 자기 재생산·마일스톤 시험이다.
+    """
     src = COOL0C.read_bytes()
     status, out = cc.compile(src)
     assert status == STATUS_OK, out.decode("ascii", "replace")
-    assert Dump(cc).program() == RefDump().program(src)
+    assert Dump(cc, bodies=False).program() == RefDump(bodies=False).program(src)
 
 
 # --- 3 단계: 검사기 (language.md §3, §4, §6, §7) ---------------------------------
