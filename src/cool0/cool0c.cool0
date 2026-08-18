@@ -1593,93 +1593,119 @@ fn parse_postfix(c: &mut Ctx, asl: bool) -> u32 {
     return e;
 }
 
+fn parse_slice_expr(c: &mut Ctx, line: u32, col: u32) -> u32 {
+    let is_mut: bool = at_kw(c, Kw.K_SLICE_MUT);
+    bump(c);
+    expect_p(c, Punct.LParen);
+    let p: u32 = parse_expr(c, true);
+    expect_p(c, Punct.Comma);
+    let ln: u32 = parse_expr(c, true);
+    expect_p(c, Punct.RParen);
+    let n: u32 = node(c, NodeKind.E_SLICE, line, col);
+    if is_mut { c.^.nodes[n].a = 1; }
+    c.^.nodes[n].b = p;
+    c.^.nodes[n].c = ln;
+    let dp: u32 = depth_of(c, p);
+    let dl: u32 = depth_of(c, ln);
+    return deep(c, n, max2(dp, dl));
+}
+
+fn parse_offset_expr(c: &mut Ctx, line: u32, col: u32) -> u32 {
+    bump(c);
+    expect_p(c, Punct.LParen);
+    let p: u32 = parse_expr(c, true);
+    expect_p(c, Punct.Comma);
+    let ix: u32 = parse_expr(c, true);
+    expect_p(c, Punct.RParen);
+    let n: u32 = node(c, NodeKind.E_OFFSET, line, col);
+    c.^.nodes[n].a = p;
+    c.^.nodes[n].b = ix;
+    let dp: u32 = depth_of(c, p);
+    let di: u32 = depth_of(c, ix);
+    return deep(c, n, max2(dp, di));
+}
+
+// The keywords that begin an expression (language.md S5). Everything else is a
+// keyword in statement position, and saying "expected expression" is right.
+fn parse_primary_kw(c: &mut Ctx, line: u32, col: u32) -> u32 {
+    match cur_kw(c) {
+        K_TRUE => {
+            let n: u32 = node(c, NodeKind.E_BOOL, line, col);
+            c.^.nodes[n].a = 1;
+            bump(c);
+            return n;
+        }
+        K_FALSE => {
+            let n: u32 = node(c, NodeKind.E_BOOL, line, col);
+            c.^.nodes[n].a = 0;
+            bump(c);
+            return n;
+        }
+        K_SLICE | K_SLICE_MUT => { return parse_slice_expr(c, line, col); }
+        K_OFFSET => { return parse_offset_expr(c, line, col); }
+        K_MATCH => { return parse_match_expr(c); }
+        K_FN | K_STRUCT | K_ENUM | K_CONST | K_LET | K_MUT | K_IF | K_ELSE
+        | K_FOR | K_BREAK | K_CONTINUE | K_RETURN | K_UNSAFE | K_AS | NoKw => {
+            e_expected_str(c, "expected expression");
+            return 0;
+        }
+    }
+}
+
 fn parse_primary(c: &mut Ctx, asl: bool) -> u32 {
     if failed(c) { return 0; }
     let line: u32 = cur_line(c);
     let col: u32 = cur_col(c);
-    let k: TokKind = cur_kind(c);
-    if k == TokKind.TK_INT {
-        let n: u32 = node(c, NodeKind.E_INT, line, col);
-        let v: u32 = cur_val(c);
-        c.^.nodes[n].a = v;
-        bump(c);
-        return n;
+    match cur_kind(c) {
+        TK_INT => {
+            let n: u32 = node(c, NodeKind.E_INT, line, col);
+            let v: u32 = cur_val(c);
+            c.^.nodes[n].a = v;
+            bump(c);
+            return n;
+        }
+        TK_CHAR => {
+            let n: u32 = node(c, NodeKind.E_CHAR, line, col);
+            let v: u32 = cur_val(c);
+            c.^.nodes[n].a = v;
+            bump(c);
+            return n;
+        }
+        TK_STR => {
+            let n: u32 = node(c, NodeKind.E_STR, line, col);
+            let v: u32 = cur_val(c);
+            let aux: u32 = c.^.toks[c.^.ti].aux;
+            c.^.nodes[n].a = v;
+            c.^.nodes[n].b = aux;
+            bump(c);
+            return n;
+        }
+        TK_KW => { return parse_primary_kw(c, line, col); }
+        TK_IDENT => {
+            let s: u32 = c.^.toks[c.^.ti].value;
+            bump(c);
+            // `S{ ... }` only where a struct literal is allowed; otherwise the
+            // brace belongs to whatever encloses this expression
+            if asl && at_p(c, Punct.LBrace) { return parse_struct_lit(c, line, col, s); }
+            let n: u32 = node(c, NodeKind.E_IDENT, line, col);
+            c.^.nodes[n].a = s;
+            return n;
+        }
+        TK_PUNCT => {
+            if at_p(c, Punct.LParen) {
+                bump(c);
+                let e: u32 = parse_expr(c, true);
+                expect_p(c, Punct.RParen);
+                return e;
+            }
+            e_expected_str(c, "expected expression");
+            return 0;
+        }
+        TK_EOF => {
+            e_expected_str(c, "expected expression");
+            return 0;
+        }
     }
-    if k == TokKind.TK_CHAR {
-        let n: u32 = node(c, NodeKind.E_CHAR, line, col);
-        let v: u32 = cur_val(c);
-        c.^.nodes[n].a = v;
-        bump(c);
-        return n;
-    }
-    if k == TokKind.TK_STR {
-        let n: u32 = node(c, NodeKind.E_STR, line, col);
-        let v: u32 = cur_val(c);
-        let aux: u32 = c.^.toks[c.^.ti].aux;
-        c.^.nodes[n].a = v;
-        c.^.nodes[n].b = aux;
-        bump(c);
-        return n;
-    }
-    if at_kw(c, Kw.K_TRUE) {
-        let n: u32 = node(c, NodeKind.E_BOOL, line, col);
-        c.^.nodes[n].a = 1;
-        bump(c);
-        return n;
-    }
-    if at_kw(c, Kw.K_FALSE) {
-        let n: u32 = node(c, NodeKind.E_BOOL, line, col);
-        c.^.nodes[n].a = 0;
-        bump(c);
-        return n;
-    }
-    if at_kw(c, Kw.K_SLICE) || at_kw(c, Kw.K_SLICE_MUT) {
-        let is_mut: bool = at_kw(c, Kw.K_SLICE_MUT);
-        bump(c);
-        expect_p(c, Punct.LParen);
-        let p: u32 = parse_expr(c, true);
-        expect_p(c, Punct.Comma);
-        let ln: u32 = parse_expr(c, true);
-        expect_p(c, Punct.RParen);
-        let n: u32 = node(c, NodeKind.E_SLICE, line, col);
-        if is_mut { c.^.nodes[n].a = 1; }
-        c.^.nodes[n].b = p;
-        c.^.nodes[n].c = ln;
-        let dp: u32 = depth_of(c, p);
-        let dl: u32 = depth_of(c, ln);
-        return deep(c, n, max2(dp, dl));
-    }
-    if at_kw(c, Kw.K_OFFSET) {
-        bump(c);
-        expect_p(c, Punct.LParen);
-        let p: u32 = parse_expr(c, true);
-        expect_p(c, Punct.Comma);
-        let ix: u32 = parse_expr(c, true);
-        expect_p(c, Punct.RParen);
-        let n: u32 = node(c, NodeKind.E_OFFSET, line, col);
-        c.^.nodes[n].a = p;
-        c.^.nodes[n].b = ix;
-        let dp: u32 = depth_of(c, p);
-        let di: u32 = depth_of(c, ix);
-        return deep(c, n, max2(dp, di));
-    }
-    if at_kw(c, Kw.K_MATCH) { return parse_match_expr(c); }
-    if at_p(c, Punct.LParen) {
-        bump(c);
-        let e: u32 = parse_expr(c, true);
-        expect_p(c, Punct.RParen);
-        return e;
-    }
-    if k == TokKind.TK_IDENT {
-        let s: u32 = c.^.toks[c.^.ti].value;
-        bump(c);
-        if asl && at_p(c, Punct.LBrace) { return parse_struct_lit(c, line, col, s); }
-        let n: u32 = node(c, NodeKind.E_IDENT, line, col);
-        c.^.nodes[n].a = s;
-        return n;
-    }
-    e_expected_str(c, "expected expression");
-    return 0;
 }
 
 fn parse_struct_lit(c: &mut Ctx, line: u32, col: u32, s: u32) -> u32 {
@@ -4081,26 +4107,102 @@ fn list_len(c: &Ctx, head: u32) -> u32 {
 // arity, exhaustiveness) but not the arm bodies -- a statement match and an
 // expression match check those differently (language.md S5, S6, S9), and
 // completeness is required of both, with no exception.
-fn check_match_common(c: &mut Ctx, s: u32) {
-    let scr: u32 = c.^.nodes[s].a;
-    // One look. An aggregate enum cannot be returned (language.md S3), so an
-    // expression of that type is always a place and check_expr fills in
-    // everything emit_addr needs.
-    let ty: u32 = check_expr(c, scr, 0);
-    if failed(c) { return; }
-    let line: u32 = c.^.nodes[s].line;
-    let col: u32 = c.^.nodes[s].col;
-    if ty_kind(c, ty) != TYK_NAMED {
-        e_match_needs_enum(c, line, col, ty);
-        return;
+fn e_join_payload(c: &mut Ctx, line: u32, col: u32, name: u32) {
+    if err_open(c, line, col) {
+        put_ch(c, 96);
+        put_str(c, "|");
+        put_ch(c, 96);
+        put_str(c, " cannot join ");
+        put_q_name(c, name);
+        put_str(c, ", which carries a payload");
+        err_end(c);
     }
+}
+
+fn e_wild_not_last(c: &mut Ctx, line: u32, col: u32) {
+    if err_open(c, line, col) {
+        put_ch(c, 96);
+        put_str(c, "_");
+        put_ch(c, 96);
+        put_str(c, " must be the last arm");
+        err_end(c);
+    }
+}
+
+// The scrutinee must be an enum place. Returns the enum, or 0 after reporting.
+//
+// One look at it. An aggregate enum cannot be returned (language.md S3), so an
+// expression of that type is always a place and check_expr has already filled
+// in everything emit_addr needs.
+fn match_enum_of(c: &mut Ctx, s: u32) -> u32 {
+    let scr: u32 = c.^.nodes[s].a;
+    let ty: u32 = check_expr(c, scr, 0);
+    if failed(c) { return 0; }
     let ei: u32 = agg_enum(c, ty);
     if ei == 0 {
+        let line: u32 = c.^.nodes[s].line;
+        let col: u32 = c.^.nodes[s].col;
         e_match_needs_enum(c, line, col, ty);
-        return;
+        return 0;
     }
+    return ei;
+}
+
+// The tail of `A | B`: each alternative names a variant that exists, carries no
+// payload, and is not already covered. Returns how many it covered.
+fn check_arm_alts(c: &mut Ctx, a: u32, ei: u32, head: u32) -> u32 {
+    let al: u32 = c.^.nodes[a].line;
+    let ac: u32 = c.^.nodes[a].col;
+    let mut seen: u32 = 0;
+    let mut alt: u32 = c.^.nodes[a].aux2;
+    for alt != 0 && !failed(c) {
+        let als: u32 = c.^.nodes[alt].a;
+        let av: u32 = find_variant(c, ei, als);
+        if av == 0 {
+            let ens: u32 = c.^.enums[ei].name;
+            e_no_variant(c, al, ac, ens, als);
+            return seen;
+        }
+        if arm_covers(c, head, als) != a {
+            e_dup_arm(c, al, ac, als);
+            return seen;
+        }
+        if c.^.variants[av].nargs != 0 {
+            e_join_payload(c, al, ac, als);
+            return seen;
+        }
+        c.^.nodes[alt].aux = av;
+        seen += 1;
+        alt = c.^.nodes[alt].next;
+    }
+    return seen;
+}
+
+// Every variant is covered, or `_` is there (language.md S9). Counting covered
+// *variants* rather than arms is what makes `A | B` work.
+fn check_exhaustive(c: &mut Ctx, s: u32, ei: u32, head: u32, seen: u32) {
+    if seen == c.^.enums[ei].nvar { return; }
+    let line: u32 = c.^.nodes[s].line;
+    let col: u32 = c.^.nodes[s].col;
+    let mut v: u32 = c.^.enums[ei].variants;
+    for v != 0 {
+        let vs: u32 = c.^.variants[v].name;
+        if arm_for_variant(c, head, vs) == 0 {
+            e_nonexhaustive(c, line, col, vs);
+            return;
+        }
+        v = c.^.variants[v].next;
+    }
+}
+
+// What a statement match and an expression match agree on: the scrutinee, the
+// arm patterns and exhaustiveness. Only the arm bodies differ (language.md S5).
+fn check_match_common(c: &mut Ctx, s: u32) {
+    let ei: u32 = match_enum_of(c, s);
+    if ei == 0 { return; }
     c.^.nodes[s].c = ei;
     c.^.nodes[s].aux2 = c.^.enums[ei].scalar;
+
     let head: u32 = c.^.nodes[s].b;
     let mut wild: u32 = 0;
     let mut seen: u32 = 0;
@@ -4109,18 +4211,8 @@ fn check_match_common(c: &mut Ctx, s: u32) {
         let al: u32 = c.^.nodes[a].line;
         let ac: u32 = c.^.nodes[a].col;
         let ans: u32 = c.^.nodes[a].a;
-        let anl: u32 = c.^.nodes[a].b;
         if c.^.nodes[a].e != 0 {
-            if c.^.nodes[a].next != 0 {
-                if err_open(c, al, ac) {
-                    put_ch(c, 96);
-                    put_str(c, "_");
-                    put_ch(c, 96);
-                    put_str(c, " must be the last arm");
-                    err_end(c);
-                }
-                return;
-            }
+            if c.^.nodes[a].next != 0 { e_wild_not_last(c, al, ac); return; }
             wild = 1;
             a = c.^.nodes[a].next;
             continue;
@@ -4131,75 +4223,23 @@ fn check_match_common(c: &mut Ctx, s: u32) {
             e_no_variant(c, al, ac, ens, ans);
             return;
         }
-        if arm_for_variant(c, head, ans) != a {
-            e_dup_arm(c, al, ac, ans);
-            return;
-        }
+        if arm_for_variant(c, head, ans) != a { e_dup_arm(c, al, ac, ans); return; }
         c.^.nodes[a].aux = v;
-        let mut alt: u32 = c.^.nodes[a].aux2;
-        for alt != 0 && !failed(c) {
-            let als: u32 = c.^.nodes[alt].a;
-            let all: u32 = c.^.nodes[alt].b;
-            let av: u32 = find_variant(c, ei, als);
-            if av == 0 {
-                let ens2: u32 = c.^.enums[ei].name;
-                e_no_variant(c, al, ac, ens2, als);
-                return;
-            }
-            if arm_covers(c, head, als) != a {
-                e_dup_arm(c, al, ac, als);
-                return;
-            }
-            if c.^.variants[av].nargs != 0 {
-                if err_open(c, al, ac) {
-                    put_ch(c, 96);
-                    put_str(c, "|");
-                    put_ch(c, 96);
-                    put_str(c, " cannot join ");
-                    put_q_name(c, als);
-                    put_str(c, ", which carries a payload");
-                    err_end(c);
-                }
-                return;
-            }
-            c.^.nodes[alt].aux = av;
-            seen += 1;
-            alt = c.^.nodes[alt].next;
-        }
+        seen += check_arm_alts(c, a, ei, head);
+        if failed(c) { return; }
         if c.^.nodes[a].aux2 != 0 && c.^.variants[v].nargs != 0 {
-            if err_open(c, al, ac) {
-                put_ch(c, 96);
-                put_str(c, "|");
-                put_ch(c, 96);
-                put_str(c, " cannot join ");
-                put_q_name(c, ans);
-                put_str(c, ", which carries a payload");
-                err_end(c);
-            }
+            e_join_payload(c, al, ac, ans);
             return;
         }
         let binds: u32 = c.^.nodes[a].c;
         let nb: u32 = list_len(c, binds);
         let nargs: u32 = c.^.variants[v].nargs;
-        if nb != nargs {
-            e_bind_arity(c, al, ac, ans, nargs, nb);
-            return;
-        }
+        if nb != nargs { e_bind_arity(c, al, ac, ans, nargs, nb); return; }
         seen += 1;
         a = c.^.nodes[a].next;
     }
     if failed(c) { return; }
-    if wild == 0 && seen != c.^.enums[ei].nvar {
-        let mut v: u32 = c.^.enums[ei].variants;
-        for v != 0 {
-            let vs: u32 = c.^.variants[v].name;
-            if arm_for_variant(c, head, vs) == 0 {
-                e_nonexhaustive(c, line, col, vs);
-                return;
-            }
-            v = c.^.variants[v].next;
-        }
-    }
+    if wild == 0 { check_exhaustive(c, s, ei, head, seen); }
     c.^.nodes[s].d = wild;
 }
 
@@ -6801,6 +6841,161 @@ fn pow2_at_least(v: u32) -> u32 {
     return p;
 }
 
+// Pass one over every buffer: no tokens are kept, only the sizes that the
+// arenas below are cut to (gh #5 C).
+fn scan_sizes(c: &mut Ctx) {
+    source_rewind(c);
+    c.^.scan_only = true;
+    for !source_done(c) && !failed(c) {
+        lex_decl(c);
+        if c.^.ntok > 1 { count_decl_tokens(c); }
+    }
+}
+
+// The names the compiler itself has to recognise. Interned before anything in
+// the source so their ids exist whether or not the source mentions them.
+fn intern_wellknown(c: &mut Ctx) {
+    let w1: u32 = intern(c, "i32");
+    c.^.id_i32 = w1;
+    let w2: u32 = intern(c, "u32");
+    c.^.id_u32 = w2;
+    let w3: u32 = intern(c, "bool");
+    c.^.id_bool = w3;
+    let w4: u32 = intern(c, "u8");
+    c.^.id_u8 = w4;
+    let w5: u32 = intern(c, "_");
+    c.^.id_under = w5;
+    let w6: u32 = intern(c, "len");
+    c.^.id_len = w6;
+    let w7: u32 = intern(c, "ptr");
+    c.^.id_ptr = w7;
+}
+
+// Names, sized exactly off the scan (gh #5 A). Doing it from the counts rather
+// than from the source length is what makes "exactly" possible.
+fn reserve_names(c: &mut Ctx) {
+    unsafe {  // carving arenas out of raw memory (implementation.md S7)
+        // the well-known names need not appear in the source
+        let nb: u32 = c.^.ident_bytes + WELLKNOWN_BYTES;
+        let ntab_max: u32 = c.^.ident_count + WELLKNOWN_COUNT + 1;
+        c.^.nmem = slice_mut(c.^.heap as *u8, nb);
+        c.^.heap = align4(c.^.heap + nb);
+        c.^.ntab = slice_mut(c.^.heap as *NameEnt, ntab_max);
+        c.^.heap = c.^.heap + ntab_max * 8;
+        let nh: u32 = pow2_at_least(ntab_max + ntab_max);
+        c.^.nhash = slice_mut(c.^.heap as *u32, nh);
+        c.^.heap = c.^.heap + nh * 4;
+        if !heap_fits(c) { e_too_large(c); return; }
+        // wasm hands out zeroed memory, but an empty table is a correctness
+        // precondition here, not a happy accident.
+        for let mut i: u32 = 0; i < nh; i += 1 { c.^.nhash[i] = 0; }
+        intern_wellknown(c);
+    }
+}
+
+// The node arena holds the declarations plus the largest single body -- bodies
+// are parsed one at a time and dropped (gh #5 C).
+fn reserve_nodes(c: &mut Ctx) {
+    unsafe {  // carving an arena out of raw memory (implementation.md S7)
+        let nmax: u32 = c.^.decl_tok + c.^.body_max + 2;
+        let nodes_at: u32 = c.^.heap;
+        c.^.nodes = slice_mut(c.^.heap as *Node, nmax);
+        c.^.heap = c.^.heap + nmax * SIZEOF_NODE;
+        if !heap_fits(c) { e_too_large(c); return; }
+        parse_declarations(c);
+        stw(G_NODES, nodes_at);
+        stw(G_DECLS, c.^.decls);
+    }
+}
+
+// Every checker table, cut from the node counts. The declarations are still in
+// the arena; each body was counted into ck_* as it was parsed and dropped.
+fn reserve_tables(c: &mut Ctx) {
+    unsafe {  // carving arenas out of raw memory (implementation.md S7)
+        let ndecl: u32 = c.^.nnode;
+        count_range(c, 1, ndecl);
+
+        let n_ty: u32 = c.^.ck_tys + TY_FIRST + 8;
+        c.^.types = slice_mut(c.^.heap as *Ty, n_ty);
+        c.^.heap = c.^.heap + n_ty * 12;
+
+        let n_field: u32 = c.^.ck_fields + c.^.ck_tys + 2;
+        c.^.fields = slice_mut(c.^.heap as *FieldI, n_field);
+        c.^.heap = c.^.heap + n_field * 20;
+
+        let n_struct: u32 = c.^.ck_structs + 2;
+        c.^.structs = slice_mut(c.^.heap as *StructI, n_struct);
+        c.^.heap = c.^.heap + n_struct * 24;
+
+        let n_variant: u32 = c.^.ck_variants + 2;
+        c.^.variants = slice_mut(c.^.heap as *VariantI, n_variant);
+        c.^.heap = c.^.heap + n_variant * 24;
+
+        let n_enum: u32 = c.^.ck_enums + 2;
+        c.^.enums = slice_mut(c.^.heap as *EnumI, n_enum);
+        c.^.heap = c.^.heap + n_enum * 28;
+
+        let n_const: u32 = c.^.ck_consts + 2;
+        c.^.consts = slice_mut(c.^.heap as *ConstI, n_const);
+        c.^.heap = c.^.heap + n_const * 28;
+
+        let n_param: u32 = c.^.ck_params + 2;
+        c.^.params = slice_mut(c.^.heap as *ParamI, n_param);
+        c.^.heap = c.^.heap + n_param * 16;
+
+        let n_fn: u32 = c.^.ck_fns + 2;
+        c.^.fns = slice_mut(c.^.heap as *FnI, n_fn);
+        c.^.heap = c.^.heap + n_fn * 52;
+
+        let n_local: u32 = c.^.ck_params + c.^.ck_lets + c.^.ck_binds + 2;
+        c.^.locals = slice_mut(c.^.heap as *LocalI, n_local);
+        c.^.heap = c.^.heap + n_local * 36;
+
+        let n_str: u32 = c.^.ck_strs + 2;
+        c.^.strs = slice_mut(c.^.heap as *StrI, n_str);
+        c.^.heap = c.^.heap + n_str * 16;
+
+        let n_name: u32 = c.^.ck_structs + c.^.ck_enums + c.^.ck_consts + c.^.ck_fns + 2;
+        c.^.taken = slice_mut(c.^.heap as *NameI, n_name);
+        c.^.heap = c.^.heap + n_name * 12;
+        c.^.tynames = slice_mut(c.^.heap as *NameI, n_name);
+        c.^.heap = c.^.heap + n_name * 12;
+        c.^.scalars = slice_mut(c.^.heap as *NameI, n_name);
+        c.^.heap = c.^.heap + n_name * 12;
+
+        let n_scope: u32 = n_local + 2;
+        c.^.scope = slice_mut(c.^.heap as *u32, n_scope);
+        c.^.heap = c.^.heap + n_scope * 4;
+        let n_mark: u32 = MAX_DEPTH + MAX_DEPTH + 8;
+        c.^.marks = slice_mut(c.^.heap as *u32, n_mark);
+        c.^.heap = c.^.heap + n_mark * 4;
+
+        let n_stack: u32 = 512;
+        c.^.free = slice_mut(c.^.heap as *u32, n_stack);
+        c.^.heap = c.^.heap + n_stack * 4;
+        c.^.ctrl = slice_mut(c.^.heap as *u32, n_stack);
+        c.^.heap = c.^.heap + n_stack * 4;
+        let n_sig: u32 = (c.^.ck_fns + 2) * 3;
+        c.^.sigs = slice_mut(c.^.heap as *u32, n_sig);
+        c.^.heap = c.^.heap + n_sig * 4;
+
+        if !heap_fits(c) { e_too_large(c); }
+    }
+}
+
+// The workbench (tests/test_cool0c.py) reads these to compare stages against
+// the oracle. The compiler itself never reads them back.
+fn publish_debug(c: &Ctx) {
+    let nmem_at: u32 = c.^.nmem.ptr as u32;
+    let ntab_at: u32 = c.^.ntab.ptr as u32;
+    stw(G_HEAP, c.^.heap);
+    stw(G_NMEM, nmem_at);
+    stw(G_NTAB, ntab_at);
+    stw(G_TOKS, S1);
+    stw(G_NTOK, c.^.tok_max);
+    stw(G_ERR, c.^.err);
+}
+
 // ===========================================================================
 // Entry point (implementation.md S7)
 // ===========================================================================
@@ -6931,168 +7126,20 @@ fn compile_n(nsrc: u32) -> i32 {
         // before lexing: the token arena alone can reach S1
         if !heap_fits(&c) { e_too_large(&mut c); }
 
-        if c.err == 0 {
-            source_rewind(&mut c); c.scan_only = true;
-            for !source_done(&c) && !failed(&c) {
-                lex_decl(&mut c); if c.ntok > 1 { count_decl_tokens(&mut c); }
-            }
-        }
+        if c.err == 0 { scan_sizes(&mut c); }
 
-        // Names, sized exactly off the tokens (gh #5 A). Doing this here rather
-        // than during lexing is what makes "exactly" possible: the byte count
-        // and the identifier count are both readable from the token array.
-        if c.err == 0 {
-            let mut nb: u32 = c.ident_bytes;
-            let mut nid: u32 = c.ident_count;
-            // the well-known names above need not appear in the source
-            nb = nb + WELLKNOWN_BYTES;
-            nid = nid + WELLKNOWN_COUNT;
-            c.nmem = slice_mut(c.heap as *u8, nb);
-            c.heap = align4(c.heap + nb);
-            let ntab_max: u32 = nid + 1;
-            c.ntab = slice_mut(c.heap as *NameEnt, ntab_max);
-            c.heap = c.heap + ntab_max * 8;
-            let nh: u32 = pow2_at_least(ntab_max + ntab_max);
-            c.nhash = slice_mut(c.heap as *u32, nh);
-            c.heap = c.heap + nh * 4;
-            if !heap_fits(&c) { e_too_large(&mut c); }
-            if c.err == 0 {
-                // wasm hands out zeroed memory, but an empty table is a
-                // correctness precondition here, not a happy accident.
-                for let mut i: u32 = 0; i < nh; i += 1 { c.nhash[i] = 0; }
-                let w1: u32 = intern(&mut c, "i32");
-                c.id_i32 = w1;
-                let w2: u32 = intern(&mut c, "u32");
-                c.id_u32 = w2;
-                let w3: u32 = intern(&mut c, "bool");
-                c.id_bool = w3;
-                let w4: u32 = intern(&mut c, "u8");
-                c.id_u8 = w4;
-                let w5: u32 = intern(&mut c, "_");
-                c.id_under = w5;
-                let w6: u32 = intern(&mut c, "len");
-                c.id_len = w6;
-                let w7: u32 = intern(&mut c, "ptr");
-                c.id_ptr = w7;
-            }
-        }
+        if c.err == 0 { reserve_names(&mut c); }
 
-        // The node arena is sized from the token count, not the source length --
-        // there is at most one node per token and tokens are far fewer than
-        // bytes. Sizing it before lexing would reserve megabytes for nothing.
-        //
-        // And not from *all* the tokens either: the declarations plus the
-        // largest single body is what is alive at once (gh #5 C).
-        if c.err == 0 {
-            let nmax: u32 = c.decl_tok + c.body_max + 2;
-            c.nodes = slice_mut(c.heap as *Node, nmax);
-            let nodes_at: u32 = c.heap;
-            c.heap = c.heap + nmax * SIZEOF_NODE;
-            if !heap_fits(&c) { e_too_large(&mut c); }
-            if c.err == 0 { parse_declarations(&mut c); }
-            stw(G_NODES, nodes_at);
-            stw(G_DECLS, c.decls);
-        }
+        if c.err == 0 { reserve_nodes(&mut c); }
 
         if c.err == 0 {
-            // The declarations are still in the arena; every body was counted
-            // into c.ck_* as it was parsed and dropped (gh #5 C).
-            let ndecl: u32 = c.nnode;
-            count_range(&mut c, 1, ndecl);
-            let mut k: Counts = Counts{
-                tys: c.ck_tys,
-                fields: c.ck_fields,
-                structs: c.ck_structs,
-                variants: c.ck_variants,
-                enums: c.ck_enums,
-                consts: c.ck_consts,
-                params: c.ck_params,
-                fns: c.ck_fns,
-                lets: c.ck_lets,
-                binds: c.ck_binds,
-                strs: c.ck_strs,
-            };
-
-            let n_ty: u32 = k.tys + TY_FIRST + 8;
-            c.types = slice_mut(c.heap as *Ty, n_ty);
-            c.heap = c.heap + n_ty * 12;
-
-            let n_field: u32 = k.fields + k.tys + 2;
-            c.fields = slice_mut(c.heap as *FieldI, n_field);
-            c.heap = c.heap + n_field * 20;
-
-            let n_struct: u32 = k.structs + 2;
-            c.structs = slice_mut(c.heap as *StructI, n_struct);
-            c.heap = c.heap + n_struct * 24;
-
-            let n_variant: u32 = k.variants + 2;
-            c.variants = slice_mut(c.heap as *VariantI, n_variant);
-            c.heap = c.heap + n_variant * 24;
-
-            let n_enum: u32 = k.enums + 2;
-            c.enums = slice_mut(c.heap as *EnumI, n_enum);
-            c.heap = c.heap + n_enum * 28;
-
-            let n_const: u32 = k.consts + 2;
-            c.consts = slice_mut(c.heap as *ConstI, n_const);
-            c.heap = c.heap + n_const * 28;
-
-            let n_param: u32 = k.params + 2;
-            c.params = slice_mut(c.heap as *ParamI, n_param);
-            c.heap = c.heap + n_param * 16;
-
-            let n_fn: u32 = k.fns + 2;
-            c.fns = slice_mut(c.heap as *FnI, n_fn);
-            c.heap = c.heap + n_fn * 52;
-
-            let n_local: u32 = k.params + k.lets + k.binds + 2;
-            c.locals = slice_mut(c.heap as *LocalI, n_local);
-            c.heap = c.heap + n_local * 36;
-
-            let n_str: u32 = k.strs + 2;
-            c.strs = slice_mut(c.heap as *StrI, n_str);
-            c.heap = c.heap + n_str * 16;
-
-            let n_name: u32 = k.structs + k.enums + k.consts + k.fns + 2;
-            c.taken = slice_mut(c.heap as *NameI, n_name);
-            c.heap = c.heap + n_name * 12;
-            c.tynames = slice_mut(c.heap as *NameI, n_name);
-            c.heap = c.heap + n_name * 12;
-            c.scalars = slice_mut(c.heap as *NameI, n_name);
-            c.heap = c.heap + n_name * 12;
-
-            let n_scope: u32 = n_local + 2;
-            c.scope = slice_mut(c.heap as *u32, n_scope);
-            c.heap = c.heap + n_scope * 4;
-            let n_mark: u32 = MAX_DEPTH + MAX_DEPTH + 8;
-            c.marks = slice_mut(c.heap as *u32, n_mark);
-            c.heap = c.heap + n_mark * 4;
-
-            let n_stack: u32 = 512;
-            c.free = slice_mut(c.heap as *u32, n_stack);
-            c.heap = c.heap + n_stack * 4;
-            c.ctrl = slice_mut(c.heap as *u32, n_stack);
-            c.heap = c.heap + n_stack * 4;
-            let n_sig: u32 = (k.fns + 2) * 3;
-            c.sigs = slice_mut(c.heap as *u32, n_sig);
-            c.heap = c.heap + n_sig * 4;
-
-            if !heap_fits(&c) { e_too_large(&mut c); }
+            reserve_tables(&mut c);
             init_types(&mut c);
             if c.err == 0 { check_program(&mut c); }
             if c.err == 0 { emit_module(&mut c); }
         }
 
-        // debug window for the workbench
-        let toks_at: u32 = S1;
-        let nmem_at: u32 = c.nmem.ptr as u32;
-        let ntab_at: u32 = c.ntab.ptr as u32;
-        stw(G_HEAP, c.heap);
-        stw(G_NMEM, nmem_at);
-        stw(G_NTAB, ntab_at);
-        stw(G_TOKS, toks_at);
-        stw(G_NTOK, c.tok_max);
-        stw(G_ERR, c.err);
+        publish_debug(&c);
 
         stw(OUT_PTR_ADDR, OUT);
         stw(OUT_LEN_ADDR, c.out - OUT);
