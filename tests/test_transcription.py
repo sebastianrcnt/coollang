@@ -10,12 +10,19 @@
 
 를 스킵 사유로 찍는다. 셋이 다 0 이 되면 스킵이 사라지고 같은 세 가지가 강제된다.
 
-**여기서 알 수 있는 것과 없는 것.** 이름과 서명은 텍스트로 볼 수 있지만 *본문이
-낡았는지*는 볼 수 없다 -- 서명이 그대로인 채 속만 바뀐 함수가 많다. 그쪽은
-패리티가 잡는다 (test_parity.py, test_milestone.py). 여기는 그 앞단, "무엇을 아직
-안 건드렸나" 를 세는 자리다.
+**본문이 낡은 것도 여기서 본다.** 처음에는 이름과 서명만 셌다. 그런데 서명이
+그대로인 채 속만 낡은 함수가 서른 개 넘게 있었고, 그것들은 패리티가 잡아 주지
+못했다 -- 전사가 끝나기 전에는 패리티 시험이 통째로 스킵되니까. 그래서 텍스트만
+보고 확인할 수 있는 네 가지를 여기서 강제한다.
 
-`wat2wasm` 이 받아주는지는 conftest 의 `wat_is_current()` 가 따로 본다.
+    검증      wat2wasm 은 파싱만 한다. 인자 수가 안 맞는 호출도 통과시킨다
+    인자 수   모든 `(call $f ...)` 이 정의된 매개변수 수와 맞는가
+    리터럴    박아 둔 (주소, 길이) 가 소스 리터럴 하나와 정확히 겹치는가
+    노드 필드 함수마다 만지는 노드 필드가 원본과 같은가
+
+넷 다 "다르면 언제나 버그" 인 것들이다. 완전하지는 않다 -- 헬퍼를 거치거나
+필드 번호가 변수면 안 보인다. 나머지는 패리티가 잡는다 (test_parity.py,
+test_milestone.py).
 """
 
 from __future__ import annotations
@@ -166,3 +173,165 @@ def test_the_transcription_has_no_leftovers():
         f"WAT 에 원본이 없는 함수 {len(EXTRA)} 개: {EXTRA}. "
         f"진짜 WAT 전용 배관이면 WAT_ONLY 에 이유와 함께 적어라"
     )
+
+
+# ---------------------------------------------------------------------------
+# 본문이 낡았는지 -- 텍스트만 보고 확인할 수 있는 네 가지
+# ---------------------------------------------------------------------------
+
+WAT_TEXT = COOL0C_WAT.read_text("ascii")
+RODATA = 0x1000_0000
+
+NODE_FIELDS = {
+    "kind": 0, "line": 4, "col": 8, "a": 12, "b": 16, "c": 20, "d": 24,
+    "e": 28, "next": 32, "ty": 36, "aux": 40, "aux2": 44, "depth": 48, "op": 52,
+}
+
+
+def sub_exprs(text: str, at: int) -> list[str]:
+    """`(` 에서 시작하는 s-식의 최상위 부분식들. 문자열 안의 괄호는 건너뛴다."""
+    depth, i, out, start = 0, at, [], None
+    while i < len(text):
+        ch = text[i]
+        if ch == chr(34):
+            i += 1
+            while text[i] != chr(34):
+                i += 2 if text[i] == chr(92) else 1
+        elif ch == "(":
+            depth += 1
+            if depth == 2:
+                start = i
+        elif ch == ")":
+            depth -= 1
+            if depth == 1 and start is not None:
+                out.append(text[start:i + 1])
+                start = None
+            elif depth == 0:
+                return out
+        i += 1
+    raise AssertionError("괄호가 안 닫힌다")
+
+
+def wat_body(name: str) -> str:
+    at = WAT_TEXT.index("  (func $" + name + " ")
+    depth, i = 0, at
+    while True:
+        if WAT_TEXT[i] == chr(34):
+            i += 1
+            while WAT_TEXT[i] != chr(34):
+                i += 2 if WAT_TEXT[i] == chr(92) else 1
+        elif WAT_TEXT[i] == "(":
+            depth += 1
+        elif WAT_TEXT[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return WAT_TEXT[at:i + 1]
+        i += 1
+
+
+def literal_blob() -> tuple[bytes, dict[int, bytes]]:
+    """소스 리터럴을 첫 등장 순서로 이은 것과, 각 리터럴이 시작하는 자리."""
+    from cool0.cool0 import lex
+
+    blob, seen, starts = bytearray(), set(), {}
+    for t in lex(COOL0C.read_bytes()):
+        if t.kind == "str" and t.value not in seen:
+            seen.add(t.value)
+            starts[len(blob)] = t.value
+            blob += t.value
+    return bytes(blob), starts
+
+
+@incomplete
+def test_the_transcription_is_a_valid_wasm_module():
+    """`wat2wasm` 은 파싱만 한다.
+
+    한때 매개변수 넷짜리 함수를 다섯 개로 부르는 호출이 있었고 wat2wasm 은 그걸
+    그대로 통과시켰다. 타입 검사는 검증기가 한다.
+    """
+    import wasmtime
+
+    wasmtime.Module.validate(wasmtime.Engine(), wasmtime.wat2wasm(WAT_TEXT))
+
+
+@incomplete
+def test_every_call_passes_the_right_number_of_arguments():
+    """인터닝(gh #5 A) 으로 이름이 한 워드가 됐을 때 32 자리가 어긋나 있었다.
+
+    받는 쪽만 고치고 부르는 쪽을 안 고쳐도 서명 대조는 통과한다.
+    """
+    nparams = {}
+    for m in re.finditer(r"\(func \$(\w+)((?:[^\n]|\n(?!  \())*)", WAT_TEXT):
+        nparams[m.group(1)] = m.group(0).split("(local ")[0].count("(param ")
+
+    cur, bad = None, []
+    for m in re.finditer(r"\(func \$(\w+)|\(call \$(\w+)[ \n)]", WAT_TEXT):
+        if m.group(1):
+            cur = m.group(1)
+            continue
+        callee = m.group(2)
+        if callee not in nparams:
+            bad.append(f"{cur} -> {callee}: 정의가 없다")
+            continue
+        got = len(sub_exprs(WAT_TEXT, m.start()))
+        if got != nparams[callee]:
+            bad.append(f"{cur} -> {callee}: 인자 {got} 개, 매개변수 {nparams[callee]} 개")
+    assert not bad, NL.join(bad)
+
+
+@incomplete
+def test_every_string_address_lands_on_a_literal():
+    """리터럴은 소스의 첫 등장 순서로 RODATA 부터 붙어 있다 (implementation.md §4).
+
+    그러니 박아 둔 (주소, 길이) 는 **어떤 리터럴의 시작과 끝에** 맞아야 한다.
+    한 글자만 어긋나도 진단 문구가 조용히 섞인다 -- "truct fieldecannot have..."
+    가 실제로 나왔다.
+    """
+    blob, starts = literal_blob()
+    cur, bad = None, []
+    for m in re.finditer(
+        r"  \(func \$(\w+)|\(i32\.const (0x1[0-9A-Fa-f]{7})\)\s*\(i32\.const (\d+)\)",
+        WAT_TEXT,
+    ):
+        if m.group(1):
+            cur = m.group(1)
+            continue
+        off, n = int(m.group(2), 16) - RODATA, int(m.group(3))
+        if off < 0 or off + n > len(blob):
+            bad.append(f"{cur}: {m.group(2)} +{n} 은 문자열 표 밖이다")
+        elif starts.get(off) is None or len(starts[off]) != n:
+            bad.append(f"{cur}: {m.group(2)} +{n} 은 {blob[off:off + n]!r} -- 리터럴이 아니다")
+    assert not bad, NL.join(bad)
+
+
+@incomplete
+def test_every_function_touches_the_same_node_fields():
+    """`.op` 가 새 칸으로 옮겨 갔는데 아홉 함수가 여전히 `.a` 를 읽고 있었다.
+
+    함수마다 만지는 노드 필드의 **집합**을 양쪽에서 뽑아 견준다. 헬퍼를 거치거나
+    필드 번호가 변수면 안 보이지만, 칸이 옮겨 간 것은 대부분 여기서 걸린다.
+    """
+    names = {v: k for k, v in NODE_FIELDS.items()}
+    text = COOL0C.read_text("ascii")
+    bad = []
+    for chunk in re.split(NL + r"(?=fn )", text):
+        m = re.match(r"fn (\w+)\(", chunk)
+        if not m or m.group(1) not in WAT_FNS:
+            continue
+        # 주석에도 `nodes[base].kind` 같은 말이 나온다. 코드만 본다
+        code = re.sub(r"//[^" + NL + "]*", "", chunk)
+        want = {NODE_FIELDS[f] for f in re.findall(r"nodes\[[^\]]+\]\.(\w+)", code)
+                if f in NODE_FIELDS}
+        if not want:
+            continue
+        body, got = wat_body(m.group(1)), set()
+        for c in re.finditer(r"\(call \$(nd|nset) ", body):
+            args = sub_exprs(body, c.start())
+            hit = re.fullmatch(r"\(i32\.const (\d+)\)", args[2].strip())
+            if hit:
+                got.add(int(hit.group(1)))
+        if want != got:
+            miss = ",".join(names.get(o, str(o)) for o in sorted(want - got))
+            more = ",".join(names.get(o, str(o)) for o in sorted(got - want))
+            bad.append(f"{m.group(1)}: 원본만 [{miss}], WAT 만 [{more}]")
+    assert not bad, NL.join(bad)
