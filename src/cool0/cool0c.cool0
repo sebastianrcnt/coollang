@@ -39,8 +39,8 @@ const G_DECLS: u32 = 0x0040;
 const G_NODES: u32 = 0x0044;
 
 // regions
-const S1: u32 = 0x00E0_0000;   // scratch for one function body
-const S2: u32 = 0x00F0_0000;   // scratch for one section payload
+const S1: u32 = 0x0E00_0000;   // scratch for one function body
+const S2: u32 = 0x0F00_0000;   // scratch for one section payload
 const OUT: u32 = 0x0101_0000;  // final output; 0x0100_0000 is this module's rodata
 
 const NONE: u32 = 0xFFFF_FFFF;
@@ -2177,7 +2177,7 @@ struct NameI {   // a claimed top-level name, or a type name
     next: u32,
 }
 
-const RODATA: u32 = 0x0100_0000;
+const RODATA: u32 = 0x1000_0000;
 
 // --- lookups ---------------------------------------------------------------
 
@@ -4966,9 +4966,9 @@ const OP_I32_OR: u32 = 0x72;
 const TYPE_I32: u32 = 0x7F;
 const BLOCK_VOID: u32 = 0x40;
 
-const MEM_PAGES: u32 = 512;
-const SHADOW_FLOOR: u32 = 0x0180_0000;
-const SHADOW_TOP: u32 = 0x0200_0000;
+const MEM_PAGES: u32 = 8192;
+const SHADOW_FLOOR: u32 = 0x1800_0000;
+const SHADOW_TOP: u32 = 0x2000_0000;
 
 const CTRL_BRK: u32 = 1;
 const CTRL_LOOP: u32 = 2;

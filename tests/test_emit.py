@@ -64,8 +64,8 @@ def test_empty_function_module_is_exact():
         0061736d 01000000            # 매직 + 버전
         01 04 01 6000 00             # type:     () -> ()
         03 02 01 00                  # function: 함수 하나, 타입 0
-        05 06 01 01 8004 8004        # memory:   min = max = 512
-        06 09 01 7f 01 41 80808010 0b  # global: mut i32 = 0x0200_0000
+        05 06 01 01 8040 8040        # memory:   min = max = 8192 (512 MiB)
+        06 0a 01 7f 01 41 8080808002 0b  # global: mut i32 = 0x2000_0000
         07 0e 02
            01 66 00 00               # export:   "f" -> 함수 0
            06 6d656d6f7279 02 00     #           "memory" -> 메모리 0
@@ -80,8 +80,8 @@ def test_add_function_is_exact():
         0061736d 01000000
         01 07 01 60 02 7f7f 01 7f    # type:  (i32, i32) -> i32
         03 02 01 00
-        05 06 01 01 8004 8004
-        06 09 01 7f 01 41 80808010 0b
+        05 06 01 01 8040 8040
+        06 0a 01 7f 01 41 8080808002 0b
         07 10 02
            03 616464 00 00           # "add"
            06 6d656d6f7279 02 00
@@ -113,10 +113,16 @@ def test_no_imports_no_tables_no_start():
     assert "element" not in names and "custom" not in names
 
 
-def test_memory_is_fixed_at_512_pages():
-    # 하나짜리 벡터, flags=1 (최대값 있음), min = max = 512
+def test_memory_is_fixed_at_the_documented_page_count():
+    """하나짜리 벡터, flags=1 (최대값 있음), min = max = MEM_PAGES.
+
+    페이지 수를 손으로 박아 두었다가 512 에서 8192 로 올릴 때 골든 셋이
+    한꺼번에 깨졌다 (gh #5). 이제 상수에서 가져온다.
+    """
+    from cool0.cool0 import MEM_PAGES, leb_u
+
     payload = section(compile_ok("fn f() { }"), "memory")
-    assert payload == bytes([0x01, 0x01]) + b"\x80\x04" + b"\x80\x04"
+    assert payload == bytes([0x01, 0x01]) + leb_u(MEM_PAGES) + leb_u(MEM_PAGES)
 
 
 def test_data_section_is_absent_without_strings():
@@ -251,10 +257,15 @@ def test_aggregate_local_creates_a_frame():
     body = code_body(compile_ok(src))
     # 프롤로그: global.get $sp, i32.const 4, i32.sub, global.set $sp,
     #          global.get $sp, i32.const FLOOR, i32.lt_u, if(void) unreachable end
-    assert bytes([
-        0x23, 0x00, 0x41, 0x04, 0x6B, 0x24, 0x00,
-        0x23, 0x00, 0x41, 0x80, 0x80, 0x80, 0x0C, 0x49, 0x04, 0x40, 0x00, 0x0B,
-    ]) in body
+    from cool0.cool0 import SHADOW_FLOOR, leb_s
+
+    prologue = (
+        bytes([0x23, 0x00, 0x41, 0x04, 0x6B, 0x24, 0x00])
+        + bytes([0x23, 0x00, 0x41])
+        + leb_s(SHADOW_FLOOR)
+        + bytes([0x49, 0x04, 0x40, 0x00, 0x0B])
+    )
+    assert prologue in body
     # 에필로그: 같은 값을 도로 더한다 (넘침 검사는 없다)
     assert body.endswith(bytes([0x23, 0x00, 0x41, 0x04, 0x6A, 0x24, 0x00, 0x0B]))
 

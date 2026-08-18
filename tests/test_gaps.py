@@ -18,7 +18,12 @@ import wasmtime
 
 from conftest import ENGINE, run_compiler, needs_current_wat
 from gaps import GAP_DIAGNOSTICS, GAP_PROGRAMS, GAPS
-from cool0.cool0 import STATUS_OK, compile as reference_compile
+from cool0.cool0 import (
+    SHADOW_FLOOR,
+    SHADOW_TOP,
+    STATUS_OK,
+    compile as reference_compile,
+)
 
 SRC_DIR = pathlib.Path(__file__).resolve().parent.parent / "src" / "cool0"
 COOL0C_WAT = SRC_DIR / "cool0c.wat"
@@ -200,26 +205,29 @@ fn depth(n: u32) -> u32 {
 }
 """
 
-# 8바이트짜리 작은 프레임으로는 8 MiB 를 다 채우기 한참 전에 wasmtime 자신의
-# 고유 호출 스택 한계가 먼저 온다. 그 한계보다 훨씬 앞에서 우리 바닥 검사가
-# 걸리는 것을 보려면 프레임을 크게 만들어야 한다 -- 필드가 많은 struct 하나면
-# 된다.
-_BIG_NFIELDS = 150
-_BIG_FRAME_SIZE = _BIG_NFIELDS * 4  # 전부 u32
+# 우리 바닥 검사가 wasmtime 자신의 호출 스택 한계보다 **먼저** 걸리게 하려면
+# 프레임이 충분히 커야 한다. 필요한 크기는 섀도 영역 크기에서 나온다 --
+# 영역이 8 MiB 에서 128 MiB 로 커졌을 때 이 상수가 손으로 박혀 있어서 시험이
+# 깨졌다. 이제는 유도한다.
+_NL = chr(10)
+_SHADOW_RANGE = SHADOW_TOP - SHADOW_FLOOR
+
+# wasmtime 이 이 함수로 넉넉히 들어갈 수 있는 깊이. 위의 작은 프레임 시험이
+# 15,000 까지 성한 것을 확인해 두었으니 그 아래로 잡는다.
+_REACHABLE_DEPTH = 11000
+_BIG_NFIELDS = -(-_SHADOW_RANGE // (_REACHABLE_DEPTH * 4))  # u32 필드 개수
+_BIG_FRAME_SIZE = _BIG_NFIELDS * 4
 DEEP_BIG = (
-    "struct Frame { " + ", ".join(f"f{i}: u32" for i in range(_BIG_NFIELDS)) + " }\n"
-    "fn depth(n: u32) -> u32 {\n"
-    "    let mut fr: Frame = Frame{ "
-    + ", ".join(f"f{i}: n" for i in range(_BIG_NFIELDS)) + " };\n"
-    "    if n == 0 { return fr.f0; }\n"
-    "    return depth(n - 1) + 1;\n"
-    "}\n"
+    "struct Frame { " + ", ".join(f"f{i}: u32" for i in range(_BIG_NFIELDS)) + " }" + _NL
+    + "fn depth(n: u32) -> u32 {" + _NL
+    + "    let mut fr: Frame = Frame{ " + ", ".join(f"f{i}: n" for i in range(_BIG_NFIELDS)) + " };" + _NL
+    + "    if n == 0 { return fr.f0; }" + _NL
+    + "    return depth(n - 1) + 1;" + _NL
+    + "}" + _NL
 )
 
-# implementation.md §7: SHADOW_FLOOR = 0x0180_0000, $sp 초기값 = 0x0200_0000.
 # depth(n) 은 n+1 번 프레임을 민다 (n, n-1, ..., 0). 처음으로 $sp 가
 # SHADOW_FLOOR 아래로 내려가는 n 이 트랩하는 첫 깊이다.
-_SHADOW_RANGE = 0x0200_0000 - 0x0180_0000
 _BIG_TRIP_N = (_SHADOW_RANGE + _BIG_FRAME_SIZE - 1) // _BIG_FRAME_SIZE - 1
 
 

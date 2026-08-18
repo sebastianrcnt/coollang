@@ -33,13 +33,13 @@ from typing import Optional
 # 0. 상수 -- 호스트 ABI (implementation.md §7)
 # ============================================================================
 
-MEM_PAGES = 512  # 32 MiB, 고정
+MEM_PAGES = 8192  # 512 MiB, 고정
 OUT_PTR_ADDR = 0x0000
 OUT_LEN_ADDR = 0x0004
 SRC_ADDR = 0x1000  # 호스트가 소스를 놓는 곳
-RODATA_ADDR = 0x0100_0000  # 문자열 리터럴. 위로 자란다
-SHADOW_FLOOR = 0x0180_0000  # 섀도 스택 영역 하한. 넘으면 트랩 (프롤로그가 검사한다)
-SHADOW_TOP = 0x0200_0000  # $sp 초기값. 아래로 자란다 (8 MiB)
+RODATA_ADDR = 0x1000_0000  # 문자열 리터럴. 위로 자란다
+SHADOW_FLOOR = 0x1800_0000  # 섀도 스택 영역 하한. 넘으면 트랩 (프롤로그가 검사한다)
+SHADOW_TOP = 0x2000_0000  # $sp 초기값. 아래로 자란다 (128 MiB). 메모리 끝이다
 
 STATUS_OK = 0
 STATUS_ERR = 1
@@ -3149,7 +3149,7 @@ def local_stub(loc: Local, pos) -> Ident:
 # 안 그러면 큰 소스에서 두 구현이 갈리고, 그것이 implementation.md §8 이 금지하는
 # 바로 그 상황이다. 산술은 cool0c.cool0 의 compile() 과 한 줄씩 같다.
 
-BOOTSTRAP_SCRATCH = 0x00E0_0000  # S1. 힙은 여기 닿을 수 없다
+BOOTSTRAP_SCRATCH = 0x0E00_0000  # S1. 힙은 여기 닿을 수 없다
 
 
 def _count_arena_nodes(decls) -> dict:

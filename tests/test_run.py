@@ -594,10 +594,13 @@ fn f(a: u32) -> bool { let p: *u8 = a as *u8; return p == 0 as *u8; }
 # --- 호스트 ABI (implementation.md §7) --------------------------------------------------------
 
 
-def test_memory_is_32_mib():
+def test_memory_is_the_documented_size():
+    """implementation.md §7 이 적은 페이지 수 그대로 실제로 잡힌다."""
+    from cool0.cool0 import MEM_PAGES
+
     inst = instantiate("fn f() { }")
-    assert inst.memory.size(inst.store) == 512
-    assert inst.memory.data_len(inst.store) == 512 * 65536
+    assert inst.memory.size(inst.store) == MEM_PAGES
+    assert inst.memory.data_len(inst.store) == MEM_PAGES * 65536
 
 
 def test_a_program_can_satisfy_the_abi():
