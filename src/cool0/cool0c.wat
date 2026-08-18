@@ -11,18 +11,14 @@
 ;; left, and byte parity catches those.
 ;;
 ;; ------------------------------------------------------------------------
-;; The one place this is not literal
+;; Bounds checks
 ;;
-;; cool0c.cool0 keeps every table in a slice, so every index it writes is
-;; bounds-checked by the code cool0 emits. This file loads directly instead.
-;; The milestone is `B == C == P`, not `A == P` -- A only has to *behave*
-;; like the compiler, and a check that never fires changes no behaviour. Every
-;; arena in cool0c.cool0 is sized from an exact count taken in count_nodes, so
-;; no index here can leave its arena.
-;;
-;; The cost of that shortcut is real and worth stating: if an arena ever did
-;; overflow, the cool0-compiled compiler would trap and this one would corrupt
-;; memory instead. The checks are the source's safety net, not the algorithm.
+;; cool0c.cool0 keeps every table in a slice, so cool0 emits a check at every
+;; index. This file checks too. The accesses all funnel through six accessors
+;; ($src_at, $tok, $np, $ty_at, $rec, $scope_at) plus five inline stacks, so
+;; the checks cost about forty lines here rather than the twenty thousand an
+;; inlined transcription would have needed. $rec covers eleven tables at once
+;; because each stores its length one word above its base.
 ;; ------------------------------------------------------------------------
 ;;
 ;; Conventions used throughout:
@@ -101,6 +97,8 @@
   ;; c.^.src[i] -- src.ptr is at offset 0, src.len at 4
 
   (func $src_at (param $c i32) (param $i i32) (result i32)
+    (if (i32.ge_u (local.get $i) (call $cg (local.get $c) (i32.const 4)))
+        (then (unreachable)))
     (i32.load8_u (i32.add (call $cg (local.get $c) (i32.const 0)) (local.get $i))))
 
   (func $src_len (param $c i32) (result i32)
@@ -180,6 +178,8 @@
   ;; ======================================================================
 
   (func $tok (param $c i32) (param $i i32) (result i32)
+    (if (i32.ge_u (local.get $i) (call $cg (local.get $c) (i32.const 24)))
+        (then (unreachable)))
     (i32.add (call $cg (local.get $c) (i32.const 20))
              (i32.mul (local.get $i) (i32.const 28))))
 
@@ -803,6 +803,8 @@
   ;; ======================================================================
 
   (func $np (param $c i32) (param $n i32) (result i32)
+    (if (i32.ge_u (local.get $n) (call $cg (local.get $c) (i32.const 36)))
+        (then (unreachable)))
     (i32.add (call $cg (local.get $c) (i32.const 32))
              (i32.mul (local.get $n) (i32.const 52))))
 
@@ -2084,6 +2086,8 @@
   ;; ======================================================================
 
   (func $ty_at (param $c i32) (param $t i32) (result i32)
+    (if (i32.ge_u (local.get $t) (call $cg (local.get $c) (i32.const 64)))
+        (then (unreachable)))
     (i32.add (call $cg (local.get $c) (i32.const 60))
              (i32.mul (local.get $t) (i32.const 12))))
 
@@ -2260,8 +2264,13 @@
   ;;  tynames     192     200  12   ns 0 nl 4 next 8
   ;; ======================================================================
 
+  ;; every table stores its length one word above its base, so one check here
+  ;; covers all eleven of them
   (func $rec (param $c i32) (param $arena i32) (param $i i32) (param $size i32)
         (result i32)
+    (if (i32.ge_u (local.get $i)
+                  (call $cg (local.get $c) (i32.add (local.get $arena) (i32.const 4))))
+        (then (unreachable)))
     (i32.add (call $cg (local.get $c) (local.get $arena))
              (i32.mul (local.get $i) (local.get $size))))
 
@@ -3456,6 +3465,8 @@
   (func $push_scope (param $c i32)
     (local $m i32)
     (local.set $m (call $cg (local.get $c) (i32.const 232)))
+    (if (i32.ge_u (local.get $m) (call $cg (local.get $c) (i32.const 228)))
+        (then (unreachable)))
     (i32.store (i32.add (call $cg (local.get $c) (i32.const 224))
                         (i32.mul (local.get $m) (i32.const 4)))
                (call $cg (local.get $c) (i32.const 220)))
@@ -3470,6 +3481,8 @@
                                  (i32.mul (local.get $m) (i32.const 4))))))
 
   (func $scope_at (param $c i32) (param $i i32) (result i32)
+    (if (i32.ge_u (local.get $i) (call $cg (local.get $c) (i32.const 216)))
+        (then (unreachable)))
     (i32.load (i32.add (call $cg (local.get $c) (i32.const 212))
                        (i32.mul (local.get $i) (i32.const 4)))))
 
@@ -3555,6 +3568,8 @@
     (i32.store (i32.add (local.get $r) (i32.const 32)) (i32.const 0))
     (call $cs (local.get $c) (i32.const 164) (i32.add (local.get $loc) (i32.const 1)))
     (local.set $sn (call $cg (local.get $c) (i32.const 220)))
+    (if (i32.ge_u (local.get $sn) (call $cg (local.get $c) (i32.const 216)))
+        (then (unreachable)))
     (i32.store (i32.add (call $cg (local.get $c) (i32.const 212))
                         (i32.mul (local.get $sn) (i32.const 4)))
                (local.get $loc))
@@ -5835,6 +5850,8 @@
   (func $free_push (param $c i32) (param $t i32)
     (local $n i32)
     (local.set $n (call $cg (local.get $c) (i32.const 292)))
+    (if (i32.ge_u (local.get $n) (call $cg (local.get $c) (i32.const 288)))
+        (then (unreachable)))
     (i32.store (i32.add (call $cg (local.get $c) (i32.const 284))
                         (i32.mul (local.get $n) (i32.const 4)))
                (local.get $t))
@@ -5875,6 +5892,8 @@
   (func $ctrl_push (param $c i32) (param $k i32)
     (local $n i32)
     (local.set $n (call $cg (local.get $c) (i32.const 304)))
+    (if (i32.ge_u (local.get $n) (call $cg (local.get $c) (i32.const 300)))
+        (then (unreachable)))
     (i32.store (i32.add (call $cg (local.get $c) (i32.const 296))
                         (i32.mul (local.get $n) (i32.const 4)))
                (local.get $k))
@@ -6831,6 +6850,8 @@
             (then (return (local.get $i)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $cont)))
+    (if (i32.ge_u (local.get $n) (call $cg (local.get $c) (i32.const 272)))
+        (then (unreachable)))
     (i32.store (i32.add (call $cg (local.get $c) (i32.const 268))
                         (i32.mul (local.get $n) (i32.const 4)))
                (local.get $sig))
