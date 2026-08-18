@@ -39,8 +39,8 @@ const G_DECLS: u32 = 0x0040;
 const G_NODES: u32 = 0x0044;
 
 // regions
-const S1: u32 = 0x0080_0000;   // scratch for one function body
-const S2: u32 = 0x00A0_0000;   // scratch for one section payload
+const S1: u32 = 0x00E0_0000;   // scratch for one function body
+const S2: u32 = 0x00F0_0000;   // scratch for one section payload
 const OUT: u32 = 0x0101_0000;  // final output; 0x0100_0000 is this module's rodata
 
 const NONE: u32 = 0xFFFF_FFFF;
@@ -104,6 +104,8 @@ struct Ctx {
     ntaken: u32,
     tynames: []mut NameI,
     ntyname: u32,
+    scalars: []mut NameI,   // names of the scalar enums, filled before layout
+    nscalar: u32,
     rodata: u32,
     cety: u32,      // const_expr's second result
 
@@ -739,7 +741,9 @@ const S_RETURN: u32 = 37;    // A value
 const S_MATCH: u32 = 38;     // A scrutinee, B arms, C enum info, D has-wild
 const S_UNSAFE: u32 = 39;    // A body
 const S_ARM: u32 = 40;       // A name start, B name len, C binds, D body, E wild
+                             // AUX variant, AUX2 head of the S_ALT list
 const S_BIND: u32 = 41;      // A name start, B name len; AUX local
+const S_ALT: u32 = 42;       // A name start, B name len; AUX variant. the tail of `A | B`
 
 // declarations
 const D_FN: u32 = 50;        // A name start, B name len, C params, D ret, E body
@@ -1579,6 +1583,25 @@ fn parse_match(c: &mut Ctx) -> u32 {
             let l: u32 = c.^.toks[it].len;
             c.^.nodes[arm].a = s;
             c.^.nodes[arm].b = l;
+            if !at_p(c, P_LPAREN) {
+                // `A | B | C` -- only variants that carry no payload can be joined
+                let mut ah: u32 = 0;
+                let mut at2: u32 = 0;
+                for eat_p(c, P_OR) {
+                    let ai: u32 = expect_ident(c);
+                    if ai == NONE { break; }
+                    let al: u32 = c.^.toks[ai].line;
+                    let ac: u32 = c.^.toks[ai].col;
+                    let alt: u32 = node(c, S_ALT, al, ac);
+                    let as2: u32 = c.^.toks[ai].start;
+                    let aln: u32 = c.^.toks[ai].len;
+                    c.^.nodes[alt].a = as2;
+                    c.^.nodes[alt].b = aln;
+                    if ah == 0 { ah = alt; } else { c.^.nodes[at2].next = alt; }
+                    at2 = alt;
+                }
+                c.^.nodes[arm].aux2 = ah;
+            }
             if eat_p(c, P_LPAREN) {
                 let mut bh: u32 = 0;
                 let mut bt: u32 = 0;
@@ -1913,9 +1936,17 @@ fn is_int_ty(c: &Ctx, t: u32) -> bool {
     }
 }
 
+// Does this type live only in memory? A scalar enum is a value, so it does not.
 fn is_aggregate(c: &Ctx, t: u32) -> bool {
     match c.^.types[t] {
-        Named(s, l) => { return true; }
+        Named(s, l) => { return !find_scalar(c, s, l); }
+        _ => { return false; }
+    }
+}
+
+fn is_scalar_enum(c: &Ctx, t: u32) -> bool {
+    match c.^.types[t] {
+        Named(s, l) => { return find_scalar(c, s, l); }
         _ => { return false; }
     }
 }
@@ -2008,6 +2039,7 @@ struct EnumI {
     bytes: u32,
     align: u32,
     nvar: u32,
+    scalar: u32,   // no payload anywhere means the tag is the value (language.md S3)
     next: u32,
 }
 
@@ -2118,6 +2150,17 @@ fn find_type_name(c: &Ctx, s: u32, l: u32) -> bool {
     return false;
 }
 
+// Scalar-ness is readable from the syntax alone, and a struct field or an enum
+// payload may name a scalar enum, so this has to answer before any layout runs.
+fn find_scalar(c: &Ctx, s: u32, l: u32) -> bool {
+    for let mut p: u32 = 1; p < c.^.nscalar; p += 1 {
+        let ns: u32 = c.^.scalars[p].ns;
+        let nl: u32 = c.^.scalars[p].nl;
+        if src_eq2(c, ns, nl, s, l) { return true; }
+    }
+    return false;
+}
+
 fn find_taken(c: &Ctx, s: u32, l: u32) -> bool {
     for let mut p: u32 = 1; p < c.^.ntaken; p += 1 {
         let ns: u32 = c.^.taken[p].ns;
@@ -2146,6 +2189,7 @@ fn size_of(c: &Ctx, t: u32) -> u32 {
         U8 => { return 1; }
         Slice(e, m) => { return 8; }
         Named(ns, nl) => {
+            if find_scalar(c, ns, nl) { return 4; }
             let s: u32 = find_struct(c, ns, nl);
             if s != 0 { return c.^.structs[s].bytes; }
             let e2: u32 = find_enum(c, ns, nl);
@@ -2161,6 +2205,7 @@ fn align_of(c: &Ctx, t: u32) -> u32 {
         Bool => { return 1; }
         U8 => { return 1; }
         Named(ns, nl) => {
+            if find_scalar(c, ns, nl) { return 4; }
             let s: u32 = find_struct(c, ns, nl);
             if s != 0 { return c.^.structs[s].align; }
             let e2: u32 = find_enum(c, ns, nl);
@@ -2282,6 +2327,25 @@ fn claim(c: &mut Ctx, d: u32) {
     c.^.ntaken = n + 1;
 }
 
+// Scalar when no variant carries a payload -- visible in the syntax alone.
+fn if_scalar(c: &Ctx, d: u32) -> u32 {
+    let mut v: u32 = c.^.nodes[d].c;
+    for v != 0 {
+        if c.^.nodes[v].c != 0 { return 0; }
+        v = c.^.nodes[v].next;
+    }
+    return 1;
+}
+
+fn add_scalar_name(c: &mut Ctx, d: u32) {
+    if if_scalar(c, d) == 0 { return; }
+    let s: u32 = c.^.nodes[d].a;
+    let l: u32 = c.^.nodes[d].b;
+    let n: u32 = c.^.nscalar;
+    c.^.scalars[n] = NameI{ ns: s, nl: l, next: 0 };
+    c.^.nscalar = n + 1;
+}
+
 fn add_type_name(c: &mut Ctx, d: u32) {
     let s: u32 = c.^.nodes[d].a;
     let l: u32 = c.^.nodes[d].b;
@@ -2394,8 +2458,10 @@ fn declare_enum(c: &mut Ctx, d: u32) {
     let ns: u32 = c.^.nodes[d].a;
     let nl: u32 = c.^.nodes[d].b;
     let ei: u32 = c.^.nenum;
+    let is_scalar: u32 = if_scalar(c, d);
     c.^.enums[ei] = EnumI{
-        ns: ns, nl: nl, variants: 0, bytes: 0, align: 4, nvar: 0, next: 0,
+        ns: ns, nl: nl, variants: 0, bytes: 0, align: 4, nvar: 0,
+        scalar: is_scalar, next: 0,
     };
     c.^.nenum = ei + 1;
     let mut head: u32 = 0;
@@ -3076,6 +3142,24 @@ fn arms_all_diverge(c: &Ctx, head: u32) -> bool {
     return true;
 }
 
+// How many variants the arms name in total -- `A | B` covers two.
+fn covered_count(c: &Ctx, head: u32) -> u32 {
+    let mut n: u32 = 0;
+    let mut a: u32 = head;
+    for a != 0 {
+        if c.^.nodes[a].e == 0 {
+            n += 1;
+            let mut alt: u32 = c.^.nodes[a].aux2;
+            for alt != 0 {
+                n += 1;
+                alt = c.^.nodes[alt].next;
+            }
+        }
+        a = c.^.nodes[a].next;
+    }
+    return n;
+}
+
 fn arm_count(c: &Ctx, head: u32) -> u32 {
     let mut n: u32 = 0;
     let mut a: u32 = head;
@@ -3105,7 +3189,7 @@ fn diverges(c: &Ctx, head: u32) -> bool {
             let arms: u32 = c.^.nodes[s].b;
             let mut full: bool = c.^.nodes[s].d != 0;
             if !full && ei != 0 {
-                full = arm_count(c, arms) == c.^.enums[ei].nvar;
+                full = covered_count(c, arms) == c.^.enums[ei].nvar;
             }
             if full && arms_all_diverge(c, arms) { return true; }
         }
@@ -3430,12 +3514,24 @@ fn find_variant(c: &Ctx, ei: u32, s: u32, l: u32) -> u32 {
 }
 
 fn arm_for_variant(c: &Ctx, head: u32, s: u32, l: u32) -> u32 {
+    return arm_covers(c, head, s, l);
+}
+
+// Which arm names this variant, counting the tail of `A | B` too.
+fn arm_covers(c: &Ctx, head: u32, s: u32, l: u32) -> u32 {
     let mut a: u32 = head;
     for a != 0 {
         if c.^.nodes[a].e == 0 {
             let ns: u32 = c.^.nodes[a].a;
             let nl: u32 = c.^.nodes[a].b;
             if src_eq2(c, ns, nl, s, l) { return a; }
+            let mut alt: u32 = c.^.nodes[a].aux2;
+            for alt != 0 {
+                let als: u32 = c.^.nodes[alt].a;
+                let all: u32 = c.^.nodes[alt].b;
+                if src_eq2(c, als, all, s, l) { return a; }
+                alt = c.^.nodes[alt].next;
+            }
         }
         a = c.^.nodes[a].next;
     }
@@ -3454,7 +3550,10 @@ fn list_len(c: &Ctx, head: u32) -> u32 {
 
 fn check_match(c: &mut Ctx, s: u32) {
     let scr: u32 = c.^.nodes[s].a;
-    let ty: u32 = check_place(c, scr);
+    // One look. An aggregate enum cannot be returned (language.md S3), so an
+    // expression of that type is always a place and check_expr fills in
+    // everything emit_addr needs.
+    let ty: u32 = check_expr(c, scr, 0);
     if failed(c) { return; }
     let line: u32 = c.^.nodes[s].line;
     let col: u32 = c.^.nodes[s].col;
@@ -3468,6 +3567,7 @@ fn check_match(c: &mut Ctx, s: u32) {
         return;
     }
     c.^.nodes[s].c = ei;
+    c.^.nodes[s].aux2 = c.^.enums[ei].scalar;
     let head: u32 = c.^.nodes[s].b;
     let mut wild: u32 = 0;
     let mut seen: u32 = 0;
@@ -3508,6 +3608,49 @@ fn check_match(c: &mut Ctx, s: u32) {
             return;
         }
         c.^.nodes[a].aux = v;
+        let mut alt: u32 = c.^.nodes[a].aux2;
+        for alt != 0 && !failed(c) {
+            let als: u32 = c.^.nodes[alt].a;
+            let all: u32 = c.^.nodes[alt].b;
+            let av: u32 = find_variant(c, ei, als, all);
+            if av == 0 {
+                let ens2: u32 = c.^.enums[ei].ns;
+                let enl2: u32 = c.^.enums[ei].nl;
+                e_no_variant(c, al, ac, ens2, enl2, als, all);
+                return;
+            }
+            if arm_covers(c, head, als, all) != a {
+                e_dup_arm(c, al, ac, als, all);
+                return;
+            }
+            if c.^.variants[av].nargs != 0 {
+                if err_open(c, al, ac) {
+                    put_ch(c, 96);
+                    put_str(c, "|");
+                    put_ch(c, 96);
+                    put_str(c, " cannot join ");
+                    put_q_src(c, als, all);
+                    put_str(c, ", which carries a payload");
+                    err_end(c);
+                }
+                return;
+            }
+            c.^.nodes[alt].aux = av;
+            seen += 1;
+            alt = c.^.nodes[alt].next;
+        }
+        if c.^.nodes[a].aux2 != 0 && c.^.variants[v].nargs != 0 {
+            if err_open(c, al, ac) {
+                put_ch(c, 96);
+                put_str(c, "|");
+                put_ch(c, 96);
+                put_str(c, " cannot join ");
+                put_q_src(c, ans, anl);
+                put_str(c, ", which carries a payload");
+                err_end(c);
+            }
+            return;
+        }
         let binds: u32 = c.^.nodes[a].c;
         let nb: u32 = list_len(c, binds);
         let nargs: u32 = c.^.variants[v].nargs;
@@ -3556,6 +3699,29 @@ fn check_match(c: &mut Ctx, s: u32) {
 // Initializers
 // ===========================================================================
 
+// `E.A` where E is a scalar enum. Returns the variant, or 0. A scalar enum's
+// literal is one tag, so it is a value and belongs anywhere a value does.
+fn scalar_enum_lit(c: &Ctx, e: u32) -> u32 {
+    if c.^.nodes[e].kind != E_FIELD { return 0; }
+    let base: u32 = c.^.nodes[e].a;
+    if c.^.nodes[base].kind != E_IDENT { return 0; }
+    let bs: u32 = c.^.nodes[base].a;
+    let bl: u32 = c.^.nodes[base].b;
+    let ei: u32 = find_enum(c, bs, bl);
+    if ei == 0 { return 0; }
+    if c.^.enums[ei].scalar == 0 { return 0; }
+    let vs: u32 = c.^.nodes[e].b;
+    let vl: u32 = c.^.nodes[e].c;
+    return find_variant(c, ei, vs, vl);
+}
+
+fn scalar_enum_lit_enum(c: &Ctx, e: u32) -> u32 {
+    let base: u32 = c.^.nodes[e].a;
+    let bs: u32 = c.^.nodes[base].a;
+    let bl: u32 = c.^.nodes[base].b;
+    return find_enum(c, bs, bl);
+}
+
 fn is_enum_lit(c: &Ctx, e: u32) -> bool {
     let mut b: u32 = e;
     if c.^.nodes[e].kind == E_CALL { b = c.^.nodes[e].a; }
@@ -3577,6 +3743,10 @@ fn e_copy_agg(c: &mut Ctx, line: u32, col: u32, t: u32) {
 
 fn check_init(c: &mut Ctx, e: u32, want: u32) -> u32 {
     if failed(c) { return TY_I32; }
+    if scalar_enum_lit(c, e) != 0 {
+        if want != 0 { return coerce(c, e, want); }
+        return check_expr(c, e, 0);
+    }
     if c.^.nodes[e].kind == E_STRUCTLIT { return check_struct_lit(c, e, want); }
     if is_enum_lit(c, e) { return check_enum_lit(c, e, want); }
     if want != 0 && !is_aggregate(c, want) { return coerce(c, e, want); }
@@ -3857,6 +4027,7 @@ fn check_binop_types(c: &mut Ctx, line: u32, col: u32, op: u32, lt: u32, rt: u32
     if lt != rt { e_type_mismatch2(c, line, col, op, lt, rt); return; }
     let k: u32 = ty_kind(c, lt);
     if op == P_EQEQ || op == P_NE {
+        if is_scalar_enum(c, lt) { return; }
         if k != TYK_I32 && k != TYK_U32 && k != TYK_BOOL && k != TYK_PTR {
             if err_open(c, line, col) {
                 put_str(c, "cannot compare ");
@@ -4488,6 +4659,15 @@ fn check_expr_inner(c: &mut Ctx, e: u32, want: u32) -> u32 {
         return check_call(c, e);
     }
     if k == E_FIELD {
+        let sv: u32 = scalar_enum_lit(c, e);
+        if sv != 0 {
+            let sei: u32 = scalar_enum_lit_enum(c, e);
+            let ens3: u32 = c.^.enums[sei].ns;
+            let enl3: u32 = c.^.enums[sei].nl;
+            c.^.nodes[e].aux = c.^.variants[sv].tag;
+            c.^.nodes[e].aux2 = 2;   // 2 marks a scalar tag constant
+            return ty_named(c, ens3, enl3);
+        }
         if is_enum_lit(c, e) {
             err_msg(c, line, col, "enum literal is only allowed as an initializer");
             return TY_I32;
@@ -4528,6 +4708,7 @@ fn check_program(c: &mut Ctx) {
     for d != 0 {
         let k: u32 = c.^.nodes[d].kind;
         if k == D_STRUCT || k == D_ENUM { add_type_name(c, d); }
+        if k == D_ENUM { add_scalar_name(c, d); }
         d = c.^.nodes[d].next;
     }
     d = c.^.decls;
@@ -4616,6 +4797,7 @@ const OP_I32_GE_U: u32 = 0x4F;
 const OP_I32_ADD: u32 = 0x6A;
 const OP_I32_SUB: u32 = 0x6B;
 const OP_I32_MUL: u32 = 0x6C;
+const OP_I32_OR: u32 = 0x72;
 const TYPE_I32: u32 = 0x7F;
 const BLOCK_VOID: u32 = 0x40;
 
@@ -5043,6 +5225,11 @@ fn emit_binary(c: &mut Ctx, e: u32) {
 
 fn emit_expr(c: &mut Ctx, e: u32) {
     let k: u32 = c.^.nodes[e].kind;
+    if k == E_FIELD && c.^.nodes[e].aux2 == 2 {
+        let tag: u32 = c.^.nodes[e].aux;
+        b_i32const(c, tag);
+        return;
+    }
     let ea: u32 = c.^.nodes[e].a;
     let eb: u32 = c.^.nodes[e].b;
     if k == E_INT || k == E_CHAR || k == E_BOOL { b_i32const(c, ea); return; }
@@ -5282,7 +5469,9 @@ fn emit_block(c: &mut Ctx, head: u32) {
 fn emit_match(c: &mut Ctx, s: u32) {
     let ta: u32 = temp(c);
     let scr: u32 = c.^.nodes[s].a;
-    emit_addr(c, scr);
+    let scalar: u32 = c.^.nodes[s].aux2;
+    // the tag is the value: no address, no load
+    if scalar != 0 { emit_expr(c, scr); } else { emit_addr(c, scr); }
     b_idx(c, OP_LOCAL_SET, ta);
     b_blocked(c, OP_BLOCK, BLOCK_VOID);
     ctrl_push(c, CTRL_MATCH);
@@ -5295,11 +5484,28 @@ fn emit_match(c: &mut Ctx, s: u32) {
             let v: u32 = c.^.nodes[arm].aux;
             let tag: u32 = c.^.variants[v].tag;
             b_idx(c, OP_LOCAL_GET, ta);
-            b_i32const(c, 0);
-            b_op(c, OP_I32_ADD);
-            b_mem(c, OP_I32_LOAD, 2);
+            if scalar == 0 {
+                b_i32const(c, 0);
+                b_op(c, OP_I32_ADD);
+                b_mem(c, OP_I32_LOAD, 2);
+            }
             b_i32const(c, tag);
             b_op(c, cmp_opcode(P_EQEQ, false));
+            let mut alt: u32 = c.^.nodes[arm].aux2;
+            for alt != 0 {
+                let av: u32 = c.^.nodes[alt].aux;
+                let atag: u32 = c.^.variants[av].tag;
+                b_idx(c, OP_LOCAL_GET, ta);
+                if scalar == 0 {
+                    b_i32const(c, 0);
+                    b_op(c, OP_I32_ADD);
+                    b_mem(c, OP_I32_LOAD, 2);
+                }
+                b_i32const(c, atag);
+                b_op(c, cmp_opcode(P_EQEQ, false));
+                b_op(c, OP_I32_OR);
+                alt = c.^.nodes[alt].next;
+            }
             b_blocked(c, OP_IF, BLOCK_VOID);
             ctrl_push(c, CTRL_IF);
             let mut b: u32 = c.^.nodes[arm].c;
@@ -5795,6 +6001,8 @@ fn compile(src_len_in: u32) -> i32 {
             ntaken: 1,
             tynames: slice_mut(heap0 as *NameI, 0),
             ntyname: 1,
+            scalars: slice_mut(heap0 as *NameI, 0),
+            nscalar: 1,
             rodata: RODATA,
             cety: 0,
             scope: slice_mut(heap0 as *u32, 0),
@@ -5892,6 +6100,8 @@ fn compile(src_len_in: u32) -> i32 {
             c.taken = slice_mut(c.heap as *NameI, n_name);
             c.heap = c.heap + n_name * 12;
             c.tynames = slice_mut(c.heap as *NameI, n_name);
+            c.heap = c.heap + n_name * 12;
+            c.scalars = slice_mut(c.heap as *NameI, n_name);
             c.heap = c.heap + n_name * 12;
 
             let n_scope: u32 = n_local + 2;

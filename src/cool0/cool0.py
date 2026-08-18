@@ -3031,7 +3031,7 @@ def local_stub(loc: Local, pos) -> Ident:
 # 안 그러면 큰 소스에서 두 구현이 갈리고, 그것이 implementation.md §8 이 금지하는
 # 바로 그 상황이다. 산술은 cool0c.cool0 의 compile() 과 한 줄씩 같다.
 
-BOOTSTRAP_SCRATCH = 0x0080_0000  # S1. 힙은 여기 닿을 수 없다
+BOOTSTRAP_SCRATCH = 0x00E0_0000  # S1. 힙은 여기 닿을 수 없다
 
 
 def _count_arena_nodes(decls) -> dict:
