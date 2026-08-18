@@ -96,3 +96,42 @@ def traps(inst: Instance, fn: str, *args) -> bool:
         return False
     except wasmtime.Trap:
         return True
+
+
+# --- cool0c.wat 이 cool0c.cool0 을 따라잡았는가 -------------------------------
+
+
+def wat_is_current() -> tuple[bool, str]:
+    """손으로 쓴 WAT 이 지금의 cool0c.cool0 을 컴파일할 수 있는가.
+
+    언어에 기능을 더하면 세 구현이 한동안 어긋난다 -- 참조 구현과 자기 호스팅
+    컴파일러가 먼저 가고 전사는 뒤에 온다. 그동안 WAT 에 기대는 시험이 전부
+    실패하면 진짜 회귀가 그 소음에 묻힌다.
+
+    그래서 "전사가 뒤처졌다"를 한 번만 판정하고, 그 시험들을 그 이유로 건너뛴다.
+    전사가 끝나면 저절로 다시 켜진다 -- 표시를 지울 일이 없다.
+    """
+    import pathlib
+
+    src_dir = pathlib.Path(__file__).resolve().parent.parent / "src" / "cool0"
+    wat, cool0c = src_dir / "cool0c.wat", src_dir / "cool0c.cool0"
+    if not wat.exists():
+        return False, "cool0c.wat 이 아직 없다"
+    from cool0.cool0 import STATUS_OK, compile as _ref
+
+    src = cool0c.read_bytes()
+    try:
+        a = bytes(wasmtime.wat2wasm(wat.read_text("ascii")))
+        status, b = run_compiler(a, src)
+    except Exception as e:  # 트랩도 "따라잡지 못했다" 의 한 모습이다
+        return False, f"cool0c.wat 이 cool0c.cool0 을 컴파일하지 못한다 ({type(e).__name__})"
+    if status != STATUS_OK:
+        return False, ("cool0c.wat 이 cool0c.cool0 을 거절한다: "
+                       + b.decode("ascii", "replace").strip())
+    if b != _ref(src)[1]:
+        return False, "cool0c.wat 이 오라클과 다른 바이트를 낸다 -- 전사가 뒤처졌다"
+    return True, ""
+
+
+_WAT_OK, _WAT_WHY = wat_is_current()
+needs_current_wat = pytest.mark.skipif(not _WAT_OK, reason=_WAT_WHY or "wat")

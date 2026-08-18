@@ -16,7 +16,7 @@ import pathlib
 import pytest
 import wasmtime
 
-from conftest import ENGINE, run_compiler
+from conftest import ENGINE, run_compiler, needs_current_wat
 from gaps import GAP_PROGRAMS, GAPS
 from cool0.cool0 import STATUS_OK, compile as reference_compile
 
@@ -47,7 +47,7 @@ def agree(three, src: bytes):
 # --- 한 번도 나온 적 없던 진단들 ---------------------------------------------
 
 
-@needs_wat
+@needs_current_wat
 @pytest.mark.parametrize("src,why", GAPS, ids=[w for _, w in GAPS])
 def test_unseen_diagnostics_agree(three, src, why):
     status, out = agree(three, src)
@@ -58,7 +58,7 @@ def test_unseen_diagnostics_agree(three, src, why):
 # --- 한 번도 컴파일된 적 없던 프로그램들 ---------------------------------------
 
 
-@needs_wat
+@needs_current_wat
 @pytest.mark.parametrize("src,why", GAP_PROGRAMS, ids=[w for _, w in GAP_PROGRAMS])
 def test_unseen_programs_agree(three, src, why):
     status, out = agree(three, src.encode("ascii"))

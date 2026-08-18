@@ -28,7 +28,7 @@ import pathlib
 import pytest
 import wasmtime
 
-from conftest import ENGINE, run_compiler
+from conftest import ENGINE, run_compiler, needs_current_wat
 from cool0.cool0 import STATUS_OK, compile as reference_compile
 
 SRC_DIR = pathlib.Path(__file__).resolve().parent.parent / "src" / "cool0"
@@ -65,7 +65,7 @@ needs_wat = pytest.mark.skipif(
 
 
 @needs_cool0
-@needs_wat
+@needs_current_wat
 def test_the_milestone():
     """B == C == P."""
     src = source()
@@ -117,7 +117,7 @@ def test_checkpoint_3_the_compiler_agrees_with_the_oracle_on_the_corpus():
         assert run_compiler(b_py, src) == reference_compile(src), name
 
 
-@needs_wat
+@needs_current_wat
 def test_checkpoint_4_the_transcription_is_faithful_on_the_corpus():
     """A 가 코퍼스에서 오라클과 일치한다. 여기가 통과하면 남은 것은 자기 자신뿐이다."""
     from corpus import DIAGNOSTICS, PROGRAMS

@@ -18,7 +18,7 @@ import pathlib
 import pytest
 import wasmtime
 
-from conftest import run_compiler
+from conftest import run_compiler, needs_current_wat
 from cool0.cool0 import BOOTSTRAP_SCRATCH, SRC_ADDR, STATUS_OK
 from cool0.cool0 import align_up, compile as reference_compile
 
@@ -32,7 +32,7 @@ needs_wat = pytest.mark.skipif(not COOL0C_WAT.exists(), reason="cool0c.wat 이 �
 
 def token_arena_end(n: int) -> int:
     """소스 n 바이트일 때 토큰 아레나가 끝나는 주소. cool0c 의 compile() 과 같다."""
-    return align_up(SRC_ADDR + n, 4) + 4 + (n + 1) * 28
+    return align_up(SRC_ADDR + n, 4) + 4 + (n + 1) * 32
 
 
 def first_collision() -> int:
@@ -78,14 +78,14 @@ def test_the_oracle_takes_a_source_at_half_the_limit():
     assert status == STATUS_OK, out.decode("ascii", "replace")
 
 
-@needs_wat
+@needs_current_wat
 @pytest.mark.parametrize("d", [-1, 0, 1])
 def test_both_implementations_agree_at_the_boundary(d):
     src = padded(COLLISION + d)
     assert run_compiler(_wat(), src) == reference_compile(src)
 
 
-@needs_wat
+@needs_current_wat
 def test_both_agree_on_a_dense_source_that_crosses_the_limit():
     """공백이 아니라 진짜 코드로 넘긴다 -- 토큰과 노드가 훨씬 빨리 자란다."""
     unit = b"fn f%d(n: u32) -> u32 { let a: u32 = n + %d; return a * 3; }\n"

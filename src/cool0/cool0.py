@@ -3084,12 +3084,12 @@ def check_bootstrap_memory(src_len: int, ntok: Optional[int], decls) -> None:
     자기 호스팅 컴파일러가 검사하는 바로 그 두 지점이다.
     """
     heap = align_up(SRC_ADDR + src_len, 4) + 4
-    heap += (src_len + 1) * 28  # 토큰
+    heap += (src_len + 1) * 32  # 토큰
     if ntok is not None:
         k = _count_arena_nodes(decls)
         n_local = k["params"] + k["lets"] + k["binds"] + 2
         n_name = k["structs"] + k["enums"] + k["consts"] + k["fns"] + 2
-        heap += (ntok + 2) * 52  # 노드
+        heap += (ntok + 2) * 56  # 노드
         heap += (k["tys"] + 7 + 8) * 12  # 타입
         heap += (k["fields"] + k["tys"] + 2) * 20
         heap += (k["structs"] + 2) * 24

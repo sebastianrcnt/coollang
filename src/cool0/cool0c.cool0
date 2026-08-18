@@ -45,6 +45,10 @@ const OUT: u32 = 0x0101_0000;  // final output; 0x0100_0000 is this module's rod
 
 const NONE: u32 = 0xFFFF_FFFF;
 
+// sizes of the two arenas that are laid out by hand (implementation.md S2)
+const SIZEOF_TOKEN: u32 = 32;
+const SIZEOF_NODE: u32 = 56;
+
 // --- raw memory ------------------------------------------------------------
 //
 // The only raw pointers in the compiler. Everything above this line is a
@@ -210,10 +214,11 @@ struct Token {
     kind: u32,
     start: u32,
     len: u32,
-    value: u32,   // int/char value, punct/keyword id, or string body address
+    value: u32,   // int/char value, keyword id, or string body address
     line: u32,
     col: u32,
     aux: u32,     // decoded length of a string literal
+    punct: Punct, // TK_PUNCT only. Its own field: an enum cannot live in a u32
 }
 
 // keyword ids -- the order language.md S2 lists them in
@@ -238,49 +243,53 @@ const K_SLICE: u32 = 17;
 const K_SLICE_MUT: u32 = 18;
 const K_OFFSET: u32 = 19;
 
-// punctuation ids -- longest match order
-const P_SHLEQ: u32 = 0;
-const P_SHREQ: u32 = 1;
-const P_ARROW: u32 = 2;
-const P_FATARROW: u32 = 3;
-const P_EQEQ: u32 = 4;
-const P_NE: u32 = 5;
-const P_LE: u32 = 6;
-const P_GE: u32 = 7;
-const P_ANDAND: u32 = 8;
-const P_OROR: u32 = 9;
-const P_SHL: u32 = 10;
-const P_SHR: u32 = 11;
-const P_ADDEQ: u32 = 12;
-const P_SUBEQ: u32 = 13;
-const P_MULEQ: u32 = 14;
-const P_DIVEQ: u32 = 15;
-const P_MODEQ: u32 = 16;
-const P_ANDEQ: u32 = 17;
-const P_OREQ: u32 = 18;
-const P_XOREQ: u32 = 19;
-const P_LPAREN: u32 = 20;
-const P_RPAREN: u32 = 21;
-const P_LBRACE: u32 = 22;
-const P_RBRACE: u32 = 23;
-const P_LBRACK: u32 = 24;
-const P_RBRACK: u32 = 25;
-const P_COMMA: u32 = 26;
-const P_SEMI: u32 = 27;
-const P_COLON: u32 = 28;
-const P_DOT: u32 = 29;
-const P_EQ: u32 = 30;
-const P_LT: u32 = 31;
-const P_GT: u32 = 32;
-const P_ADD: u32 = 33;
-const P_SUB: u32 = 34;
-const P_MUL: u32 = 35;
-const P_DIV: u32 = 36;
-const P_MOD: u32 = 37;
-const P_AND: u32 = 38;
-const P_OR: u32 = 39;
-const P_XOR: u32 = 40;
-const P_NOT: u32 = 41;
+// punctuation, in longest-match order (language.md S2). `NoPunct` goes last
+// so every real one keeps the tag it had.
+enum Punct {
+    ShlEq,
+    ShrEq,
+    Arrow,
+    FatArrow,
+    EqEq,
+    Ne,
+    Le,
+    Ge,
+    AndAnd,
+    OrOr,
+    Shl,
+    Shr,
+    AddEq,
+    SubEq,
+    MulEq,
+    DivEq,
+    ModEq,
+    AndEq,
+    OrEq,
+    XorEq,
+    LParen,
+    RParen,
+    LBrace,
+    RBrace,
+    LBrack,
+    RBrack,
+    Comma,
+    Semi,
+    Colon,
+    Dot,
+    Eq,
+    Lt,
+    Gt,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    And,
+    Or,
+    Xor,
+    Not,
+    NoPunct,
+}
 
 // ===========================================================================
 // Lexer (language.md S2)
@@ -355,56 +364,59 @@ fn kw_id(c: &Ctx, start: u32, len: u32) -> u32 {
 }
 
 // longest match (language.md S2)
-fn punct_id(c: &Ctx, i: u32) -> u32 {
-    if src_has(c, i, "<<=") { return P_SHLEQ; }
-    if src_has(c, i, ">>=") { return P_SHREQ; }
-    if src_has(c, i, "->") { return P_ARROW; }
-    if src_has(c, i, "=>") { return P_FATARROW; }
-    if src_has(c, i, "==") { return P_EQEQ; }
-    if src_has(c, i, "!=") { return P_NE; }
-    if src_has(c, i, "<=") { return P_LE; }
-    if src_has(c, i, ">=") { return P_GE; }
-    if src_has(c, i, "&&") { return P_ANDAND; }
-    if src_has(c, i, "||") { return P_OROR; }
-    if src_has(c, i, "<<") { return P_SHL; }
-    if src_has(c, i, ">>") { return P_SHR; }
-    if src_has(c, i, "+=") { return P_ADDEQ; }
-    if src_has(c, i, "-=") { return P_SUBEQ; }
-    if src_has(c, i, "*=") { return P_MULEQ; }
-    if src_has(c, i, "/=") { return P_DIVEQ; }
-    if src_has(c, i, "%=") { return P_MODEQ; }
-    if src_has(c, i, "&=") { return P_ANDEQ; }
-    if src_has(c, i, "|=") { return P_OREQ; }
-    if src_has(c, i, "^=") { return P_XOREQ; }
-    if src_has(c, i, "(") { return P_LPAREN; }
-    if src_has(c, i, ")") { return P_RPAREN; }
-    if src_has(c, i, "{") { return P_LBRACE; }
-    if src_has(c, i, "}") { return P_RBRACE; }
-    if src_has(c, i, "[") { return P_LBRACK; }
-    if src_has(c, i, "]") { return P_RBRACK; }
-    if src_has(c, i, ",") { return P_COMMA; }
-    if src_has(c, i, ";") { return P_SEMI; }
-    if src_has(c, i, ":") { return P_COLON; }
-    if src_has(c, i, ".") { return P_DOT; }
-    if src_has(c, i, "=") { return P_EQ; }
-    if src_has(c, i, "<") { return P_LT; }
-    if src_has(c, i, ">") { return P_GT; }
-    if src_has(c, i, "+") { return P_ADD; }
-    if src_has(c, i, "-") { return P_SUB; }
-    if src_has(c, i, "*") { return P_MUL; }
-    if src_has(c, i, "/") { return P_DIV; }
-    if src_has(c, i, "%") { return P_MOD; }
-    if src_has(c, i, "&") { return P_AND; }
-    if src_has(c, i, "|") { return P_OR; }
-    if src_has(c, i, "^") { return P_XOR; }
-    if src_has(c, i, "!") { return P_NOT; }
-    return NONE;
+fn punct_id(c: &Ctx, i: u32) -> Punct {
+    if src_has(c, i, "<<=") { return Punct.ShlEq; }
+    if src_has(c, i, ">>=") { return Punct.ShrEq; }
+    if src_has(c, i, "->") { return Punct.Arrow; }
+    if src_has(c, i, "=>") { return Punct.FatArrow; }
+    if src_has(c, i, "==") { return Punct.EqEq; }
+    if src_has(c, i, "!=") { return Punct.Ne; }
+    if src_has(c, i, "<=") { return Punct.Le; }
+    if src_has(c, i, ">=") { return Punct.Ge; }
+    if src_has(c, i, "&&") { return Punct.AndAnd; }
+    if src_has(c, i, "||") { return Punct.OrOr; }
+    if src_has(c, i, "<<") { return Punct.Shl; }
+    if src_has(c, i, ">>") { return Punct.Shr; }
+    if src_has(c, i, "+=") { return Punct.AddEq; }
+    if src_has(c, i, "-=") { return Punct.SubEq; }
+    if src_has(c, i, "*=") { return Punct.MulEq; }
+    if src_has(c, i, "/=") { return Punct.DivEq; }
+    if src_has(c, i, "%=") { return Punct.ModEq; }
+    if src_has(c, i, "&=") { return Punct.AndEq; }
+    if src_has(c, i, "|=") { return Punct.OrEq; }
+    if src_has(c, i, "^=") { return Punct.XorEq; }
+    if src_has(c, i, "(") { return Punct.LParen; }
+    if src_has(c, i, ")") { return Punct.RParen; }
+    if src_has(c, i, "{") { return Punct.LBrace; }
+    if src_has(c, i, "}") { return Punct.RBrace; }
+    if src_has(c, i, "[") { return Punct.LBrack; }
+    if src_has(c, i, "]") { return Punct.RBrack; }
+    if src_has(c, i, ",") { return Punct.Comma; }
+    if src_has(c, i, ";") { return Punct.Semi; }
+    if src_has(c, i, ":") { return Punct.Colon; }
+    if src_has(c, i, ".") { return Punct.Dot; }
+    if src_has(c, i, "=") { return Punct.Eq; }
+    if src_has(c, i, "<") { return Punct.Lt; }
+    if src_has(c, i, ">") { return Punct.Gt; }
+    if src_has(c, i, "+") { return Punct.Add; }
+    if src_has(c, i, "-") { return Punct.Sub; }
+    if src_has(c, i, "*") { return Punct.Mul; }
+    if src_has(c, i, "/") { return Punct.Div; }
+    if src_has(c, i, "%") { return Punct.Mod; }
+    if src_has(c, i, "&") { return Punct.And; }
+    if src_has(c, i, "|") { return Punct.Or; }
+    if src_has(c, i, "^") { return Punct.Xor; }
+    if src_has(c, i, "!") { return Punct.Not; }
+    return Punct.NoPunct;
 }
 
-fn punct_len(id: u32) -> u32 {
-    if id <= P_SHREQ { return 3; }
-    if id <= P_XOREQ { return 2; }
-    return 1;
+fn punct_len(id: Punct) -> u32 {
+    match id {
+        ShlEq | ShrEq => { return 3; }
+        Arrow | FatArrow | EqEq | Ne | Le | Ge | AndAnd | OrOr | Shl | Shr
+        | AddEq | SubEq | MulEq | DivEq | ModEq | AndEq | OrEq | XorEq => { return 2; }
+        _ => { return 1; }
+    }
 }
 
 fn push_tok(c: &mut Ctx, kind: u32, start: u32, len: u32, value: u32,
@@ -412,7 +424,16 @@ fn push_tok(c: &mut Ctx, kind: u32, start: u32, len: u32, value: u32,
     let n: u32 = c.^.ntok;
     c.^.toks[n] = Token{
         kind: kind, start: start, len: len, value: value,
-        line: line, col: col, aux: aux,
+        line: line, col: col, aux: aux, punct: Punct.NoPunct,
+    };
+    c.^.ntok = n + 1;
+}
+
+fn push_punct(c: &mut Ctx, start: u32, len: u32, p: Punct, line: u32, col: u32) {
+    let n: u32 = c.^.ntok;
+    c.^.toks[n] = Token{
+        kind: TK_PUNCT, start: start, len: len, value: 0,
+        line: line, col: col, aux: 0, punct: p,
     };
     c.^.ntok = n + 1;
 }
@@ -656,8 +677,8 @@ fn lex(c: &mut Ctx) {
         if b == '\'' { lex_char(c); continue; }
         if b == '"' { lex_string(c); continue; }
 
-        let p: u32 = punct_id(c, i);
-        if p == NONE {
+        let p: Punct = punct_id(c, i);
+        if p == Punct.NoPunct {
             let el: u32 = c.^.line;
             let ec: u32 = c.^.col;
             err_msg(c, el, ec, "unexpected character");
@@ -666,7 +687,7 @@ fn lex(c: &mut Ctx) {
         let sl: u32 = c.^.line;
         let sc: u32 = c.^.col;
         adv(c, punct_len(p));
-        push_tok(c, TK_PUNCT, i, punct_len(p), p, sl, sc, 0);
+        push_punct(c, i, punct_len(p), p, sl, sc);
     }
     if failed(c) { return; }
     let ep: u32 = c.^.pos;
@@ -701,6 +722,7 @@ struct Node {
     aux: u32,    // checker: local, field, fn, ...
     aux2: u32,
     depth: u32,  // expression tree depth (language.md S9)
+    op: Punct,   // E_BINARY, E_UNARY, S_ASSIGN. An enum cannot live in a u32
 }
 
 // expressions
@@ -761,7 +783,7 @@ fn node(c: &mut Ctx, kind: u32, line: u32, col: u32) -> u32 {
     c.^.nodes[n] = Node{
         kind: kind, line: line, col: col,
         a: 0, b: 0, c: 0, d: 0, e: 0,
-        next: 0, ty: 0, aux: 0, aux2: 0, depth: 1,
+        next: 0, ty: 0, aux: 0, aux2: 0, depth: 1, op: Punct.NoPunct,
     };
     c.^.nnode = n + 1;
     return n;
@@ -773,21 +795,23 @@ fn cur_kind(c: &Ctx) -> u32 { return c.^.toks[c.^.ti].kind; }
 
 fn cur_val(c: &Ctx) -> u32 { return c.^.toks[c.^.ti].value; }
 
+fn cur_punct(c: &Ctx) -> Punct { return c.^.toks[c.^.ti].punct; }
+
 fn cur_line(c: &Ctx) -> u32 { return c.^.toks[c.^.ti].line; }
 
 fn cur_col(c: &Ctx) -> u32 { return c.^.toks[c.^.ti].col; }
 
 fn bump(c: &mut Ctx) { c.^.ti = c.^.ti + 1; }
 
-fn at_p(c: &Ctx, p: u32) -> bool {
-    return cur_kind(c) == TK_PUNCT && cur_val(c) == p;
+fn at_p(c: &Ctx, p: Punct) -> bool {
+    return cur_kind(c) == TK_PUNCT && cur_punct(c) == p;
 }
 
 fn at_kw(c: &Ctx, k: u32) -> bool {
     return cur_kind(c) == TK_KW && cur_val(c) == k;
 }
 
-fn eat_p(c: &mut Ctx, p: u32) -> bool {
+fn eat_p(c: &mut Ctx, p: Punct) -> bool {
     if at_p(c, p) { bump(c); return true; }
     return false;
 }
@@ -799,49 +823,52 @@ fn eat_kw(c: &mut Ctx, k: u32) -> bool {
 
 // --- rendering tokens into diagnostics -------------------------------------
 
-fn put_punct(c: &mut Ctx, p: u32) {
-    if p == P_SHLEQ { put_str(c, "<<="); return; }
-    if p == P_SHREQ { put_str(c, ">>="); return; }
-    if p == P_ARROW { put_str(c, "->"); return; }
-    if p == P_FATARROW { put_str(c, "=>"); return; }
-    if p == P_EQEQ { put_str(c, "=="); return; }
-    if p == P_NE { put_str(c, "!="); return; }
-    if p == P_LE { put_str(c, "<="); return; }
-    if p == P_GE { put_str(c, ">="); return; }
-    if p == P_ANDAND { put_str(c, "&&"); return; }
-    if p == P_OROR { put_str(c, "||"); return; }
-    if p == P_SHL { put_str(c, "<<"); return; }
-    if p == P_SHR { put_str(c, ">>"); return; }
-    if p == P_ADDEQ { put_str(c, "+="); return; }
-    if p == P_SUBEQ { put_str(c, "-="); return; }
-    if p == P_MULEQ { put_str(c, "*="); return; }
-    if p == P_DIVEQ { put_str(c, "/="); return; }
-    if p == P_MODEQ { put_str(c, "%="); return; }
-    if p == P_ANDEQ { put_str(c, "&="); return; }
-    if p == P_OREQ { put_str(c, "|="); return; }
-    if p == P_XOREQ { put_str(c, "^="); return; }
-    if p == P_LPAREN { put_str(c, "("); return; }
-    if p == P_RPAREN { put_str(c, ")"); return; }
-    if p == P_LBRACE { put_str(c, "{"); return; }
-    if p == P_RBRACE { put_str(c, "}"); return; }
-    if p == P_LBRACK { put_str(c, "["); return; }
-    if p == P_RBRACK { put_str(c, "]"); return; }
-    if p == P_COMMA { put_str(c, ","); return; }
-    if p == P_SEMI { put_str(c, ";"); return; }
-    if p == P_COLON { put_str(c, ":"); return; }
-    if p == P_DOT { put_str(c, "."); return; }
-    if p == P_EQ { put_str(c, "="); return; }
-    if p == P_LT { put_str(c, "<"); return; }
-    if p == P_GT { put_str(c, ">"); return; }
-    if p == P_ADD { put_str(c, "+"); return; }
-    if p == P_SUB { put_str(c, "-"); return; }
-    if p == P_MUL { put_str(c, "*"); return; }
-    if p == P_DIV { put_str(c, "/"); return; }
-    if p == P_MOD { put_str(c, "%"); return; }
-    if p == P_AND { put_str(c, "&"); return; }
-    if p == P_OR { put_str(c, "|"); return; }
-    if p == P_XOR { put_str(c, "^"); return; }
-    put_str(c, "!");
+fn put_punct(c: &mut Ctx, p: Punct) {
+    match p {
+        ShlEq => { put_str(c, "<<="); }
+        ShrEq => { put_str(c, ">>="); }
+        Arrow => { put_str(c, "->"); }
+        FatArrow => { put_str(c, "=>"); }
+        EqEq => { put_str(c, "=="); }
+        Ne => { put_str(c, "!="); }
+        Le => { put_str(c, "<="); }
+        Ge => { put_str(c, ">="); }
+        AndAnd => { put_str(c, "&&"); }
+        OrOr => { put_str(c, "||"); }
+        Shl => { put_str(c, "<<"); }
+        Shr => { put_str(c, ">>"); }
+        AddEq => { put_str(c, "+="); }
+        SubEq => { put_str(c, "-="); }
+        MulEq => { put_str(c, "*="); }
+        DivEq => { put_str(c, "/="); }
+        ModEq => { put_str(c, "%="); }
+        AndEq => { put_str(c, "&="); }
+        OrEq => { put_str(c, "|="); }
+        XorEq => { put_str(c, "^="); }
+        LParen => { put_str(c, "("); }
+        RParen => { put_str(c, ")"); }
+        LBrace => { put_str(c, "{"); }
+        RBrace => { put_str(c, "}"); }
+        LBrack => { put_str(c, "["); }
+        RBrack => { put_str(c, "]"); }
+        Comma => { put_str(c, ","); }
+        Semi => { put_str(c, ";"); }
+        Colon => { put_str(c, ":"); }
+        Dot => { put_str(c, "."); }
+        Eq => { put_str(c, "="); }
+        Lt => { put_str(c, "<"); }
+        Gt => { put_str(c, ">"); }
+        Add => { put_str(c, "+"); }
+        Sub => { put_str(c, "-"); }
+        Mul => { put_str(c, "*"); }
+        Div => { put_str(c, "/"); }
+        Mod => { put_str(c, "%"); }
+        And => { put_str(c, "&"); }
+        Or => { put_str(c, "|"); }
+        Xor => { put_str(c, "^"); }
+        Not => { put_str(c, "!"); }
+        NoPunct => { }
+    }
 }
 
 fn put_kw(c: &mut Ctx, k: u32) {
@@ -881,7 +908,7 @@ fn put_describe(c: &mut Ctx, i: u32) {
     put_ch(c, 96);
 }
 
-fn e_expected_p(c: &mut Ctx, p: u32) {
+fn e_expected_p(c: &mut Ctx, p: Punct) {
     let line: u32 = cur_line(c);
     let col: u32 = cur_col(c);
     let i: u32 = c.^.ti;
@@ -923,7 +950,7 @@ fn e_expected_str(c: &mut Ctx, s: []u8) {
     }
 }
 
-fn expect_p(c: &mut Ctx, p: u32) {
+fn expect_p(c: &mut Ctx, p: Punct) {
     if failed(c) { return; }
     if at_p(c, p) { bump(c); return; }
     e_expected_p(c, p);
@@ -1001,22 +1028,22 @@ fn parse_ty(c: &mut Ctx) -> u32 {
 fn parse_ty_inner(c: &mut Ctx) -> u32 {
     let line: u32 = cur_line(c);
     let col: u32 = cur_col(c);
-    if eat_p(c, P_LBRACK) {
-        expect_p(c, P_RBRACK);
+    if eat_p(c, Punct.LBrack) {
+        expect_p(c, Punct.RBrack);
         let n: u32 = node(c, T_SLICE, line, col);
         if eat_kw(c, K_MUT) { c.^.nodes[n].b = 1; }
         let inner: u32 = parse_ty(c);
         c.^.nodes[n].a = inner;
         return n;
     }
-    if eat_p(c, P_AND) {
+    if eat_p(c, Punct.And) {
         let n: u32 = node(c, T_REF, line, col);
         if eat_kw(c, K_MUT) { c.^.nodes[n].b = 1; }
         let inner: u32 = parse_ty(c);
         c.^.nodes[n].a = inner;
         return n;
     }
-    if eat_p(c, P_MUL) {
+    if eat_p(c, Punct.Mul) {
         let n: u32 = node(c, T_PTR, line, col);
         let inner: u32 = parse_ty(c);
         c.^.nodes[n].a = inner;
@@ -1060,20 +1087,25 @@ fn parse_ty_inner(c: &mut Ctx) -> u32 {
 const CMP_LEVEL: u32 = 2;
 const NLEVELS: u32 = 9;
 
-fn is_cmp(p: u32) -> bool {
-    return p == P_EQEQ || p == P_NE || p == P_LT || p == P_GT || p == P_LE || p == P_GE;
+fn is_cmp(p: Punct) -> bool {
+    match p {
+        EqEq | Ne | Lt | Gt | Le | Ge => { return true; }
+        _ => { return false; }
+    }
 }
 
-fn op_at_level(p: u32, level: u32) -> bool {
-    if level == 0 { return p == P_OROR; }
-    if level == 1 { return p == P_ANDAND; }
-    if level == 3 { return p == P_OR; }
-    if level == 4 { return p == P_XOR; }
-    if level == 5 { return p == P_AND; }
-    if level == 6 { return p == P_SHL || p == P_SHR; }
-    if level == 7 { return p == P_ADD || p == P_SUB; }
-    if level == 8 { return p == P_MUL || p == P_DIV || p == P_MOD; }
-    return false;
+fn op_at_level(p: Punct, level: u32) -> bool {
+    match p {
+        OrOr => { return level == 0; }
+        AndAnd => { return level == 1; }
+        Or => { return level == 3; }
+        Xor => { return level == 4; }
+        And => { return level == 5; }
+        Shl | Shr => { return level == 6; }
+        Add | Sub => { return level == 7; }
+        Mul | Div | Mod => { return level == 8; }
+        _ => { return false; }
+    }
 }
 
 fn parse_expr(c: &mut Ctx, asl: bool) -> u32 { return parse_bin(c, 0, asl); }
@@ -1083,14 +1115,14 @@ fn parse_bin(c: &mut Ctx, level: u32, asl: bool) -> u32 {
     if level == CMP_LEVEL { return parse_cmp(c, asl); }
     if level >= NLEVELS { return parse_unary(c, asl); }
     let mut lhs: u32 = parse_bin(c, level + 1, asl);
-    for !failed(c) && cur_kind(c) == TK_PUNCT && op_at_level(cur_val(c), level) {
+    for !failed(c) && cur_kind(c) == TK_PUNCT && op_at_level(cur_punct(c), level) {
         let line: u32 = cur_line(c);
         let col: u32 = cur_col(c);
-        let op: u32 = cur_val(c);
+        let op: Punct = cur_punct(c);
         bump(c);
         let rhs: u32 = parse_bin(c, level + 1, asl);
         let n: u32 = node(c, E_BINARY, line, col);
-        c.^.nodes[n].a = op;
+        c.^.nodes[n].op = op;
         c.^.nodes[n].b = lhs;
         c.^.nodes[n].c = rhs;
         let dl: u32 = depth_of(c, lhs);
@@ -1103,21 +1135,21 @@ fn parse_bin(c: &mut Ctx, level: u32, asl: bool) -> u32 {
 fn parse_cmp(c: &mut Ctx, asl: bool) -> u32 {
     let lhs: u32 = parse_bin(c, CMP_LEVEL + 1, asl);
     if failed(c) { return 0; }
-    if cur_kind(c) == TK_PUNCT && is_cmp(cur_val(c)) {
+    if cur_kind(c) == TK_PUNCT && is_cmp(cur_punct(c)) {
         let line: u32 = cur_line(c);
         let col: u32 = cur_col(c);
-        let op: u32 = cur_val(c);
+        let op: Punct = cur_punct(c);
         bump(c);
         let rhs: u32 = parse_bin(c, CMP_LEVEL + 1, asl);
         if failed(c) { return 0; }
-        if cur_kind(c) == TK_PUNCT && is_cmp(cur_val(c)) {
+        if cur_kind(c) == TK_PUNCT && is_cmp(cur_punct(c)) {
             let el: u32 = cur_line(c);
             let ec: u32 = cur_col(c);
             err_msg(c, el, ec, "comparison operators cannot be chained");
             return 0;
         }
         let n: u32 = node(c, E_BINARY, line, col);
-        c.^.nodes[n].a = op;
+        c.^.nodes[n].op = op;
         c.^.nodes[n].b = lhs;
         c.^.nodes[n].c = rhs;
         let dl: u32 = depth_of(c, lhs);
@@ -1161,25 +1193,25 @@ fn parse_prefix(c: &mut Ctx, asl: bool) -> u32 {
 fn parse_prefix_inner(c: &mut Ctx, asl: bool) -> u32 {
     let line: u32 = cur_line(c);
     let col: u32 = cur_col(c);
-    if at_p(c, P_SUB) {
+    if at_p(c, Punct.Sub) {
         bump(c);
         let k: u32 = parse_prefix(c, asl);
         let n: u32 = node(c, E_UNARY, line, col);
-        c.^.nodes[n].a = P_SUB;
+        c.^.nodes[n].op = Punct.Sub;
         c.^.nodes[n].b = k;
         let d: u32 = depth_of(c, k);
         return deep(c, n, d);
     }
-    if at_p(c, P_NOT) {
+    if at_p(c, Punct.Not) {
         bump(c);
         let k: u32 = parse_prefix(c, asl);
         let n: u32 = node(c, E_UNARY, line, col);
-        c.^.nodes[n].a = P_NOT;
+        c.^.nodes[n].op = Punct.Not;
         c.^.nodes[n].b = k;
         let d: u32 = depth_of(c, k);
         return deep(c, n, d);
     }
-    if at_p(c, P_AND) {
+    if at_p(c, Punct.And) {
         bump(c);
         let n: u32 = node(c, E_BORROW, line, col);
         if eat_kw(c, K_MUT) { c.^.nodes[n].a = 1; }
@@ -1196,37 +1228,37 @@ fn parse_postfix(c: &mut Ctx, asl: bool) -> u32 {
     for !failed(c) {
         let line: u32 = cur_line(c);
         let col: u32 = cur_col(c);
-        if at_p(c, P_LPAREN) {
+        if at_p(c, Punct.LParen) {
             // inside brackets the struct-literal restriction lifts (language.md S5)
             bump(c);
             let mut head: u32 = 0;
             let mut tail: u32 = 0;
-            for !failed(c) && !at_p(c, P_RPAREN) {
+            for !failed(c) && !at_p(c, Punct.RParen) {
                 let a: u32 = parse_expr(c, true);
                 if head == 0 { head = a; } else { c.^.nodes[tail].next = a; }
                 tail = a;
-                if !eat_p(c, P_COMMA) { break; }
+                if !eat_p(c, Punct.Comma) { break; }
             }
-            expect_p(c, P_RPAREN);
+            expect_p(c, Punct.RParen);
             let n: u32 = node(c, E_CALL, line, col);
             c.^.nodes[n].a = e;
             c.^.nodes[n].b = head;
             let de: u32 = depth_of(c, e);
             let dh: u32 = depth_list(c, head);
             e = deep(c, n, max2(de, dh));
-        } else if at_p(c, P_LBRACK) {
+        } else if at_p(c, Punct.LBrack) {
             bump(c);
             let idx: u32 = parse_expr(c, true);
-            expect_p(c, P_RBRACK);
+            expect_p(c, Punct.RBrack);
             let n: u32 = node(c, E_INDEX, line, col);
             c.^.nodes[n].a = e;
             c.^.nodes[n].b = idx;
             let de: u32 = depth_of(c, e);
             let di: u32 = depth_of(c, idx);
             e = deep(c, n, max2(de, di));
-        } else if at_p(c, P_DOT) {
+        } else if at_p(c, Punct.Dot) {
             bump(c);
-            if eat_p(c, P_XOR) {
+            if eat_p(c, Punct.Xor) {
                 let n: u32 = node(c, E_DEREF, line, col);
                 c.^.nodes[n].a = e;
                 let d: u32 = depth_of(c, e);
@@ -1293,11 +1325,11 @@ fn parse_primary(c: &mut Ctx, asl: bool) -> u32 {
     if at_kw(c, K_SLICE) || at_kw(c, K_SLICE_MUT) {
         let is_mut: bool = at_kw(c, K_SLICE_MUT);
         bump(c);
-        expect_p(c, P_LPAREN);
+        expect_p(c, Punct.LParen);
         let p: u32 = parse_expr(c, true);
-        expect_p(c, P_COMMA);
+        expect_p(c, Punct.Comma);
         let ln: u32 = parse_expr(c, true);
-        expect_p(c, P_RPAREN);
+        expect_p(c, Punct.RParen);
         let n: u32 = node(c, E_SLICE, line, col);
         if is_mut { c.^.nodes[n].a = 1; }
         c.^.nodes[n].b = p;
@@ -1308,11 +1340,11 @@ fn parse_primary(c: &mut Ctx, asl: bool) -> u32 {
     }
     if at_kw(c, K_OFFSET) {
         bump(c);
-        expect_p(c, P_LPAREN);
+        expect_p(c, Punct.LParen);
         let p: u32 = parse_expr(c, true);
-        expect_p(c, P_COMMA);
+        expect_p(c, Punct.Comma);
         let ix: u32 = parse_expr(c, true);
-        expect_p(c, P_RPAREN);
+        expect_p(c, Punct.RParen);
         let n: u32 = node(c, E_OFFSET, line, col);
         c.^.nodes[n].a = p;
         c.^.nodes[n].b = ix;
@@ -1320,17 +1352,17 @@ fn parse_primary(c: &mut Ctx, asl: bool) -> u32 {
         let di: u32 = depth_of(c, ix);
         return deep(c, n, max2(dp, di));
     }
-    if at_p(c, P_LPAREN) {
+    if at_p(c, Punct.LParen) {
         bump(c);
         let e: u32 = parse_expr(c, true);
-        expect_p(c, P_RPAREN);
+        expect_p(c, Punct.RParen);
         return e;
     }
     if k == TK_IDENT {
         let s: u32 = c.^.toks[c.^.ti].start;
         let l: u32 = c.^.toks[c.^.ti].len;
         bump(c);
-        if asl && at_p(c, P_LBRACE) { return parse_struct_lit(c, line, col, s, l); }
+        if asl && at_p(c, Punct.LBrace) { return parse_struct_lit(c, line, col, s, l); }
         let n: u32 = node(c, E_IDENT, line, col);
         c.^.nodes[n].a = s;
         c.^.nodes[n].b = l;
@@ -1341,15 +1373,15 @@ fn parse_primary(c: &mut Ctx, asl: bool) -> u32 {
 }
 
 fn parse_struct_lit(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) -> u32 {
-    expect_p(c, P_LBRACE);
+    expect_p(c, Punct.LBrace);
     let mut head: u32 = 0;
     let mut tail: u32 = 0;
-    for !failed(c) && !at_p(c, P_RBRACE) {
+    for !failed(c) && !at_p(c, Punct.RBrace) {
         let fline: u32 = cur_line(c);
         let fcol: u32 = cur_col(c);
         let it: u32 = expect_ident(c);
         if it == NONE { break; }
-        expect_p(c, P_COLON);
+        expect_p(c, Punct.Colon);
         let v: u32 = parse_expr(c, true);
         let f: u32 = node(c, E_LITFIELD, fline, fcol);
         let fs: u32 = c.^.toks[it].start;
@@ -1361,9 +1393,9 @@ fn parse_struct_lit(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) -> u32 {
         c.^.nodes[f].depth = dv;
         if head == 0 { head = f; } else { c.^.nodes[tail].next = f; }
         tail = f;
-        if !eat_p(c, P_COMMA) { break; }
+        if !eat_p(c, Punct.Comma) { break; }
     }
-    expect_p(c, P_RBRACE);
+    expect_p(c, Punct.RBrace);
     let n: u32 = node(c, E_STRUCTLIT, line, col);
     c.^.nodes[n].a = s;
     c.^.nodes[n].b = l;
@@ -1383,12 +1415,12 @@ fn parse_block(c: &mut Ctx) -> u32 {
         return 0;
     }
     c.^.bdepth = c.^.bdepth + 1;
-    expect_p(c, P_LBRACE);
+    expect_p(c, Punct.LBrace);
     let mut head: u32 = 0;
     let mut tail: u32 = 0;
-    for !failed(c) && !at_p(c, P_RBRACE) {
+    for !failed(c) && !at_p(c, Punct.RBrace) {
         if cur_kind(c) == TK_EOF {
-            e_expected_p(c, P_RBRACE);
+            e_expected_p(c, Punct.RBrace);
             return 0;
         }
         let s: u32 = parse_stmt(c);
@@ -1396,15 +1428,17 @@ fn parse_block(c: &mut Ctx) -> u32 {
         if head == 0 { head = s; } else { c.^.nodes[tail].next = s; }
         tail = s;
     }
-    expect_p(c, P_RBRACE);
+    expect_p(c, Punct.RBrace);
     c.^.bdepth = c.^.bdepth - 1;
     return head;
 }
 
-fn is_assign_op(p: u32) -> bool {
-    return p == P_EQ || p == P_ADDEQ || p == P_SUBEQ || p == P_MULEQ || p == P_DIVEQ
-        || p == P_MODEQ || p == P_ANDEQ || p == P_OREQ || p == P_XOREQ
-        || p == P_SHLEQ || p == P_SHREQ;
+fn is_assign_op(p: Punct) -> bool {
+    match p {
+        Eq | AddEq | SubEq | MulEq | DivEq | ModEq
+        | AndEq | OrEq | XorEq | ShlEq | ShrEq => { return true; }
+        _ => { return false; }
+    }
 }
 
 fn parse_stmt(c: &mut Ctx) -> u32 {
@@ -1413,7 +1447,7 @@ fn parse_stmt(c: &mut Ctx) -> u32 {
     let col: u32 = cur_col(c);
     if at_kw(c, K_LET) {
         let s: u32 = parse_let(c);
-        expect_p(c, P_SEMI);
+        expect_p(c, Punct.Semi);
         return s;
     }
     if at_kw(c, K_IF) { return parse_if(c); }
@@ -1427,23 +1461,23 @@ fn parse_stmt(c: &mut Ctx) -> u32 {
         return n;
     }
     if eat_kw(c, K_BREAK) {
-        expect_p(c, P_SEMI);
+        expect_p(c, Punct.Semi);
         return node(c, S_BREAK, line, col);
     }
     if eat_kw(c, K_CONTINUE) {
-        expect_p(c, P_SEMI);
+        expect_p(c, Punct.Semi);
         return node(c, S_CONTINUE, line, col);
     }
     if eat_kw(c, K_RETURN) {
         let n: u32 = node(c, S_RETURN, line, col);
-        if eat_p(c, P_SEMI) { return n; }
+        if eat_p(c, Punct.Semi) { return n; }
         let v: u32 = parse_expr(c, false);
         c.^.nodes[n].a = v;
-        expect_p(c, P_SEMI);
+        expect_p(c, Punct.Semi);
         return n;
     }
     let s: u32 = parse_simple_stmt(c);
-    expect_p(c, P_SEMI);
+    expect_p(c, Punct.Semi);
     return s;
 }
 
@@ -1455,13 +1489,13 @@ fn parse_simple_stmt(c: &mut Ctx) -> u32 {
     let col: u32 = cur_col(c);
     let e: u32 = parse_expr(c, false);
     if failed(c) { return 0; }
-    if cur_kind(c) == TK_PUNCT && is_assign_op(cur_val(c)) {
-        let op: u32 = cur_val(c);
+    if cur_kind(c) == TK_PUNCT && is_assign_op(cur_punct(c)) {
+        let op: Punct = cur_punct(c);
         bump(c);
         let v: u32 = parse_expr(c, true);
         let n: u32 = node(c, S_ASSIGN, line, col);
         c.^.nodes[n].a = e;
-        c.^.nodes[n].b = op;
+        c.^.nodes[n].op = op;
         c.^.nodes[n].c = v;
         return n;
     }
@@ -1486,11 +1520,11 @@ fn parse_let(c: &mut Ctx) -> u32 {
     let l: u32 = c.^.toks[it].len;
     c.^.nodes[n].a = s;
     c.^.nodes[n].b = l;
-    if eat_p(c, P_COLON) {
+    if eat_p(c, Punct.Colon) {
         let t: u32 = parse_ty(c);
         c.^.nodes[n].c = t;
     }
-    expect_p(c, P_EQ);
+    expect_p(c, Punct.Eq);
     let init: u32 = parse_expr(c, true);
     c.^.nodes[n].d = init;
     return n;
@@ -1532,7 +1566,7 @@ fn parse_for(c: &mut Ctx) -> u32 {
     let col: u32 = cur_col(c);
     expect_kw(c, K_FOR);
     let n: u32 = node(c, S_FOR, line, col);
-    if at_p(c, P_LBRACE) {
+    if at_p(c, Punct.LBrace) {
         let body: u32 = parse_block(c);
         c.^.nodes[n].d = body;
         return n;
@@ -1540,10 +1574,10 @@ fn parse_for(c: &mut Ctx) -> u32 {
     if at_kw(c, K_LET) {
         let init: u32 = parse_let(c);
         c.^.nodes[n].a = init;
-        expect_p(c, P_SEMI);
+        expect_p(c, Punct.Semi);
         let cond: u32 = parse_expr(c, false);
         c.^.nodes[n].b = cond;
-        expect_p(c, P_SEMI);
+        expect_p(c, Punct.Semi);
         let post: u32 = parse_simple_stmt(c);
         c.^.nodes[n].c = post;
         let body: u32 = parse_block(c);
@@ -1564,10 +1598,10 @@ fn parse_match(c: &mut Ctx) -> u32 {
     let n: u32 = node(c, S_MATCH, line, col);
     let scr: u32 = parse_expr(c, false);
     c.^.nodes[n].a = scr;
-    expect_p(c, P_LBRACE);
+    expect_p(c, Punct.LBrace);
     let mut head: u32 = 0;
     let mut tail: u32 = 0;
-    for !failed(c) && !at_p(c, P_RBRACE) {
+    for !failed(c) && !at_p(c, Punct.RBrace) {
         let aline: u32 = cur_line(c);
         let acol: u32 = cur_col(c);
         let arm: u32 = node(c, S_ARM, aline, acol);
@@ -1583,11 +1617,11 @@ fn parse_match(c: &mut Ctx) -> u32 {
             let l: u32 = c.^.toks[it].len;
             c.^.nodes[arm].a = s;
             c.^.nodes[arm].b = l;
-            if !at_p(c, P_LPAREN) {
+            if !at_p(c, Punct.LParen) {
                 // `A | B | C` -- only variants that carry no payload can be joined
                 let mut ah: u32 = 0;
                 let mut at2: u32 = 0;
-                for eat_p(c, P_OR) {
+                for eat_p(c, Punct.Or) {
                     let ai: u32 = expect_ident(c);
                     if ai == NONE { break; }
                     let al: u32 = c.^.toks[ai].line;
@@ -1602,10 +1636,10 @@ fn parse_match(c: &mut Ctx) -> u32 {
                 }
                 c.^.nodes[arm].aux2 = ah;
             }
-            if eat_p(c, P_LPAREN) {
+            if eat_p(c, Punct.LParen) {
                 let mut bh: u32 = 0;
                 let mut bt: u32 = 0;
-                for !failed(c) && !at_p(c, P_RPAREN) {
+                for !failed(c) && !at_p(c, Punct.RParen) {
                     let bline: u32 = cur_line(c);
                     let bcol: u32 = cur_col(c);
                     let bi: u32 = expect_ident(c);
@@ -1617,19 +1651,19 @@ fn parse_match(c: &mut Ctx) -> u32 {
                     c.^.nodes[b].b = bl;
                     if bh == 0 { bh = b; } else { c.^.nodes[bt].next = b; }
                     bt = b;
-                    if !eat_p(c, P_COMMA) { break; }
+                    if !eat_p(c, Punct.Comma) { break; }
                 }
-                expect_p(c, P_RPAREN);
+                expect_p(c, Punct.RParen);
                 c.^.nodes[arm].c = bh;
             }
         }
-        expect_p(c, P_FATARROW);
+        expect_p(c, Punct.FatArrow);
         let body: u32 = parse_block(c);
         c.^.nodes[arm].d = body;
         if head == 0 { head = arm; } else { c.^.nodes[tail].next = arm; }
         tail = arm;
     }
-    expect_p(c, P_RBRACE);
+    expect_p(c, Punct.RBrace);
     c.^.nodes[n].b = head;
     return n;
 }
@@ -1647,15 +1681,15 @@ fn parse_fn(c: &mut Ctx) -> u32 {
     let l: u32 = c.^.toks[it].len;
     c.^.nodes[n].a = s;
     c.^.nodes[n].b = l;
-    expect_p(c, P_LPAREN);
+    expect_p(c, Punct.LParen);
     let mut head: u32 = 0;
     let mut tail: u32 = 0;
-    for !failed(c) && !at_p(c, P_RPAREN) {
+    for !failed(c) && !at_p(c, Punct.RParen) {
         let pline: u32 = cur_line(c);
         let pcol: u32 = cur_col(c);
         let pi: u32 = expect_ident(c);
         if pi == NONE { break; }
-        expect_p(c, P_COLON);
+        expect_p(c, Punct.Colon);
         let p: u32 = node(c, D_PARAM, pline, pcol);
         let ps: u32 = c.^.toks[pi].start;
         let pl: u32 = c.^.toks[pi].len;
@@ -1665,11 +1699,11 @@ fn parse_fn(c: &mut Ctx) -> u32 {
         c.^.nodes[p].c = pt;
         if head == 0 { head = p; } else { c.^.nodes[tail].next = p; }
         tail = p;
-        if !eat_p(c, P_COMMA) { break; }
+        if !eat_p(c, Punct.Comma) { break; }
     }
-    expect_p(c, P_RPAREN);
+    expect_p(c, Punct.RParen);
     c.^.nodes[n].c = head;
-    if eat_p(c, P_ARROW) {
+    if eat_p(c, Punct.Arrow) {
         let r: u32 = parse_ty(c);
         c.^.nodes[n].d = r;
     }
@@ -1689,15 +1723,15 @@ fn parse_struct(c: &mut Ctx) -> u32 {
     let l: u32 = c.^.toks[it].len;
     c.^.nodes[n].a = s;
     c.^.nodes[n].b = l;
-    expect_p(c, P_LBRACE);
+    expect_p(c, Punct.LBrace);
     let mut head: u32 = 0;
     let mut tail: u32 = 0;
-    for !failed(c) && !at_p(c, P_RBRACE) {
+    for !failed(c) && !at_p(c, Punct.RBrace) {
         let fline: u32 = cur_line(c);
         let fcol: u32 = cur_col(c);
         let fi: u32 = expect_ident(c);
         if fi == NONE { break; }
-        expect_p(c, P_COLON);
+        expect_p(c, Punct.Colon);
         let f: u32 = node(c, D_FIELD, fline, fcol);
         let fs: u32 = c.^.toks[fi].start;
         let fl: u32 = c.^.toks[fi].len;
@@ -1707,9 +1741,9 @@ fn parse_struct(c: &mut Ctx) -> u32 {
         c.^.nodes[f].c = ft;
         if head == 0 { head = f; } else { c.^.nodes[tail].next = f; }
         tail = f;
-        if !eat_p(c, P_COMMA) { break; }
+        if !eat_p(c, Punct.Comma) { break; }
     }
-    expect_p(c, P_RBRACE);
+    expect_p(c, Punct.RBrace);
     c.^.nodes[n].c = head;
     return n;
 }
@@ -1725,10 +1759,10 @@ fn parse_enum(c: &mut Ctx) -> u32 {
     let l: u32 = c.^.toks[it].len;
     c.^.nodes[n].a = s;
     c.^.nodes[n].b = l;
-    expect_p(c, P_LBRACE);
+    expect_p(c, Punct.LBrace);
     let mut head: u32 = 0;
     let mut tail: u32 = 0;
-    for !failed(c) && !at_p(c, P_RBRACE) {
+    for !failed(c) && !at_p(c, Punct.RBrace) {
         let vline: u32 = cur_line(c);
         let vcol: u32 = cur_col(c);
         let vi: u32 = expect_ident(c);
@@ -1738,24 +1772,24 @@ fn parse_enum(c: &mut Ctx) -> u32 {
         let vl: u32 = c.^.toks[vi].len;
         c.^.nodes[v].a = vs;
         c.^.nodes[v].b = vl;
-        if eat_p(c, P_LPAREN) {
+        if eat_p(c, Punct.LParen) {
             let mut ph: u32 = 0;
             let mut pt: u32 = 0;
-            for !failed(c) && !at_p(c, P_RPAREN) {
+            for !failed(c) && !at_p(c, Punct.RParen) {
                 let t: u32 = parse_ty(c);
                 if t == 0 { break; }
                 if ph == 0 { ph = t; } else { c.^.nodes[pt].next = t; }
                 pt = t;
-                if !eat_p(c, P_COMMA) { break; }
+                if !eat_p(c, Punct.Comma) { break; }
             }
-            expect_p(c, P_RPAREN);
+            expect_p(c, Punct.RParen);
             c.^.nodes[v].c = ph;
         }
         if head == 0 { head = v; } else { c.^.nodes[tail].next = v; }
         tail = v;
-        if !eat_p(c, P_COMMA) { break; }
+        if !eat_p(c, Punct.Comma) { break; }
     }
-    expect_p(c, P_RBRACE);
+    expect_p(c, Punct.RBrace);
     c.^.nodes[n].c = head;
     return n;
 }
@@ -1771,13 +1805,13 @@ fn parse_const(c: &mut Ctx) -> u32 {
     let l: u32 = c.^.toks[it].len;
     c.^.nodes[n].a = s;
     c.^.nodes[n].b = l;
-    expect_p(c, P_COLON);
+    expect_p(c, Punct.Colon);
     let t: u32 = parse_ty(c);
     c.^.nodes[n].c = t;
-    expect_p(c, P_EQ);
+    expect_p(c, Punct.Eq);
     let v: u32 = parse_expr(c, false);
     c.^.nodes[n].d = v;
-    expect_p(c, P_SEMI);
+    expect_p(c, Punct.Semi);
     return n;
 }
 
@@ -2639,9 +2673,9 @@ fn e_not_bool(c: &mut Ctx, line: u32, col: u32, t: u32) {
     }
 }
 
-fn put_q_punct(c: &mut Ctx, p: u32) { put_ch(c, 96); put_punct(c, p); put_ch(c, 96); }
+fn put_q_punct(c: &mut Ctx, p: Punct) { put_ch(c, 96); put_punct(c, p); put_ch(c, 96); }
 
-fn e_op_bool(c: &mut Ctx, line: u32, col: u32, op: u32) {
+fn e_op_bool(c: &mut Ctx, line: u32, col: u32, op: Punct) {
     if err_open(c, line, col) {
         put_q_punct(c, op);
         put_str(c, " requires bool operands");
@@ -2649,7 +2683,7 @@ fn e_op_bool(c: &mut Ctx, line: u32, col: u32, op: u32) {
     }
 }
 
-fn e_op_int(c: &mut Ctx, line: u32, col: u32, op: u32) {
+fn e_op_int(c: &mut Ctx, line: u32, col: u32, op: Punct) {
     if err_open(c, line, col) {
         put_q_punct(c, op);
         put_str(c, " requires integer operands");
@@ -2661,7 +2695,7 @@ fn e_const_divzero(c: &mut Ctx, line: u32, col: u32) {
     err_msg(c, line, col, "division by zero in constant expression");
 }
 
-fn e_op_not_const(c: &mut Ctx, line: u32, col: u32, op: u32) {
+fn e_op_not_const(c: &mut Ctx, line: u32, col: u32, op: Punct) {
     if err_open(c, line, col) {
         put_q_punct(c, op);
         put_str(c, " is not allowed in a constant expression");
@@ -2747,13 +2781,13 @@ fn const_expr(c: &mut Ctx, e: u32, want: u32) -> u32 {
         return v;
     }
     if k == E_UNARY {
-        let op: u32 = ea;
+        let op: Punct = c.^.nodes[e].op;
         let mut sub_want: u32 = TY_BOOL;
-        if op == P_SUB { sub_want = want; }
+        if op == Punct.Sub { sub_want = want; }
         let v: u32 = const_expr(c, eb, sub_want);
         let t: u32 = c.^.cety;
         if failed(c) { c.^.cety = TY_I32; return 0; }
-        if op == P_SUB {
+        if op == Punct.Sub {
             if !is_int_ty(c, t) {
                 e_negate(c, line, col, t);
                 c.^.cety = TY_I32;
@@ -2771,15 +2805,15 @@ fn const_expr(c: &mut Ctx, e: u32, want: u32) -> u32 {
         return 1 - v;
     }
     if k == E_BINARY {
-        let op: u32 = ea;
+        let op: Punct = c.^.nodes[e].op;
         let ec: u32 = c.^.nodes[e].c;
-        let cmp: bool = is_cmp(op) || op == P_ANDAND || op == P_OROR;
+        let cmp: bool = is_cmp(op) || op == Punct.AndAnd || op == Punct.OrOr;
         let mut lwant: u32 = want;
         if cmp { lwant = 0; }
         let lv: u32 = const_expr(c, eb, lwant);
         let lt: u32 = c.^.cety;
         let mut rwant: u32 = 0;
-        if op == P_SHL || op == P_SHR {
+        if op == Punct.Shl || op == Punct.Shr {
             rwant = TY_U32;
         } else if cmp {
             rwant = 0;
@@ -2792,21 +2826,21 @@ fn const_expr(c: &mut Ctx, e: u32, want: u32) -> u32 {
         let rt: u32 = c.^.cety;
         if failed(c) { c.^.cety = TY_I32; return 0; }
 
-        if op == P_ANDAND || op == P_OROR {
+        if op == Punct.AndAnd || op == Punct.OrOr {
             if ty_kind(c, lt) != TYK_BOOL || ty_kind(c, rt) != TYK_BOOL {
                 e_op_bool(c, line, col, op);
                 c.^.cety = TY_I32;
                 return 0;
             }
             c.^.cety = TY_BOOL;
-            if op == P_ANDAND {
+            if op == Punct.AndAnd {
                 if lv != 0 && rv != 0 { return 1; }
                 return 0;
             }
             if lv != 0 || rv != 0 { return 1; }
             return 0;
         }
-        if op == P_SHL || op == P_SHR {
+        if op == Punct.Shl || op == Punct.Shr {
             if !is_int_ty(c, lt) || !is_int_ty(c, rt) {
                 e_op_int(c, line, col, op);
                 c.^.cety = TY_I32;
@@ -2827,15 +2861,15 @@ fn const_expr(c: &mut Ctx, e: u32, want: u32) -> u32 {
             }
             let sh: u32 = rv & 31;
             c.^.cety = t;
-            if op == P_SHL { return lv << sh; }
+            if op == Punct.Shl { return lv << sh; }
             if ty_kind(c, t) == TYK_I32 { return sshr(lv, sh); }
             return lv >> sh;
         }
         if !is_int_ty(c, lt) || !is_int_ty(c, rt) {
-            if (op == P_EQEQ || op == P_NE) && ty_kind(c, lt) == TYK_BOOL
+            if (op == Punct.EqEq || op == Punct.Ne) && ty_kind(c, lt) == TYK_BOOL
                 && ty_kind(c, rt) == TYK_BOOL {
                 c.^.cety = TY_BOOL;
-                if op == P_EQEQ {
+                if op == Punct.EqEq {
                     if lv == rv { return 1; }
                     return 0;
                 }
@@ -2862,41 +2896,41 @@ fn const_expr(c: &mut Ctx, e: u32, want: u32) -> u32 {
         let signed: bool = ty_kind(c, t) == TYK_I32;
         if is_cmp(op) {
             c.^.cety = TY_BOOL;
-            if op == P_EQEQ { if lv == rv { return 1; } return 0; }
-            if op == P_NE { if lv != rv { return 1; } return 0; }
+            if op == Punct.EqEq { if lv == rv { return 1; } return 0; }
+            if op == Punct.Ne { if lv != rv { return 1; } return 0; }
             if signed {
-                if op == P_LT { if to_signed_lt(lv, rv) { return 1; } return 0; }
-                if op == P_GT { if to_signed_gt(lv, rv) { return 1; } return 0; }
-                if op == P_LE { if !to_signed_gt(lv, rv) { return 1; } return 0; }
+                if op == Punct.Lt { if to_signed_lt(lv, rv) { return 1; } return 0; }
+                if op == Punct.Gt { if to_signed_gt(lv, rv) { return 1; } return 0; }
+                if op == Punct.Le { if !to_signed_gt(lv, rv) { return 1; } return 0; }
                 if !to_signed_lt(lv, rv) { return 1; }
                 return 0;
             }
-            if op == P_LT { if lv < rv { return 1; } return 0; }
-            if op == P_GT { if lv > rv { return 1; } return 0; }
-            if op == P_LE { if lv <= rv { return 1; } return 0; }
+            if op == Punct.Lt { if lv < rv { return 1; } return 0; }
+            if op == Punct.Gt { if lv > rv { return 1; } return 0; }
+            if op == Punct.Le { if lv <= rv { return 1; } return 0; }
             if lv >= rv { return 1; }
             return 0;
         }
-        if (op == P_DIV || op == P_MOD) && rv == 0 {
+        if (op == Punct.Div || op == Punct.Mod) && rv == 0 {
             e_const_divzero(c, line, col);
             c.^.cety = TY_I32;
             return 0;
         }
         c.^.cety = t;
-        if op == P_ADD { return lv + rv; }
-        if op == P_SUB { return lv - rv; }
-        if op == P_MUL { return lv * rv; }
-        if op == P_DIV {
+        if op == Punct.Add { return lv + rv; }
+        if op == Punct.Sub { return lv - rv; }
+        if op == Punct.Mul { return lv * rv; }
+        if op == Punct.Div {
             if signed { return sdiv(lv, rv); }
             return lv / rv;
         }
-        if op == P_MOD {
+        if op == Punct.Mod {
             if signed { return srem(lv, rv); }
             return lv % rv;
         }
-        if op == P_AND { return lv & rv; }
-        if op == P_OR { return lv | rv; }
-        if op == P_XOR { return lv ^ rv; }
+        if op == Punct.And { return lv & rv; }
+        if op == Punct.Or { return lv | rv; }
+        if op == Punct.Xor { return lv ^ rv; }
         e_op_not_const(c, line, col, op);
         c.^.cety = TY_I32;
         return 0;
@@ -3264,7 +3298,7 @@ fn e_immutable_place(c: &mut Ctx, line: u32, col: u32) {
     err_msg(c, line, col, "cannot assign to an immutable place");
 }
 
-fn e_op_needs_int(c: &mut Ctx, line: u32, col: u32, op: u32, t: u32) {
+fn e_op_needs_int(c: &mut Ctx, line: u32, col: u32, op: Punct, t: u32) {
     if err_open(c, line, col) {
         put_q_punct(c, op);
         put_str(c, " requires an integer, found ");
@@ -3311,17 +3345,20 @@ fn check_local_ty(c: &mut Ctx, t: u32, line: u32, col: u32) {
 }
 
 // the base operator behind a compound assignment
-fn assign_base_op(p: u32) -> u32 {
-    if p == P_ADDEQ { return P_ADD; }
-    if p == P_SUBEQ { return P_SUB; }
-    if p == P_MULEQ { return P_MUL; }
-    if p == P_DIVEQ { return P_DIV; }
-    if p == P_MODEQ { return P_MOD; }
-    if p == P_ANDEQ { return P_AND; }
-    if p == P_OREQ { return P_OR; }
-    if p == P_XOREQ { return P_XOR; }
-    if p == P_SHLEQ { return P_SHL; }
-    return P_SHR;
+// the base operator behind a compound assignment
+fn assign_base_op(p: Punct) -> Punct {
+    match p {
+        AddEq => { return Punct.Add; }
+        SubEq => { return Punct.Sub; }
+        MulEq => { return Punct.Mul; }
+        DivEq => { return Punct.Div; }
+        ModEq => { return Punct.Mod; }
+        AndEq => { return Punct.And; }
+        OrEq => { return Punct.Or; }
+        XorEq => { return Punct.Xor; }
+        ShlEq => { return Punct.Shl; }
+        _ => { return Punct.Shr; }
+    }
 }
 
 fn check_stmt(c: &mut Ctx, s: u32) {
@@ -3366,13 +3403,13 @@ fn check_stmt(c: &mut Ctx, s: u32) {
         if failed(c) { return; }
         if c.^.place_mut == 0 { e_immutable_place(c, line, col); return; }
         let want: u32 = read_ty(c, ty);
-        let op: u32 = sb;
-        if op == P_EQ {
+        let op: Punct = c.^.nodes[s].op;
+        if op == Punct.Eq {
             check_init(c, sc, want);
             return;
         }
-        let base: u32 = assign_base_op(op);
-        if base == P_SHL || base == P_SHR {
+        let base: Punct = assign_base_op(op);
+        if base == Punct.Shl || base == Punct.Shr {
             if !is_int_ty(c, want) { e_op_needs_int(c, line, col, base, want); return; }
             coerce(c, sc, TY_U32);
             return;
@@ -3939,8 +3976,8 @@ fn retype(c: &mut Ctx, e: u32, t: u32) {
     if k == E_BINARY {
         let b: u32 = c.^.nodes[e].b;
         retype(c, b, t);
-        let op: u32 = c.^.nodes[e].a;
-        if op != P_SHL && op != P_SHR {
+        let op: Punct = c.^.nodes[e].op;
+        if op != Punct.Shl && op != Punct.Shr {
             let rc: u32 = c.^.nodes[e].c;
             retype(c, rc, t);
         }
@@ -3995,7 +4032,7 @@ fn e_unknown_name(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
     }
 }
 
-fn e_type_mismatch2(c: &mut Ctx, line: u32, col: u32, op: u32, lt: u32, rt: u32) {
+fn e_type_mismatch2(c: &mut Ctx, line: u32, col: u32, op: Punct, lt: u32, rt: u32) {
     if err_open(c, line, col) {
         put_q_punct(c, op);
         put_str(c, ": ");
@@ -4007,9 +4044,9 @@ fn e_type_mismatch2(c: &mut Ctx, line: u32, col: u32, op: u32, lt: u32, rt: u32)
     }
 }
 
-fn check_binop_types(c: &mut Ctx, line: u32, col: u32, op: u32, lt: u32, rt: u32) {
+fn check_binop_types(c: &mut Ctx, line: u32, col: u32, op: Punct, lt: u32, rt: u32) {
     if failed(c) { return; }
-    if op == P_SHL || op == P_SHR {
+    if op == Punct.Shl || op == Punct.Shr {
         if !is_int_ty(c, lt) { e_op_needs_int(c, line, col, op, lt); return; }
         if ty_kind(c, rt) != TYK_U32 {
             if err_open(c, line, col) {
@@ -4026,7 +4063,7 @@ fn check_binop_types(c: &mut Ctx, line: u32, col: u32, op: u32, lt: u32, rt: u32
     }
     if lt != rt { e_type_mismatch2(c, line, col, op, lt, rt); return; }
     let k: u32 = ty_kind(c, lt);
-    if op == P_EQEQ || op == P_NE {
+    if op == Punct.EqEq || op == Punct.Ne {
         if is_scalar_enum(c, lt) { return; }
         if k != TYK_I32 && k != TYK_U32 && k != TYK_BOOL && k != TYK_PTR {
             if err_open(c, line, col) {
@@ -4066,12 +4103,12 @@ fn check_binop_types(c: &mut Ctx, line: u32, col: u32, op: u32, lt: u32, rt: u32
 }
 
 fn check_binary(c: &mut Ctx, e: u32, want: u32) -> u32 {
-    let op: u32 = c.^.nodes[e].a;
+    let op: Punct = c.^.nodes[e].op;
     let line: u32 = c.^.nodes[e].line;
     let col: u32 = c.^.nodes[e].col;
     let eb: u32 = c.^.nodes[e].b;
     let ec: u32 = c.^.nodes[e].c;
-    if op == P_ANDAND || op == P_OROR {
+    if op == Punct.AndAnd || op == Punct.OrOr {
         coerce(c, eb, TY_BOOL);
         coerce(c, ec, TY_BOOL);
         return TY_BOOL;
@@ -4079,7 +4116,7 @@ fn check_binary(c: &mut Ctx, e: u32, want: u32) -> u32 {
     let iw: u32 = int_want(c, want);
     let cmp: bool = is_cmp(op);
 
-    if op == P_SHL || op == P_SHR {
+    if op == Punct.Shl || op == Punct.Shr {
         let mut lt: u32 = check_expr(c, eb, iw);
         coerce(c, ec, TY_U32);
         if failed(c) { return TY_I32; }
@@ -4615,7 +4652,7 @@ fn check_expr_inner(c: &mut Ctx, e: u32, want: u32) -> u32 {
         return TY_I32;
     }
     if k == E_UNARY {
-        if ea == P_NOT {
+        if c.^.nodes[e].op == Punct.Not {
             coerce(c, eb, TY_BOOL);
             return TY_BOOL;
         }
@@ -5165,39 +5202,41 @@ fn emit_value(c: &mut Ctx, vk: u32, a1: u32, a2: u32, a3: u32) {
 
 // --- expressions -----------------------------------------------------------
 
-fn arith_op(op: u32, signed: bool) -> u32 {
-    if op == P_ADD { return 0x6A; }
-    if op == P_SUB { return 0x6B; }
-    if op == P_MUL { return 0x6C; }
-    if op == P_DIV { if signed { return 0x6D; } return 0x6E; }
-    if op == P_MOD { if signed { return 0x6F; } return 0x70; }
-    if op == P_AND { return 0x71; }
-    if op == P_OR { return 0x72; }
-    if op == P_XOR { return 0x73; }
-    if op == P_SHL { return 0x74; }
-    if signed { return 0x75; }
-    return 0x76;
+fn arith_op(op: Punct, signed: bool) -> u32 {
+    match op {
+        Add => { return 0x6A; }
+        Sub => { return 0x6B; }
+        Mul => { return 0x6C; }
+        Div => { if signed { return 0x6D; } return 0x6E; }
+        Mod => { if signed { return 0x6F; } return 0x70; }
+        And => { return 0x71; }
+        Or => { return 0x72; }
+        Xor => { return 0x73; }
+        Shl => { return 0x74; }
+        _ => { if signed { return 0x75; } return 0x76; }
+    }
 }
 
-fn cmp_opcode(op: u32, signed: bool) -> u32 {
-    if op == P_EQEQ { return 0x46; }
-    if op == P_NE { return 0x47; }
-    if op == P_LT { if signed { return 0x48; } return 0x49; }
-    if op == P_GT { if signed { return 0x4A; } return 0x4B; }
-    if op == P_LE { if signed { return 0x4C; } return 0x4D; }
-    if signed { return 0x4E; }
-    return 0x4F;
+fn cmp_opcode(op: Punct, signed: bool) -> u32 {
+    match op {
+        EqEq => { return 0x46; }
+        Ne => { return 0x47; }
+        Lt => { if signed { return 0x48; } return 0x49; }
+        Gt => { if signed { return 0x4A; } return 0x4B; }
+        Le => { if signed { return 0x4C; } return 0x4D; }
+        _ => { if signed { return 0x4E; } return 0x4F; }
+    }
 }
 
 fn emit_binary(c: &mut Ctx, e: u32) {
-    let op: u32 = c.^.nodes[e].a;
+    let op: Punct = c.^.nodes[e].op;
     let eb: u32 = c.^.nodes[e].b;
     let ec: u32 = c.^.nodes[e].c;
-    if op == P_ANDAND || op == P_OROR {
+    if op == Punct.AndAnd || op == Punct.OrOr {
         emit_expr(c, eb);
         b_blocked(c, OP_IF, TYPE_I32);
         ctrl_push(c, CTRL_IF);
-        if op == P_ANDAND {
+        if op == Punct.AndAnd {
             emit_expr(c, ec);
             b_op(c, OP_ELSE);
             b_i32const(c, 0);
@@ -5252,7 +5291,7 @@ fn emit_expr(c: &mut Ctx, e: u32) {
     }
     if k == E_CAST { emit_expr(c, ea); return; }
     if k == E_UNARY {
-        if ea == P_NOT {
+        if c.^.nodes[e].op == Punct.Not {
             emit_expr(c, eb);
             b_op(c, OP_I32_EQZ);
             return;
@@ -5490,7 +5529,7 @@ fn emit_match(c: &mut Ctx, s: u32) {
                 b_mem(c, OP_I32_LOAD, 2);
             }
             b_i32const(c, tag);
-            b_op(c, cmp_opcode(P_EQEQ, false));
+            b_op(c, cmp_opcode(Punct.EqEq, false));
             let mut alt: u32 = c.^.nodes[arm].aux2;
             for alt != 0 {
                 let av: u32 = c.^.nodes[alt].aux;
@@ -5502,7 +5541,7 @@ fn emit_match(c: &mut Ctx, s: u32) {
                     b_mem(c, OP_I32_LOAD, 2);
                 }
                 b_i32const(c, atag);
-                b_op(c, cmp_opcode(P_EQEQ, false));
+                b_op(c, cmp_opcode(Punct.EqEq, false));
                 b_op(c, OP_I32_OR);
                 alt = c.^.nodes[alt].next;
             }
@@ -5554,8 +5593,8 @@ fn emit_stmt(c: &mut Ctx, s: u32) {
     }
 
     if k == S_ASSIGN {
-        let op: u32 = sb;
-        if op == P_EQ {
+        let op: Punct = c.^.nodes[s].op;
+        if op == Punct.Eq {
             if is_agg_lit(c, sc) {
                 let ta: u32 = temp(c);
                 emit_addr(c, sa);
@@ -5567,7 +5606,7 @@ fn emit_stmt(c: &mut Ctx, s: u32) {
             emit_store_to(c, sa, 0, sc, 0, 0);
             return;
         }
-        let base: u32 = assign_base_op(op);
+        let base: Punct = assign_base_op(op);
         let ty: u32 = place_ty(c, sa);
         let rt: u32 = read_ty(c, ty);
         let signed: bool = ty_kind(c, rt) == TYK_I32;
@@ -5961,7 +6000,9 @@ fn compile(src_len_in: u32) -> i32 {
 
         // There can be no more tokens than source bytes, plus one for eof.
         let ntok_max: u32 = src_len_in + 1;
-        let tok_bytes: u32 = ntok_max * 28;
+        // sizeof(Token). cool0 has no sizeof, so the number lives next to the
+        // struct it measures -- getting it wrong overlaps the next arena
+        let tok_bytes: u32 = ntok_max * SIZEOF_TOKEN;
 
         // This is the boundary. Below it every access is bounds-checked.
         let mut c: Ctx = Ctx{
@@ -6042,7 +6083,7 @@ fn compile(src_len_in: u32) -> i32 {
             let nmax: u32 = c.ntok + 2;
             c.nodes = slice_mut(c.heap as *Node, nmax);
             let nodes_at: u32 = c.heap;
-            c.heap = c.heap + nmax * 52;
+            c.heap = c.heap + nmax * SIZEOF_NODE;
             if !heap_fits(&c) { e_too_large(&mut c); }
             if c.err == 0 { parse_program(&mut c); }
             stw(G_NODES, nodes_at);

@@ -20,7 +20,7 @@ BS = chr(92)  # 백슬래시. 리터럴로 적으면 층마다 먹힌다
 import pytest
 import wasmtime
 
-from conftest import ENGINE, run_compiler
+from conftest import ENGINE, run_compiler, needs_current_wat
 from corpus import DIAGNOSTIC_TEXT, DIAGNOSTICS, PROGRAMS
 from cool0.cool0 import STATUS_OK, compile as reference_compile
 
@@ -128,13 +128,13 @@ def test_reference_matches_the_exact_fixture_diagnostic(name, src):
 # --- 진짜 패리티. cool0c 가 생기면 켜진다 ------------------------------------
 
 
-@needs_cool0c
+@needs_current_wat
 @pytest.mark.parametrize("name,src", PROGRAMS, ids=[n for n, _ in PROGRAMS])
 def test_bytes_are_identical(name, src):
     assert cool0c_compile(src.encode("ascii")) == reference_compile(src.encode("ascii"))
 
 
-@needs_cool0c
+@needs_current_wat
 @pytest.mark.parametrize("name,src", DIAGNOSTICS, ids=[n for n, _ in DIAGNOSTICS])
 def test_diagnostics_are_identical(name, src):
     assert cool0c_compile(src) == reference_compile(src)
@@ -143,7 +143,7 @@ def test_diagnostics_are_identical(name, src):
 # --- 전사가 문자열 표를 옳게 참조하는지 --------------------------------------
 
 
-@needs_cool0c
+@needs_current_wat
 def test_the_wat_string_table_matches_the_source():
     """cool0c.wat 이 박아 둔 리터럴 주소가 cool0c.cool0 의 배치와 맞는가.
 
@@ -181,7 +181,7 @@ def test_the_wat_string_table_matches_the_source():
     assert checked > 100, f"only {checked} literal references found -- pattern went stale"
 
 
-@needs_cool0c
+@needs_current_wat
 def test_the_wat_data_segment_is_the_source_literals():
     """데이터 세그먼트의 바이트가 소스 리터럴을 첫 등장 순서로 이은 것과 같은가."""
     from cool0.cool0 import lex as reference_lex

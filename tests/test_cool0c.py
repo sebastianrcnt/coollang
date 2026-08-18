@@ -23,7 +23,7 @@ G_ERR = 0x0014
 G_NTOK = 0x002C
 G_TOKS = 0x0030
 SRC_ADDR = 0x1000
-TOK_SIZE = 28  # struct Token 은 u32 일곱 개다 (implementation.md §2)
+TOK_SIZE = 32  # kind start len value line col aux punct
 
 KIND_NAME = {0: "eof", 1: "ident", 2: "int", 3: "char", 4: "str", 5: "kw", 6: "punct"}
 
@@ -72,13 +72,14 @@ class Cool0c:
             kind = self.u32(t)
             start, ln, value = self.u32(t + 4), self.u32(t + 8), self.u32(t + 12)
             line, col, aux = self.u32(t + 16), self.u32(t + 20), self.u32(t + 24)
+            punct = self.u32(t + 28)
             name = KIND_NAME[kind]
             if name in ("ident",):
                 v = self.read(SRC_ADDR + start, ln).decode("ascii")
             elif name == "kw":
                 v = KEYWORDS[value]
             elif name == "punct":
-                v = PUNCT[value]
+                v = PUNCT[punct]
             elif name == "str":
                 v = self.read(value, aux)
             elif name in ("int", "char"):
@@ -197,9 +198,10 @@ NK = {
     50: "fn", 51: "struct", 52: "enum", 53: "const", 54: "param", 55: "field",
     56: "variant",
 }
-NODE_SIZE = 52
+NODE_SIZE = 56
 F = {"KIND": 0, "LINE": 4, "COL": 8, "A": 12, "B": 16, "C": 20, "D": 24,
-     "E": 28, "NEXT": 32, "TY": 36, "AUX": 40, "AUX2": 44, "DEPTH": 48}
+     "E": 28, "NEXT": 32, "TY": 36, "AUX": 40, "AUX2": 44, "DEPTH": 48,
+     "OP": 52}  # 연산자는 이제 Punct 라 자기 필드에 있다
 
 
 class Dump:
@@ -257,9 +259,9 @@ class Dump:
         if k == "ident":
             return f"(ident {p} {d} {self.name(n)})"
         if k == "unary":
-            return f"(unary {p} {d} {PUNCT[self.f(n, 'A')]} {self.ex(self.f(n, 'B'))})"
+            return f"(unary {p} {d} {PUNCT[self.f(n, 'OP')]} {self.ex(self.f(n, 'B'))})"
         if k == "binary":
-            return (f"(binary {p} {d} {PUNCT[self.f(n, 'A')]} "
+            return (f"(binary {p} {d} {PUNCT[self.f(n, 'OP')]} "
                     f"{self.ex(self.f(n, 'B'))} {self.ex(self.f(n, 'C'))})")
         if k == "borrow":
             return f"(borrow {p} {d} {self.f(n, 'A')} {self.ex(self.f(n, 'B'))})"
@@ -299,7 +301,7 @@ class Dump:
             return (f"(let {p} {self.f(n, 'E')} {self.name(n)} "
                     f"{self.ty(self.f(n, 'C'))} {self.ex(self.f(n, 'D'))})")
         if k == "assign":
-            return (f"(assign {p} {PUNCT[self.f(n, 'B')]} "
+            return (f"(assign {p} {PUNCT[self.f(n, 'OP')]} "
                     f"{self.ex(self.f(n, 'A'))} {self.ex(self.f(n, 'C'))})")
         if k == "expr":
             return f"(expr {p} {self.ex(self.f(n, 'A'))})"
@@ -323,7 +325,10 @@ class Dump:
         raise AssertionError(k)
 
     def arm(self, n: int) -> str:
-        v = "_" if self.f(n, "E") else self.name(n)
+        # `A | B` 는 첫 이름이 A/B 필드에, 나머지가 AUX2 의 S_ALT 목록에 있다
+        v = "_" if self.f(n, "E") else "|".join(
+            [self.name(n)] + self.lst(self.f(n, "AUX2"), self.name)
+        )
         binds = " ".join(self.lst(self.f(n, "C"), lambda b: self.name(b)))
         return f"(arm {self.pos(n)} {v} [{binds}] {self.block(self.f(n, 'D'))})"
 
