@@ -564,7 +564,7 @@ class Return(Node):
 @dataclass
 class Arm(Node):
     pos: tuple
-    variant: Optional[str]  # None 이면 `_`
+    variants: list  # 빈 목록이면 `_`. 둘 이상이면 `A | B` (language.md §6)
     binds: list  # [(pos, name)]
     body: list
 
@@ -916,9 +916,9 @@ class Parser:
             apos = self.tok.pos
             if self.tok.kind == "ident" and self.tok.text == "_":
                 self.i += 1
-                variant, binds = None, []
+                variants, binds = [], []
             else:
-                variant = self.expect_ident().text
+                variants = [self.expect_ident().text]
                 binds = []
                 if self.eat("("):
                     while not self.at(")"):
@@ -927,8 +927,12 @@ class Parser:
                         if not self.eat(","):
                             break
                     self.expect(")")
+                else:
+                    # `A | B | C` -- 페이로드가 없는 배리언트끼리만 이을 수 있다
+                    while self.eat("|"):
+                        variants.append(self.expect_ident().text)
             self.expect("=>")
-            arms.append(Arm(apos, variant, binds, self.parse_block()))
+            arms.append(Arm(apos, variants, binds, self.parse_block()))
         self.expect("}")
         return Match(pos, scrutinee, arms)
 
@@ -1125,6 +1129,7 @@ class EnumInfo:
     size: int
     align: int
     index: dict  # name -> VariantInfo
+    scalar: bool  # 페이로드가 하나도 없으면 태그가 곧 값이다 (language.md §3)
 
 
 @dataclass
@@ -1199,6 +1204,12 @@ class Checker:
 
     def run(self):
         # 1패스: 선언 수집. 최상위는 순서에 상관없다 (language.md §4)
+        # 어떤 enum 이 스칼라인지는 문법만 보면 안다 -- 배치를 계산하기 전에
+        # 먼저 적어 둔다. struct 필드나 enum 페이로드가 그것을 이름으로 쓸 수 있다
+        self.scalar_enums = {
+            d.name for d in self.decls
+            if isinstance(d, EnumDecl) and all(not v[2] for v in d.variants)
+        }
         struct_decls, enum_decls, const_decls, fn_decls = [], [], [], []
         for d in self.decls:
             self.claim(d.name, d.pos)
@@ -1249,6 +1260,9 @@ class Checker:
             return Ptr(self.resolve_ty(t.inner))
         raise AssertionError(t.kind)  # pragma: no cover
 
+    def scalar_enum(self, t: Ty) -> bool:
+        return isinstance(t, Named) and t.name in self.scalar_enums
+
     def size_of(self, t: Ty) -> int:
         if t in (I32, U32):
             return 4
@@ -1259,6 +1273,8 @@ class Checker:
         if isinstance(t, (Ref, Ptr)):
             return 4
         if isinstance(t, Named):
+            if t.name in self.scalar_enums:
+                return 4
             return self.agg(t.name).size
         raise AssertionError(ty_str(t))  # pragma: no cover
 
@@ -1268,15 +1284,27 @@ class Checker:
         if t in (BOOL, U8):
             return 1
         if isinstance(t, Named):
+            if t.name in self.scalar_enums:
+                return 4
             return self.agg(t.name).align
         raise AssertionError(ty_str(t))  # pragma: no cover
 
     def agg(self, name: str):
         return self.structs.get(name) or self.enums[name]
 
+    def is_agg(self, t: Ty) -> bool:
+        """메모리에만 사는 타입인가.
+
+        페이로드가 하나도 없는 enum 은 태그가 곧 값이라 wasm 값 하나에 들어간다.
+        그래서 지역변수·매개변수·반환·필드·비교에 그냥 쓸 수 있다 (language.md §3).
+        """
+        if not isinstance(t, Named):
+            return False
+        return t.name not in self.scalar_enums
+
     def check_field_ty(self, t: Ty, pos, what: str):
         """필드·페이로드 타입 제약 (language.md §4): 집합체와 대여는 담을 수 없다."""
-        if is_aggregate(t):
+        if self.is_agg(t):
             raise _err(pos, f"{what} cannot have aggregate type `{ty_str(t)}`")
         if isinstance(t, Ref):
             raise _err(pos, f"{what} cannot have borrow type `{ty_str(t)}`")
@@ -1328,8 +1356,9 @@ class Checker:
         for v in variants:
             v.payload = [FieldInfo(f.name, f.ty, f.off + 4) for f in v.payload]
         size = align_up(4 + slot, 4)
+        scalar = all(not v.payload for v in variants)
         self.enums[d.name] = EnumInfo(
-            d.name, variants, size, 4, {v.name: v for v in variants}
+            d.name, variants, size, 4, {v.name: v for v in variants}, scalar
         )
 
     def declare_const(self, d: ConstDecl):
@@ -1481,13 +1510,13 @@ class Checker:
                 raise _err(pos, f"duplicate parameter `{name}`")
             seen.add(name)
             t = self.resolve_ty(tn)
-            if is_aggregate(t):
+            if self.is_agg(t):
                 raise _err(pos, f"cannot pass aggregate `{ty_str(t)}` by value")
             if t is U8:
                 raise _err(pos, "`u8` is storage-only; use `u32`")
             params.append((name, t))
         ret = self.resolve_ty(d.ret) if d.ret else VOID
-        if is_aggregate(ret):
+        if self.is_agg(ret):
             raise _err(d.ret.pos, f"cannot return aggregate `{ty_str(ret)}` by value")
         if isinstance(ret, Slice):
             raise _err(d.ret.pos, "cannot return a slice (wasm 1.0 has a single result)")
@@ -1642,34 +1671,53 @@ class Checker:
             raise _err(pos, "local cannot have type `void`")
 
     def check_match(self, s: Match):
-        ty, _, _ = self.check_place(s.scrutinee)
+        # 스칼라 enum 은 값이라 장소일 필요가 없다. 페이로드가 있는 enum 은
+        # 태그를 읽고 바인딩을 꺼내야 하므로 여전히 주소가 필요하다
+        probe = self.probe_ty(s.scrutinee)
+        s.scalar = isinstance(probe, Named) and probe.name in self.enums \
+            and self.enums[probe.name].scalar
+        if s.scalar:
+            ty = self.check_expr(s.scrutinee, None)
+        else:
+            ty, _, _ = self.check_place(s.scrutinee)
         if not (isinstance(ty, Named) and ty.name in self.enums):
             raise _err(s.pos, f"`match` requires an enum, found `{ty_str(ty)}`")
         info = self.enums[ty.name]
         s.enum_info = info
+        s.scalar = info.scalar
         seen = set()
         has_wild = False
         for i, arm in enumerate(s.arms):
-            if arm.variant is None:
+            if not arm.variants:
                 if i != len(s.arms) - 1:
                     raise _err(arm.pos, "`_` must be the last arm")
                 has_wild = True
-                arm.variant_info = None
+                arm.variant_infos = []
                 self.push_scope()
                 self.check_block(arm.body)
                 self.scopes.pop()
                 continue
-            if arm.variant not in info.index:
-                raise _err(arm.pos, f"`{ty.name}` has no variant `{arm.variant}`")
-            if arm.variant in seen:
-                raise _err(arm.pos, f"duplicate arm for `{arm.variant}`")
-            seen.add(arm.variant)
-            v = info.index[arm.variant]
-            arm.variant_info = v
+            arm.variant_infos = []
+            for name in arm.variants:
+                if name not in info.index:
+                    raise _err(arm.pos, f"`{ty.name}` has no variant `{name}`")
+                if name in seen:
+                    raise _err(arm.pos, f"duplicate arm for `{name}`")
+                seen.add(name)
+                arm.variant_infos.append(info.index[name])
+            if len(arm.variants) > 1:
+                # `A | B` 는 꺼낼 것이 없을 때만 뜻이 있다 (language.md §6)
+                for v in arm.variant_infos:
+                    if v.payload:
+                        raise _err(
+                            arm.pos,
+                            f"`|` cannot join `{v.name}`, which carries a payload",
+                        )
+            v = arm.variant_infos[0]
             if len(arm.binds) != len(v.payload):
                 raise _err(
                     arm.pos,
-                    f"variant `{arm.variant}` takes {len(v.payload)} binding(s), "
+                    f"variant `{v.name}` takes {len(v.payload)} binding(s), "
                     f"found {len(arm.binds)}",
                 )
             self.push_scope()
@@ -1684,23 +1732,42 @@ class Checker:
             missing = [v.name for v in info.variants if v.name not in seen]
             raise _err(s.pos, f"non-exhaustive match: missing `{missing[0]}`")
         s.has_wild = has_wild
+        s.covered = len(seen)
 
     # --- 식 ---------------------------------------------------------------
 
     def check_init(self, e: Node, want: Optional[Ty]) -> Ty:
         """let 초기화·대입 우변. 여기서만 집합체 리터럴이 허용된다 (language.md §5)."""
+        if self.scalar_enum_lit(e) is not None:
+            return self.coerce(e, want) if want is not None else self.check_expr(e, None)
         if isinstance(e, StructLit):
             return self.check_struct_lit(e, want)
         if self.is_enum_lit(e):
             return self.check_enum_lit(e, want)
-        if want is not None and not is_aggregate(want):
+        if want is not None and not self.is_agg(want):
             return self.coerce(e, want)
         t = self.check_expr(e, want)
-        if is_aggregate(t):
+        if self.is_agg(t):
             raise _err(e.pos, f"cannot copy aggregate `{ty_str(t)}`")
         if want is not None and t != want:
             raise _err(e.pos, f"expected `{ty_str(want)}`, found `{ty_str(t)}`")
         return t
+
+    def scalar_enum_lit(self, e: Node) -> Optional[tuple]:
+        """`E.A` 에서 E 가 스칼라 enum이면 (EnumInfo, VariantInfo). 아니면 None.
+
+        스칼라 enum의 리터럴은 태그 하나이므로 값이다. 초기화식 자리에만 둘 이유가
+        없다 -- 반환·인자·비교 어디에나 온다 (language.md §5).
+        """
+        if not isinstance(e, Field) or not isinstance(e.base, Ident):
+            return None
+        info = self.enums.get(e.base.name)
+        if info is None or not info.scalar:
+            return None
+        v = info.index.get(e.name)
+        if v is None:
+            raise _err(e.pos, f"`{info.name}` has no variant `{e.name}`")
+        return info, v
 
     def is_enum_lit(self, e: Node) -> bool:
         base = e.callee if isinstance(e, Call) else e
@@ -1869,6 +1936,12 @@ class Checker:
             return self.check_call(e)
 
         if isinstance(e, (Index, Field, Deref)):
+            if isinstance(e, Field):
+                lit = self.scalar_enum_lit(e)
+                if lit is not None:
+                    info, v = lit
+                    e.scalar_tag = v.tag
+                    return Named(info.name)
             if isinstance(e, Field) and self.is_enum_lit(e):
                 raise _err(e.pos, "enum literal is only allowed as an initializer")
             if isinstance(e, Field):
@@ -1878,7 +1951,7 @@ class Checker:
                     e.slice_field = field
                     return U32 if field == "len" else Ptr(bt.elem)
             ty, _, _ = self.check_place(e)
-            if is_aggregate(ty):
+            if self.is_agg(ty):
                 return ty  # 장소로만 쓰인다. 상위에서 거른다
             return read_ty(ty)
 
@@ -1958,6 +2031,8 @@ class Checker:
         if lt != rt:
             raise _err(pos, f"`{op}`: `{ty_str(lt)}` and `{ty_str(rt)}` do not match")
         if op in ("==", "!="):
+            if self.scalar_enum(lt):
+                return
             if not (lt in (I32, U32, BOOL) or isinstance(lt, Ptr)):
                 raise _err(pos, f"cannot compare `{ty_str(lt)}`")
             return
@@ -2156,7 +2231,7 @@ def diverges(stmts: list) -> bool:
             if s.cond is None and not has_break(s.body):
                 return True
         elif isinstance(s, Match):
-            if (s.has_wild or len(s.arms) == len(s.enum_info.variants)) and all(
+            if (s.has_wild or s.covered == len(s.enum_info.variants)) and all(
                 diverges(a.body) for a in s.arms
             ):
                 return True
@@ -2201,6 +2276,7 @@ OP_I32_STORE, OP_I32_STORE8 = 0x36, 0x3A
 OP_I32_CONST = 0x41
 OP_I32_EQZ = 0x45
 OP_I32_ADD, OP_I32_SUB, OP_I32_MUL = 0x6A, 0x6B, 0x6C
+OP_I32_OR = 0x72
 TYPE_I32 = 0x7F
 BLOCK_VOID = 0x40
 
@@ -2404,7 +2480,7 @@ class Emitter:
         for loc in fb.locals:
             if loc.is_param:
                 continue
-            if is_aggregate(loc.ty) or loc.addr_taken:
+            if self.ck.is_agg(loc.ty) or loc.addr_taken:
                 continue
             loc.slot = slot
             slot += slot_count(loc.ty)
@@ -2413,7 +2489,7 @@ class Emitter:
         # 섀도 프레임: 선언 순서대로, 각자 자기 정렬로
         off, align = 0, 4
         for loc in fb.locals:
-            if not (is_aggregate(loc.ty) or loc.addr_taken):
+            if not (self.ck.is_agg(loc.ty) or loc.addr_taken):
                 continue
             a = ck.align_of(loc.ty)
             off = align_up(off, a)
@@ -2572,6 +2648,10 @@ class Emitter:
     # --- 식 ---------------------------------------------------------------
 
     def emit_expr(self, e: Node):
+        tag = getattr(e, "scalar_tag", None)
+        if tag is not None:
+            self.b.i32const(tag)
+            return
         if isinstance(e, Int):
             self.b.i32const(e.value)
             return
@@ -2886,24 +2966,32 @@ class Emitter:
     def emit_match(self, s: Match):
         b = self.b
         ta = self.temp()
-        self.emit_addr(s.scrutinee)
+        if s.scalar:
+            # 태그가 곧 값이다. 주소도 적재도 없다
+            self.emit_expr(s.scrutinee)
+        else:
+            self.emit_addr(s.scrutinee)
         b.idx(OP_LOCAL_SET, ta)
         b.op(OP_BLOCK, BLOCK_VOID)
         b.push("match")
         for arm in s.arms:
-            if arm.variant is None:
+            if not arm.variants:
                 self.emit_block(arm.body)
                 continue
-            v = arm.variant_info
-            b.idx(OP_LOCAL_GET, ta)
-            b.i32const(0)
-            b.op(OP_I32_ADD)
-            b.mem(OP_I32_LOAD, 2)
-            b.i32const(v.tag)
-            b.op(CMP_OPCODE[("==", False)])
+            v = arm.variant_infos[0]
+            for j, vi in enumerate(arm.variant_infos):
+                b.idx(OP_LOCAL_GET, ta)
+                if not s.scalar:
+                    b.i32const(0)
+                    b.op(OP_I32_ADD)
+                    b.mem(OP_I32_LOAD, 2)
+                b.i32const(vi.tag)
+                b.op(CMP_OPCODE[("==", False)])
+                if j:
+                    b.op(OP_I32_OR)
             b.op(OP_IF, BLOCK_VOID)
             b.push("if")
-            for loc, f in zip(getattr(arm, "bind_locals", []), v.payload):
+            for loc, f in zip(getattr(arm, "bind_locals", []), v.payload):  # noqa: B020
                 self.emit_store_to(
                     local_stub(loc, arm.pos),
                     lambda ta=ta, f=f: self.emit_load_at(ta, f.off, f.ty),

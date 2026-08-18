@@ -216,8 +216,8 @@ def test_break_continue_return():
 def test_match_arms():
     s = stmt("match e { A => { } B(x) => { } C(x, y) => { } _ => { } }")
     assert isinstance(s, Match)
-    assert [(a.variant, [b[1] for b in a.binds]) for a in s.arms] == [
-        ("A", []), ("B", ["x"]), ("C", ["x", "y"]), (None, []),
+    assert [(a.variants, [b[1] for b in a.binds]) for a in s.arms] == [
+        (["A"], []), (["B"], ["x"]), (["C"], ["x", "y"]), ([], []),
     ]
 
 

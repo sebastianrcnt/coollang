@@ -451,7 +451,7 @@ class RefDump:
         if isinstance(s, Match):
             arms = []
             for a in s.arms:
-                v = a.variant if a.variant is not None else "_"
+                v = "|".join(a.variants) if a.variants else "_"
                 binds = " ".join(b[1] for b in a.binds)
                 arms.append(
                     f"(arm {a.pos[0]} {a.pos[1]} {v} [{binds}] {self.block(a.body)})"

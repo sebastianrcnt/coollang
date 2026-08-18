@@ -1,2 +1,4 @@
-// expect: error 2:36: enum literal is only allowed as an initializer
+// expect: error 4:33: `+` requires `i32` or `u32`, found `E`
+// E has no payloads, so E.A is a value now (language.md S3) -- the
+// complaint is the type, not the position
 enum E { A } fn f() { let x = 1 + E.A; }
