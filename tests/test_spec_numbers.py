@@ -1,0 +1,154 @@
+"""명세에 적힌 숫자가 코드와 같은지.
+
+`implementation.md` 는 주소와 한계를 본문에 **숫자로** 적는다. 그 숫자들이 코드에서
+따로 살고 있어서, 한 번은 `S1` 을 `0x0080_0000` 에서 `0x00E0_0000` 으로 옮기고도
+문서를 안 고쳤다. 그 뒤 문서를 읽고 쓴 이슈가 "천장 289 KB" 라는 틀린 전제 위에
+서게 됐다 -- 실제로는 434 KB 였다. 아무 시험도 안 빨개졌다.
+
+여기서 대조하는 것은 **문서에 실제로 적힌 문자열**이다. 상수를 문서에서 읽어와
+비교하는 게 아니라, 문서에 그 숫자가 그렇게 쓰여 있는지를 본다. 그래야 상수를
+바꾸면 이 시험이 빨개지고, 고치는 방법이 문서를 여는 것밖에 없다.
+
+파일 크기처럼 커밋마다 흔들리는 숫자는 여기 넣지 않는다. 그런 건 문서에도
+숫자로 안 적혀 있어야 한다.
+"""
+
+from __future__ import annotations
+
+import pathlib
+import re
+
+import pytest
+
+from cool0.cool0 import (
+    BOOTSTRAP_SCRATCH,
+    MEM_PAGES,
+    SHADOW_FLOOR,
+    SHADOW_TOP,
+    SRC_ADDR,
+    STATUS_OK,
+    compile as reference_compile,
+)
+from test_limits import COLLISION, padded
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+SPEC = ROOT / "src" / "cool0" / "spec" / "implementation.md"
+COOL0C = ROOT / "src" / "cool0" / "cool0c.cool0"
+
+TEXT = SPEC.read_text("utf-8")
+# 문서는 80칸에서 접히므로 인용된 문구가 줄바꿈을 품는다. 찾을 때는 편다.
+FLAT = re.sub(r"\s+", " ", TEXT)
+
+
+def hexes(n: int) -> list[str]:
+    """cool0 와 wat 과 문서가 주소를 적는 방식들."""
+    return [f"0x{n:08X}", f"0x{n:08x}", f"0x{n >> 16:04X}_{n & 0xFFFF:04X}",
+            f"0x{n >> 16:04x}_{n & 0xFFFF:04x}", hex(n), f"0x{n:X}"]
+
+
+def spec_mentions(n: int) -> bool:
+    return any(h in TEXT for h in hexes(n))
+
+
+@pytest.mark.parametrize(
+    "name, value",
+    [
+        ("SRC_ADDR", SRC_ADDR),
+        ("S1 (BOOTSTRAP_SCRATCH)", BOOTSTRAP_SCRATCH),
+        ("SHADOW_FLOOR", SHADOW_FLOOR),
+        ("SHADOW_TOP", SHADOW_TOP),
+    ],
+)
+def test_the_spec_prints_the_address_the_code_uses(name, value):
+    """§7 메모리 지도의 주소는 코드의 상수와 같아야 한다."""
+    assert spec_mentions(value), (
+        f"{name} = {value:#010x} 인데 implementation.md 에 그 주소가 없다. "
+        f"상수를 옮겼으면 §7 의 지도와 '크기 한계' 절을 같이 고쳐라"
+    )
+
+
+def test_the_spec_does_not_still_print_the_old_scratch_address():
+    """`S1` 이 8 MiB 에 있던 시절의 주소가 남아 있으면 안 된다.
+
+    이 한 줄이 이슈 하나를 틀린 전제 위에 세웠다.
+    """
+    assert not spec_mentions(0x0080_0000), (
+        "implementation.md 에 옛 S1 주소 0x0080_0000 이 남아 있다"
+    )
+
+
+def test_the_spec_prints_the_page_count_the_code_emits():
+    """`min = max = 512` -- 내보내는 모듈의 메모리 크기."""
+    assert re.search(rf"min = max = {MEM_PAGES}\b", TEXT), (
+        f"MEM_PAGES = {MEM_PAGES} 인데 §4 표가 그렇게 안 적고 있다"
+    )
+    assert f"{MEM_PAGES * 64 // 1024} MiB" in TEXT
+
+
+def test_the_spec_prints_the_size_limit_that_the_oracle_actually_enforces():
+    """§7 이 적은 '받아들여지는 가장 큰 소스' 가 진짜 경계여야 한다.
+
+    문서의 숫자를 읽어서 그 길이를 실제로 컴파일해 본다. 한 바이트 위는 거절돼야
+    한다 -- 안 그러면 문서가 경계를 잘못 적은 것이다.
+    """
+    m = re.search(r"받아들여지는 가장 큰 소스는 \*\*([\d,]+)\s*\n?바이트\*\*", TEXT)
+    assert m, "§7 '크기 한계' 에서 경계 바이트 수를 못 찾았다"
+    stated = int(m.group(1).replace(",", ""))
+
+    assert reference_compile(padded(stated))[0] == STATUS_OK, (
+        f"문서가 {stated:,} 바이트까지 된다는데 오라클이 거절한다"
+    )
+    assert reference_compile(padded(stated + 1))[0] != STATUS_OK, (
+        f"문서가 경계를 {stated:,} 로 적었는데 그보다 더 큰 소스도 받아들여진다"
+    )
+    assert stated < COLLISION, "경계는 토큰 아레나만의 천장보다 아래여야 한다"
+
+
+def test_the_spec_is_right_that_exactly_one_function_needs_a_frame():
+    """§6 의 주장: `cool0c.cool0` 에서 프레임을 쓰는 함수는 `compile` 뿐이다.
+
+    이건 숫자가 아니라 **구조에 대한 주장**이고, 그래서 조용히 틀려질 수 있다.
+    집합체 지역변수 하나나 `&x` 하나가 새로 생기면 프레임이 하나 더 는다. 그때
+    §6 의 '재귀는 깊이 한계가 지킨다' 는 설명도 같이 흔들린다.
+    """
+    from cool0 import cool0 as c0
+
+    framed: list[str] = []
+    original = c0.Emitter.assign_storage
+
+    def watched(self, fb):
+        original(self, fb)
+        if fb.frame_size:
+            framed.append(fb.info.name)
+
+    c0.Emitter.assign_storage = watched
+    try:
+        status, out = c0.compile(COOL0C.read_bytes())
+    finally:
+        c0.Emitter.assign_storage = original
+
+    assert status == STATUS_OK, out.decode("ascii", "replace")
+    assert framed == ["compile"], (
+        f"프레임을 쓰는 함수가 {framed} 다. §6 은 `compile` 하나뿐이라고 적고 있다"
+    )
+
+
+@pytest.mark.parametrize(
+    "quoted",
+    [
+        "program is too large for the compiler's memory",
+        "string literals do not fit below the shadow stack",
+        "expression nests too deeply",
+        "block nests too deeply",
+        "type nests too deeply",
+    ],
+)
+def test_every_diagnostic_the_spec_quotes_exists_in_the_oracle(quoted):
+    """문서가 진단 문구를 인용하면 그 문구가 실제로 나와야 한다.
+
+    한 번은 문서에 `expression is too deep` 이라고 적었는데 오라클은
+    `expression nests too deeply` 를 냈다. 인용부호 안은 사양이지 요약이 아니다.
+    """
+    assert quoted in FLAT, f"이 시험이 문서에 없는 문구를 지키고 있다: {quoted}"
+    source = (ROOT / "src" / "cool0" / "cool0.py").read_text("utf-8")
+    assert quoted in source, f"문서가 인용한 진단이 cool0.py 에 없다: {quoted}"
