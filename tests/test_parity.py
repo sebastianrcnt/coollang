@@ -13,9 +13,11 @@ cool0c.wat 을 wat2wasm 없이 wasmtime 이 바로 읽는다. 신뢰 사슬의 w
 from __future__ import annotations
 
 import pathlib
+import random
 import re
 
 BS = chr(92)  # 백슬래시. 리터럴로 적으면 층마다 먹힌다
+NL = chr(10).encode()
 
 import pytest
 import wasmtime
@@ -234,3 +236,135 @@ def test_the_wat_data_segment_is_the_source_literals():
     assert bytes(out) == bytes(blob), (
         f"data segment is {len(out)} bytes, source literals are {len(blob)}"
     )
+
+
+# --- 무작위 입력으로 견주기 ---------------------------------------------------
+#
+# 위의 말뭉치는 손으로 고른 40 개다. 손으로 쓴 WAT 은 그것과 `cool0c.cool0` 자신
+# 으로만 검증됐다는 뜻이고, 진단 갈래는 대부분 한 번도 안 지나갔다. 여기서는
+# test_fuzz.py 의 생성기 셋을 **오라클이 아니라 WAT 에** 먹인다.
+#
+# 인스턴스는 하나를 재사용한다 (conftest 의 `Compiler`). 매번 새로 만들면 20 배
+# 비싸서 표본 수를 못 늘린다. 재사용해도 같은 답이 나와야 한다는 것 자체가
+# 검사할 값어치가 있다 -- 위의 말뭉치 시험은 매번 새 인스턴스로 도니 둘 다 덮인다.
+
+VALID_SAMPLE = (
+    b"struct P { x: i32, y: u8 }" + NL
+    + b"enum E { A, B(i32) }" + NL
+    + b"const K: u32 = 3;" + NL
+    + b"fn f(s: []mut u8) -> u32 {" + NL
+    + b"  let mut p: P = P{ x: 1, y: 2 };" + NL
+    + b"  for let mut i: u32 = 0; i < K; i += 1 { s[i] = 65; }" + NL
+    + b"  let e: E = E.B(7);" + NL
+    + b"  match e { A => { } B(n) => { p.x = n; } }" + NL
+    + b"  unsafe { let q: *u32 = 16 as *u32; q.^ = 1; }" + NL
+    + b"  return s.len;" + NL
+    + b"}" + NL
+)
+
+
+@pytest.fixture(scope="module")
+def wat():
+    from conftest import Compiler
+
+    return Compiler(WASM)
+
+
+def differ(wat, sources):
+    """어긋난 첫 표본을 사람이 읽을 수 있는 모양으로. 없으면 None."""
+    for src in sources:
+        try:
+            got = wat.compile(src)
+        except Exception as e:  # 트랩도 어긋남이다  # noqa: BLE001
+            return f"{type(e).__name__} on {src[:200]!r}"
+        want = reference_compile(src)
+        if got != want:
+            return (f"{src[:400]!r}" + chr(10)
+                    + f"  wat {got[0]} {got[1][:120]!r}" + chr(10)
+                    + f"  ref {want[0]} {want[1][:120]!r}")
+    return None
+
+
+@needs_current_wat
+def test_random_bytes_get_the_same_answer(wat):
+    rng = random.Random(0xFACE)
+    assert not differ(wat, (
+        bytes(rng.randrange(256) for _ in range(rng.randrange(64)))
+        for _ in range(400)
+    ))
+
+
+@needs_current_wat
+def test_random_ascii_gets_the_same_answer(wat):
+    rng = random.Random(0xFACF)
+    alphabet = b"abcXYZ_019 \t" + NL + b"(){}[],;:.=<>+-*/%&|^!'" + chr(34).encode() + BS.encode() + b"#@"
+    assert not differ(wat, (
+        bytes(rng.choice(alphabet) for _ in range(rng.randrange(80)))
+        for _ in range(400)
+    ))
+
+
+@needs_current_wat
+def test_token_soup_gets_the_same_answer(wat):
+    """어휘 분석은 통과하되 문법은 엉망인 것들. 파서의 오류 경로를 훑는다."""
+    rng = random.Random(0xFAD0)
+    toks = """fn struct enum const let mut if else for break continue return match
+              unsafe as true false slice slice_mut offset i32 u32 bool u8 x y z
+              0 1 0xFF ( ) { } [ ] , ; : . = == != < > <= >= + - * / % & | ^ !
+              && || << >> -> =>""".split()
+    assert not differ(wat, (
+        " ".join(rng.choice(toks) for _ in range(rng.randrange(40))).encode("ascii")
+        for _ in range(400)
+    ))
+
+
+@needs_current_wat
+def test_every_prefix_of_a_valid_program_gets_the_same_answer(wat):
+    """조기 종료 경로. 잘린 자리마다 다른 진단이 나온다."""
+    assert not differ(wat, (VALID_SAMPLE[:i] for i in range(len(VALID_SAMPLE) + 1)))
+
+
+@needs_current_wat
+def test_single_byte_mutations_get_the_same_answer(wat):
+    rng = random.Random(0xFAD1)
+
+    def mutated():
+        for _ in range(300):
+            m = bytearray(VALID_SAMPLE)
+            m[rng.randrange(len(m))] = rng.randrange(256)
+            yield bytes(m)
+
+    assert not differ(wat, mutated())
+
+
+@needs_current_wat
+def test_generated_scalar_programs_get_the_same_answer(wat):
+    from test_fuzz import ProgramGen
+
+    gen = ProgramGen(random.Random(0xC0DE))
+    assert not differ(wat, (gen.program().encode("ascii") for _ in range(200)))
+
+
+@needs_current_wat
+def test_random_expressions_get_the_same_bytes(wat):
+    from test_fuzz import ExprGen
+
+    rng = random.Random(0x5EED)
+    gen = ExprGen(rng)
+    assert not differ(wat, (
+        ("fn f(a: i32) -> i32 { return %s; }"
+         % gen.make(4, {"a": rng.randrange(1 << 31)})[0]).encode("ascii")
+        for _ in range(200)
+    ))
+
+
+@needs_current_wat
+def test_generated_aggregate_programs_get_the_same_bytes(wat):
+    """struct, enum, match, 슬라이스, 대여, unsafe 를 다 쓰는 것들.
+
+    `RichGen` 은 이 시험이 생기기 전까지 정의만 되고 아무도 안 쓰고 있었다.
+    """
+    from test_fuzz import RichGen
+
+    gen = RichGen(random.Random(0x21CB))
+    assert not differ(wat, (gen.program().encode("ascii") for _ in range(300)))

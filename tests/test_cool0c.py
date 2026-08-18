@@ -953,6 +953,40 @@ def test_emitted_bytes_match_on_generated_programs(cc):
 
 
 @needs_cool0c
+def test_emitted_bytes_match_on_generated_aggregate_programs(cc):
+    """struct, enum, match, 슬라이스, 대여, unsafe 를 다 쓰는 것들.
+
+    `ProgramGen` 은 스칼라와 if/for 만 만든다. 그 바깥은 손으로 쓴 케이스에만
+    기대고 있었다 -- `RichGen` 은 바로 그래서 쓰였는데, 정작 아무도 안 부르고
+    있었다.
+    """
+    import random
+
+    from test_fuzz import RichGen
+
+    gen = RichGen(random.Random(0x9A66))
+    for _ in range(150):
+        b = gen.program().encode("ascii")
+        got, want = both(cc, b)
+        assert got == want, b.decode()
+
+
+@needs_cool0c
+def test_checker_agrees_on_generated_aggregate_programs(cc):
+    import random
+
+    from test_fuzz import RichGen
+
+    gen = RichGen(random.Random(0x9A67))
+    for _ in range(150):
+        b = gen.program().encode("ascii")
+        got, want = cc.compile(b), reference_compile(b)
+        assert got[0] == want[0], f"{got[1]!r} vs {want[1]!r}" + NL + b.decode()
+        if want[0] != STATUS_OK:
+            assert got[1] == want[1]
+
+
+@needs_cool0c
 def test_emitted_bytes_match_on_random_expressions(cc):
     import random
 

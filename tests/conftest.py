@@ -112,6 +112,37 @@ def run_compiler_n(compiler_wasm: bytes, sources: list[bytes]) -> tuple[int, byt
     return status, bytes(mem.read(store, ptr, ptr + length))
 
 
+class Compiler:
+    """cool0 컴파일러 하나를 인스턴스 하나로 붙들고 여러 번 부른다.
+
+    `run_compiler` 는 부를 때마다 새 스토어를 만든다. 정직하지만 20 배 비싸서
+    퍼징에는 못 쓴다. 컴파일러는 매번 `Ctx` 를 처음부터 다시 쓰므로 재사용해도
+    같은 답이 나와야 한다 -- **그것 자체가 검사할 값어치가 있는 성질이다.** 옛
+    실행이 남긴 메모리에 기대는 곳이 있으면 여기서 드러난다 (`reserve_names` 가
+    이름 해시를 손으로 0 으로 채우는 이유도 같은 것이다).
+    """
+
+    def __init__(self, wasm: bytes):
+        self.store = wasmtime.Store(ENGINE)
+        self.exports = wasmtime.Instance(
+            self.store, wasmtime.Module(ENGINE, wasm), []
+        ).exports(self.store)
+        self.memory = self.exports["memory"]
+
+    def _u32(self, addr: int) -> int:
+        return int.from_bytes(
+            bytes(self.memory.read(self.store, addr, addr + 4)), "little"
+        )
+
+    def compile(self, src: bytes) -> tuple[int, bytes]:
+        from cool0.cool0 import SRC_ADDR
+
+        self.memory.write(self.store, src, SRC_ADDR)
+        status = self.exports["compile"](self.store, len(src))
+        ptr, length = self._u32(0), self._u32(4)
+        return status, bytes(self.memory.read(self.store, ptr, ptr + length))
+
+
 def run(src: str, fn: str, *args):
     """컴파일하고, 인스턴스를 만들고, 함수 하나를 부른다."""
     return instantiate(src).call(fn, *args)
