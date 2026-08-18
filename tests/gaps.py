@@ -38,6 +38,7 @@ GAP_NAMES = [
     "join-a-variant-that-carries-a-payload", "unknown-variant-of-an-aggregate-enum",
     "aggregate-enum-literal-where-a-struct-is-wanted",
     "aggregate-enum-variant-inside-an-expression",
+    "alias-inside-a-match-expression", "alias-in-a-match-scrutinee",
 ]
 
 # fixtures/cool0/valid/ 에서 이 모듈이 맡는 이름들 (원래 gaps.py 의 GAP_PROGRAMS)

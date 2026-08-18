@@ -1,0 +1,9 @@
+// expect: error 9:35: `x` is borrowed mutably and also used in the same argument list
+// An arm of an expression-form match reads a local inside an argument list
+// (language.md S7). The alias rule was not counting inside a match once match
+// became an expression, and both implementations missed it the same way, so
+// parity did not catch it either. Splitting node kinds into per-category enums
+// made count_mentions fail to compile, which is how it surfaced.
+enum E { A, B }
+fn g(p: &mut u32, v: u32) { }
+fn f(e: E) { let mut x: u32 = 1; g(&mut x, match e { A => x, B => 0, }); }

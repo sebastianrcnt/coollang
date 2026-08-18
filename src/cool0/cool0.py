@@ -2222,11 +2222,14 @@ class Checker:
             loc = getattr(e, "local", None)
             if loc is not None:
                 visit(loc)
-        for name in ("operand", "lhs", "rhs", "base", "index", "callee", "ptr", "length"):
+        # `scrutinee` 와 `value` 는 식 형태 match 때문이다. 팔의 값도 인자 목록
+        # 안에서 지역변수를 읽을 수 있으므로 별칭 규칙이 세어야 한다 (S7).
+        for name in ("operand", "lhs", "rhs", "base", "index", "callee",
+                     "ptr", "length", "scrutinee", "value"):
             child = getattr(e, name, None)
             if isinstance(child, Node):
                 self.walk_locals(child, visit)
-        for name in ("args", "enum_args"):
+        for name in ("args", "enum_args", "arms"):
             for child in getattr(e, name, ()) or ():
                 self.walk_locals(child, visit)
         # 도달 불가. 부르는 곳이 check_aliasing 뿐이고 거기는 인자 목록만 본다.

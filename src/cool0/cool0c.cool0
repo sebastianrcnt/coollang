@@ -922,6 +922,163 @@ fn node(c: &mut Ctx, kind: NodeKind, line: u32, col: u32) -> u32 {
     return n;
 }
 
+enum ExprKind {
+    NotExpr,
+    Int,
+    Char,
+    Str,
+    Bool,
+    Ident,
+    Unary,
+    Binary,
+    Borrow,
+    Cast,
+    Call,
+    Index,
+    Field,
+    Deref,
+    StructLit,
+    LitField,
+    SliceExpr,
+    OffsetExpr,
+    MatchExpr,   // S_MATCH is a statement too; is_expr tells them apart
+}
+
+
+// Which an expression (language.md S5) a node is, if any. Exhaustive on purpose:
+// a new node kind cannot be added without being classified here.
+fn expr_kind(k: NodeKind) -> ExprKind {
+    match k {
+        E_INT => { return ExprKind.Int; }
+        E_CHAR => { return ExprKind.Char; }
+        E_STR => { return ExprKind.Str; }
+        E_BOOL => { return ExprKind.Bool; }
+        E_IDENT => { return ExprKind.Ident; }
+        E_UNARY => { return ExprKind.Unary; }
+        E_BINARY => { return ExprKind.Binary; }
+        E_BORROW => { return ExprKind.Borrow; }
+        E_CAST => { return ExprKind.Cast; }
+        E_CALL => { return ExprKind.Call; }
+        E_INDEX => { return ExprKind.Index; }
+        E_FIELD => { return ExprKind.Field; }
+        E_DEREF => { return ExprKind.Deref; }
+        E_STRUCTLIT => { return ExprKind.StructLit; }
+        E_LITFIELD => { return ExprKind.LitField; }
+        E_SLICE => { return ExprKind.SliceExpr; }
+        E_OFFSET => { return ExprKind.OffsetExpr; }
+        S_MATCH => { return ExprKind.MatchExpr; }
+        NoKind | T_PRIM | T_NAMED | T_SLICE | T_REF | T_PTR | S_LET | S_ASSIGN
+        | S_EXPR | S_IF | S_FOR | S_BREAK | S_CONTINUE | S_RETURN
+        | S_UNSAFE | S_ARM | S_BIND | S_ALT | D_FN | D_STRUCT | D_ENUM
+        | D_CONST | D_PARAM | D_FIELD | D_VARIANT
+            => { return ExprKind.NotExpr; }
+    }
+}
+
+enum StmtKind {
+    NotStmt,
+    Let,
+    Assign,
+    ExprStmt,
+    If,
+    For,
+    Break,
+    Continue,
+    Return,
+    MatchStmt,
+    Unsafe,
+    Arm,
+    Bind,
+    Alt,
+}
+
+
+// Which a statement (language.md S6) a node is, if any. Exhaustive on purpose:
+// a new node kind cannot be added without being classified here.
+fn stmt_kind(k: NodeKind) -> StmtKind {
+    match k {
+        S_LET => { return StmtKind.Let; }
+        S_ASSIGN => { return StmtKind.Assign; }
+        S_EXPR => { return StmtKind.ExprStmt; }
+        S_IF => { return StmtKind.If; }
+        S_FOR => { return StmtKind.For; }
+        S_BREAK => { return StmtKind.Break; }
+        S_CONTINUE => { return StmtKind.Continue; }
+        S_RETURN => { return StmtKind.Return; }
+        S_MATCH => { return StmtKind.MatchStmt; }
+        S_UNSAFE => { return StmtKind.Unsafe; }
+        S_ARM => { return StmtKind.Arm; }
+        S_BIND => { return StmtKind.Bind; }
+        S_ALT => { return StmtKind.Alt; }
+        NoKind | E_INT | E_CHAR | E_STR | E_BOOL | E_IDENT | E_UNARY | E_BINARY
+        | E_BORROW | E_CAST | E_CALL | E_INDEX | E_FIELD | E_DEREF
+        | E_STRUCTLIT | E_LITFIELD | E_SLICE | E_OFFSET | T_PRIM | T_NAMED
+        | T_SLICE | T_REF | T_PTR | D_FN | D_STRUCT | D_ENUM | D_CONST
+        | D_PARAM | D_FIELD | D_VARIANT => { return StmtKind.NotStmt; }
+    }
+}
+
+enum TyNodeKind {
+    NotTy,
+    Prim,
+    Named,
+    SliceOf,
+    RefOf,
+    PtrTo,
+}
+
+
+// Which a type as written (language.md S3) a node is, if any. Exhaustive on purpose:
+// a new node kind cannot be added without being classified here.
+fn ty_node_kind(k: NodeKind) -> TyNodeKind {
+    match k {
+        T_PRIM => { return TyNodeKind.Prim; }
+        T_NAMED => { return TyNodeKind.Named; }
+        T_SLICE => { return TyNodeKind.SliceOf; }
+        T_REF => { return TyNodeKind.RefOf; }
+        T_PTR => { return TyNodeKind.PtrTo; }
+        NoKind | E_INT | E_CHAR | E_STR | E_BOOL | E_IDENT | E_UNARY | E_BINARY
+        | E_BORROW | E_CAST | E_CALL | E_INDEX | E_FIELD | E_DEREF
+        | E_STRUCTLIT | E_LITFIELD | E_SLICE | E_OFFSET | S_LET | S_ASSIGN
+        | S_EXPR | S_IF | S_FOR | S_BREAK | S_CONTINUE | S_RETURN | S_MATCH
+        | S_UNSAFE | S_ARM | S_BIND | S_ALT | D_FN | D_STRUCT | D_ENUM
+        | D_CONST | D_PARAM | D_FIELD | D_VARIANT
+            => { return TyNodeKind.NotTy; }
+    }
+}
+
+enum DeclKind {
+    NotDecl,
+    Fn,
+    Struct,
+    Enum,
+    Const,
+    Param,
+    FieldDecl,
+    Variant,
+}
+
+
+// Which a top-level declaration (language.md S4) a node is, if any. Exhaustive on purpose:
+// a new node kind cannot be added without being classified here.
+fn decl_kind(k: NodeKind) -> DeclKind {
+    match k {
+        D_FN => { return DeclKind.Fn; }
+        D_STRUCT => { return DeclKind.Struct; }
+        D_ENUM => { return DeclKind.Enum; }
+        D_CONST => { return DeclKind.Const; }
+        D_PARAM => { return DeclKind.Param; }
+        D_FIELD => { return DeclKind.FieldDecl; }
+        D_VARIANT => { return DeclKind.Variant; }
+        NoKind | E_INT | E_CHAR | E_STR | E_BOOL | E_IDENT | E_UNARY | E_BINARY
+        | E_BORROW | E_CAST | E_CALL | E_INDEX | E_FIELD | E_DEREF
+        | E_STRUCTLIT | E_LITFIELD | E_SLICE | E_OFFSET | T_PRIM | T_NAMED
+        | T_SLICE | T_REF | T_PTR | S_LET | S_ASSIGN | S_EXPR | S_IF | S_FOR
+        | S_BREAK | S_CONTINUE | S_RETURN | S_MATCH | S_UNSAFE | S_ARM | S_BIND
+        | S_ALT => { return DeclKind.NotDecl; }
+    }
+}
+
 // --- token cursor ----------------------------------------------------------
 
 fn cur_kind(c: &Ctx) -> TokKind { return c.^.toks[c.^.ti].kind; }
@@ -2539,32 +2696,37 @@ fn e_unknown_type(c: &mut Ctx, line: u32, col: u32, s: u32) {
 
 fn resolve_ty(c: &mut Ctx, t: u32) -> u32 {
     if t == 0 { return TY_VOID; }
-    let k: NodeKind = c.^.nodes[t].kind;
     let a: u32 = c.^.nodes[t].a;
     let b: u32 = c.^.nodes[t].b;
-    if k == NodeKind.T_PRIM {
-        if a == 0 { return TY_I32; }
-        if a == 1 { return TY_U32; }
-        if a == 2 { return TY_BOOL; }
-        return TY_U8;
+    match ty_node_kind(c.^.nodes[t].kind) {
+        Prim => {
+            if a == 0 { return TY_I32; }
+            if a == 1 { return TY_U32; }
+            if a == 2 { return TY_BOOL; }
+            return TY_U8;
+        }
+        Named => {
+            if find_type_name(c, a) { return ty_named(c, a); }
+            let line: u32 = c.^.nodes[t].line;
+            let col: u32 = c.^.nodes[t].col;
+            e_unknown_type(c, line, col, a);
+            return TY_I32;
+        }
+        SliceOf => {
+            let inner: u32 = resolve_ty(c, a);
+            return ty_intern(c, TYK_SLICE, inner, b);
+        }
+        RefOf => {
+            let inner: u32 = resolve_ty(c, a);
+            return ty_intern(c, TYK_REF, inner, b);
+        }
+        PtrTo => {
+            let inner: u32 = resolve_ty(c, a);
+            return ty_intern(c, TYK_PTR, inner, 0);
+        }
+        // the parser only ever hands this a type node
+        NotTy => { return TY_I32; }
     }
-    if k == NodeKind.T_NAMED {
-        if find_type_name(c, a) { return ty_named(c, a); }
-        let line: u32 = c.^.nodes[t].line;
-        let col: u32 = c.^.nodes[t].col;
-        e_unknown_type(c, line, col, a);
-        return TY_I32;
-    }
-    if k == NodeKind.T_SLICE {
-        let inner: u32 = resolve_ty(c, a);
-        return ty_intern(c, TYK_SLICE, inner, b);
-    }
-    if k == NodeKind.T_REF {
-        let inner: u32 = resolve_ty(c, a);
-        return ty_intern(c, TYK_REF, inner, b);
-    }
-    let inner: u32 = resolve_ty(c, a);
-    return ty_intern(c, TYK_PTR, inner, 0);
 }
 
 // --- string interning (implementation.md S4) -------------------------------
@@ -3413,21 +3575,24 @@ fn declare_local(c: &mut Ctx, s: u32, t: u32, mutable: u32, is_param: u32, line:
 fn has_break(c: &Ctx, head: u32) -> bool {
     let mut s: u32 = head;
     for s != 0 {
-        let k: NodeKind = c.^.nodes[s].kind;
-        if k == NodeKind.S_BREAK { return true; }
-        if k == NodeKind.S_IF {
-            if has_break(c, c.^.nodes[s].b) { return true; }
-            if c.^.nodes[s].d != 0 && has_break(c, c.^.nodes[s].c) { return true; }
-        }
-        if k == NodeKind.S_MATCH {
-            let mut a: u32 = c.^.nodes[s].b;
-            for a != 0 {
-                if has_break(c, c.^.nodes[a].d) { return true; }
-                a = c.^.nodes[a].next;
+        match stmt_kind(c.^.nodes[s].kind) {
+            Break => { return true; }
+            If => {
+                if has_break(c, c.^.nodes[s].b) { return true; }
+                if c.^.nodes[s].d != 0 && has_break(c, c.^.nodes[s].c) { return true; }
             }
-        }
-        if k == NodeKind.S_UNSAFE {
-            if has_break(c, c.^.nodes[s].a) { return true; }
+            MatchStmt => {
+                let mut a: u32 = c.^.nodes[s].b;
+                for a != 0 {
+                    if has_break(c, c.^.nodes[a].d) { return true; }
+                    a = c.^.nodes[a].next;
+                }
+            }
+            Unsafe => {
+                if has_break(c, c.^.nodes[s].a) { return true; }
+            }
+            NotStmt | Let | Assign | ExprStmt | For | Continue | Return | Arm
+            | Bind | Alt => { }
         }
         s = c.^.nodes[s].next;
     }
@@ -3474,28 +3639,31 @@ fn arm_count(c: &Ctx, head: u32) -> u32 {
 fn diverges(c: &Ctx, head: u32) -> bool {
     let mut s: u32 = head;
     for s != 0 {
-        let k: NodeKind = c.^.nodes[s].kind;
-        if k == NodeKind.S_RETURN || k == NodeKind.S_BREAK || k == NodeKind.S_CONTINUE { return true; }
-        if k == NodeKind.S_IF {
-            if c.^.nodes[s].d != 0 && diverges(c, c.^.nodes[s].b)
-                && diverges(c, c.^.nodes[s].c) {
-                return true;
+        match stmt_kind(c.^.nodes[s].kind) {
+            Return | Break | Continue => { return true; }
+            If => {
+                if c.^.nodes[s].d != 0 && diverges(c, c.^.nodes[s].b)
+                    && diverges(c, c.^.nodes[s].c) {
+                    return true;
+                }
             }
-        }
-        if k == NodeKind.S_FOR {
-            if c.^.nodes[s].b == 0 && !has_break(c, c.^.nodes[s].d) { return true; }
-        }
-        if k == NodeKind.S_MATCH {
-            let ei: u32 = c.^.nodes[s].c;
-            let arms: u32 = c.^.nodes[s].b;
-            let mut full: bool = c.^.nodes[s].d != 0;
-            if !full && ei != 0 {
-                full = covered_count(c, arms) == c.^.enums[ei].nvar;
+            For => {
+                // a loop with no condition and no break never falls out
+                if c.^.nodes[s].b == 0 && !has_break(c, c.^.nodes[s].d) { return true; }
             }
-            if full && arms_all_diverge(c, arms) { return true; }
-        }
-        if k == NodeKind.S_UNSAFE {
-            if diverges(c, c.^.nodes[s].a) { return true; }
+            MatchStmt => {
+                let ei: u32 = c.^.nodes[s].c;
+                let arms: u32 = c.^.nodes[s].b;
+                let mut full: bool = c.^.nodes[s].d != 0;
+                if !full && ei != 0 {
+                    full = covered_count(c, arms) == c.^.enums[ei].nvar;
+                }
+                if full && arms_all_diverge(c, arms) { return true; }
+            }
+            Unsafe => {
+                if diverges(c, c.^.nodes[s].a) { return true; }
+            }
+            NotStmt | Let | Assign | ExprStmt | Arm | Bind | Alt => { }
         }
         s = c.^.nodes[s].next;
     }
@@ -4524,51 +4692,61 @@ fn e_arg_count(c: &mut Ctx, line: u32, col: u32, s: u32, want: u32, got: u32) {
     }
 }
 
+// How many times does this expression read `loc`? The alias rule needs the
+// count, not just the fact (language.md S7).
 fn count_mentions(c: &Ctx, e: u32, loc: u32) -> u32 {
     if e == 0 { return 0; }
-    let k: NodeKind = c.^.nodes[e].kind;
     let ea: u32 = c.^.nodes[e].a;
     let eb: u32 = c.^.nodes[e].b;
-    if k == NodeKind.E_IDENT {
-        if c.^.nodes[e].aux2 == 0 && c.^.nodes[e].aux == loc && loc != 0 { return 1; }
-        return 0;
-    }
-    if k == NodeKind.E_UNARY || k == NodeKind.E_BORROW { return count_mentions(c, eb, loc); }
-    if k == NodeKind.E_CAST || k == NodeKind.E_FIELD || k == NodeKind.E_DEREF { return count_mentions(c, ea, loc); }
-    if k == NodeKind.E_BINARY {
-        let ec: u32 = c.^.nodes[e].c;
-        return count_mentions(c, eb, loc) + count_mentions(c, ec, loc);
-    }
-    if k == NodeKind.E_INDEX {
-        return count_mentions(c, ea, loc) + count_mentions(c, eb, loc);
-    }
-    if k == NodeKind.E_SLICE {
-        let ec: u32 = c.^.nodes[e].c;
-        return count_mentions(c, eb, loc) + count_mentions(c, ec, loc);
-    }
-    if k == NodeKind.E_OFFSET {
-        return count_mentions(c, ea, loc) + count_mentions(c, eb, loc);
-    }
-    if k == NodeKind.E_CALL {
-        let mut n: u32 = count_mentions(c, ea, loc);
-        let mut a: u32 = eb;
-        for a != 0 {
-            n += count_mentions(c, a, loc);
-            a = c.^.nodes[a].next;
+    let ec: u32 = c.^.nodes[e].c;
+    match expr_kind(c.^.nodes[e].kind) {
+        Ident => {
+            if c.^.nodes[e].aux2 == 0 && c.^.nodes[e].aux == loc && loc != 0 {
+                return 1;
+            }
+            return 0;
         }
-        return n;
-    }
-    if k == NodeKind.E_STRUCTLIT {
-        let mut n: u32 = 0;
-        let mut f: u32 = c.^.nodes[e].c;
-        for f != 0 {
-            let fv: u32 = c.^.nodes[f].c;
-            n += count_mentions(c, fv, loc);
-            f = c.^.nodes[f].next;
+        Unary | Borrow => { return count_mentions(c, eb, loc); }
+        Cast | Field | Deref => { return count_mentions(c, ea, loc); }
+        Binary | SliceExpr => {
+            return count_mentions(c, eb, loc) + count_mentions(c, ec, loc);
         }
-        return n;
+        Index | OffsetExpr => {
+            return count_mentions(c, ea, loc) + count_mentions(c, eb, loc);
+        }
+        Call => {
+            let mut n: u32 = count_mentions(c, ea, loc);
+            let mut a: u32 = eb;
+            for a != 0 {
+                n += count_mentions(c, a, loc);
+                a = c.^.nodes[a].next;
+            }
+            return n;
+        }
+        StructLit => {
+            let mut n: u32 = 0;
+            let mut f: u32 = ec;
+            for f != 0 {
+                let fv: u32 = c.^.nodes[f].c;
+                n += count_mentions(c, fv, loc);
+                f = c.^.nodes[f].next;
+            }
+            return n;
+        }
+        MatchExpr => {
+            // the scrutinee is a place and every arm value is an expression;
+            // both can read a local inside an argument list (language.md S7)
+            let mut n: u32 = count_mentions(c, ea, loc);
+            let mut a: u32 = eb;
+            for a != 0 {
+                n += count_mentions(c, c.^.nodes[a].d, loc);
+                a = c.^.nodes[a].next;
+            }
+            return n;
+        }
+        // literals mention nothing, and a field of a literal is not a place
+        NotExpr | Int | Char | Str | Bool | LitField => { return 0; }
     }
-    return 0;
 }
 
 fn e_alias(c: &mut Ctx, line: u32, col: u32, s: u32, twice: u32) {

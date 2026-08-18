@@ -1,0 +1,6 @@
+// expect: error 6:45: `e` is borrowed mutably and also used in the same argument list
+// The scrutinee of an expression-form match is a place, so it reads a local
+// too -- the same argument list may not also borrow it mutably (language.md S7).
+enum E { A, B }
+fn g(p: &mut E, v: u32) -> u32 { return v; }
+fn f() -> u32 { let mut e: E = E.A; return g(&mut e, match e { A => 1, B => 0, }); }
