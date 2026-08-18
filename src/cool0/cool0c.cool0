@@ -47,9 +47,12 @@ const G_NTAB: u32 = 0x004C;   // interned name table
 const G_HEAP: u32 = 0x0050;   // where the bump heap ended
 
 // regions
-const S1: u32 = 0x0E00_0000;   // scratch for one function body
-const S2: u32 = 0x0F00_0000;   // scratch for one section payload
-const OUT: u32 = 0x0101_0000;  // final output; 0x0100_0000 is this module's rodata
+// The compiler's own working regions, in the order the heap runs into them.
+const S1: u32 = 0x0800_0000;   // 128 MiB. The heap may not reach here
+const S2: u32 = 0x0C00_0000;   // S1..S2 (64 MiB): one declaration's tokens,
+                               // and one function body while it is emitted
+const OUT: u32 = 0x0E00_0000;  // S2..OUT (32 MiB): one section payload
+                               // OUT..RODATA (32 MiB): the finished module
 
 const NONE: u32 = 0xFFFF_FFFF;
 

@@ -3157,8 +3157,9 @@ def local_stub(loc: Local, pos) -> Ident:
 # 안 그러면 큰 소스에서 두 구현이 갈리고, 그것이 implementation.md §8 이 금지하는
 # 바로 그 상황이다. 산술은 cool0c.cool0 의 compile() 과 한 줄씩 같다.
 
-BOOTSTRAP_SCRATCH = 0x0E00_0000  # S1. 힙은 여기 닿을 수 없다
-TOKEN_SCRATCH_END = 0x0F00_0000  # S2. S1..S2 는 선언 토큰 작업장이다
+BOOTSTRAP_SCRATCH = 0x0800_0000  # S1. 힙은 여기 닿을 수 없다
+TOKEN_SCRATCH_END = 0x0C00_0000  # S2. S1..S2 는 선언 토큰 작업장이다
+OUT_ADDR = 0x0E00_0000  # S2..OUT 은 섹션 페이로드, OUT 위는 완성된 모듈
 
 SRCTAB = 0x0080  # (ptr, len) 쌍이 놓이는 곳 (gh #5 B)
 

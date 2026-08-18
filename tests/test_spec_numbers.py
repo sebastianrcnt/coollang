@@ -139,3 +139,60 @@ def test_every_diagnostic_the_spec_quotes_exists_in_the_oracle(quoted):
     assert quoted in FLAT, f"이 시험이 문서에 없는 문구를 지키고 있다: {quoted}"
     source = (ROOT / "src" / "cool0" / "cool0.py").read_text("utf-8")
     assert quoted in source, f"문서가 인용한 진단이 cool0.py 에 없다: {quoted}"
+
+
+# --- 메모리 지도가 서로 겹치지 않는가 (implementation.md §7) --------------------
+
+
+def compiler_regions() -> list[tuple[str, int]]:
+    """컴파일러가 자기 실행 중에 쓰는 영역들, 주소 순으로."""
+    from cool0.cool0 import (BOOTSTRAP_SCRATCH, OUT_ADDR, RODATA_ADDR,
+                             SHADOW_FLOOR, SHADOW_TOP, SRC_ADDR, TOKEN_SCRATCH_END)
+
+    return [
+        ("SRC", SRC_ADDR),
+        ("S1", BOOTSTRAP_SCRATCH),
+        ("S2", TOKEN_SCRATCH_END),
+        ("OUT", OUT_ADDR),
+        ("RODATA", RODATA_ADDR),
+        ("SHADOW_FLOOR", SHADOW_FLOOR),
+        ("SHADOW_TOP", SHADOW_TOP),
+    ]
+
+
+def test_the_memory_map_is_strictly_ordered():
+    """§7 지도의 주소가 적힌 순서대로 올라가야 한다."""
+    regions = compiler_regions()
+    for (an, a), (bn, b) in zip(regions, regions[1:]):
+        assert a < b, f"{an}({a:#x}) 가 {bn}({b:#x}) 보다 아래가 아니다"
+
+
+def test_nothing_sits_inside_the_range_the_heap_grows_through():
+    """힙은 소스 뒤에서 `S1` 까지 자란다. 그 사이에 다른 영역이 있으면 안 된다.
+
+    한동안 있었다. `OUT` 이 `0x0101_0000`(16.8 MiB)에 있었는데, 그때 `S1` 은
+    `0x0080_0000`(8.4 MiB)이라 `OUT` 이 힙 **위**였다. `S1` 을 16 배로 올리면서
+    (gh #5 0단계) `OUT` 이 힙 한가운데로 들어왔고, 아무 시험도 그것을 보지 않았다.
+
+    실제로 깨뜨려 보이지는 못했다 -- 힙이 32 MiB 까지 가는 프로그램으로도 출력이
+    성했다. 그 프로그램이 겹치는 구간을 안 건드렸을 뿐이다. 겹치면 안 되는 두
+    영역이 겹쳐 있다는 것만으로 결함이고, 그것을 여기서 막는다.
+    """
+    from cool0.cool0 import BOOTSTRAP_SCRATCH, SRC_ADDR
+
+    inside = [
+        f"{name}({addr:#x})"
+        for name, addr in compiler_regions()
+        if SRC_ADDR < addr < BOOTSTRAP_SCRATCH
+    ]
+    assert not inside, (
+        f"힙은 {SRC_ADDR:#x} 부터 {BOOTSTRAP_SCRATCH:#x} 까지 자라는데 그 사이에 "
+        f"{', '.join(inside)} 가 있다"
+    )
+
+
+def test_every_region_has_room_the_spec_can_state():
+    """영역마다 다음 영역까지의 거리가 있어야 한다 -- 0 이면 쓸 자리가 없다."""
+    regions = compiler_regions()
+    for (an, a), (bn, b) in zip(regions, regions[1:]):
+        assert b - a >= 1 << 20, f"{an}..{bn} 이 {b - a:,} 바이트뿐이다"
