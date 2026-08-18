@@ -8,7 +8,7 @@
 그 흉내가 어긋난 적이 있다. 다섯 군데였다:
 
 - 토큰 폭 32 -> 36 (Kw 필드)
-- 버퍼별 토큰 경계 배열 (gh #5 B)
+- 전체 프로그램 토큰 아레나 제거와 S1 선언 작업장 재사용
 - 이름 아레나 셋 (gh #5 A)
 - 노드 아레나가 전체가 아니라 선언부 + 가장 큰 본문 (gh #5 C)
 - `NameI` 아레나가 둘이 아니라 셋 (스칼라 enum 때 생긴 것, 그 전부터 있었다)
@@ -60,14 +60,11 @@ def cool0c_heap_end(cc, src: bytes) -> int:
 
 
 def oracle_heap_end(src: bytes) -> int:
-    from cool0.cool0 import (Parser, _arena_bound, _name_arena_size,
-                             _str_body_bytes)
+    from cool0.cool0 import _parse_declarations
 
-    toks = lex(src)
-    decls = Parser(toks).parse_program()
+    decls, ntok, nb, nid, nmax, str_bytes = _parse_declarations(src)
     return bootstrap_heap_end(
-        len(src), len(toks), decls, *_name_arena_size(toks), _arena_bound(toks),
-        str_body_bytes=_str_body_bytes(toks),
+        len(src), ntok, decls, nb, nid, nmax, str_body_bytes=str_bytes,
     )
 
 

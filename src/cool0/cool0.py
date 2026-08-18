@@ -126,9 +126,8 @@ class Token:
         return "`" + self.text + "`"
 
 
-def lex(src: bytes) -> list[Token]:
-    """소스 바이트를 토큰 목록으로. 마지막은 항상 eof."""
-    toks: list[Token] = []
+def _lex_to(src: bytes, emit) -> None:
+    """토큰을 하나씩 넘긴다. 컴파일 경로는 전체 토큰 목록을 만들지 않는다."""
     i = 0
     n = len(src)
     line = 1
@@ -173,7 +172,7 @@ def lex(src: bytes) -> list[Token]:
             word = src[i:j].decode("ascii")
             adv(j - i)
             kind = "kw" if word in KEYWORDS else "ident"
-            toks.append(Token(kind, word, word, sl, sc))
+            emit(Token(kind, word, word, sl, sc))
             continue
 
         # 정수 리터럴
@@ -208,7 +207,7 @@ def lex(src: bytes) -> list[Token]:
                 raise CompileError(sl, sc, "integer literal out of range")
             text = src[i:j].decode("ascii")
             adv(j - i)
-            toks.append(Token("int", text, value, sl, sc))
+            emit(Token("int", text, value, sl, sc))
             continue
 
         # 문자 리터럴
@@ -235,7 +234,7 @@ def lex(src: bytes) -> list[Token]:
             if i >= n or src[i] != 0x27:
                 raise CompileError(sl, sc, "unterminated character literal")
             adv()
-            toks.append(Token("char", "char", value, sl, sc))
+            emit(Token("char", "char", value, sl, sc))
             continue
 
         # 문자열 리터럴
@@ -262,19 +261,25 @@ def lex(src: bytes) -> list[Token]:
                         raise CompileError(line, col, "invalid character in string literal")
                     out.append(src[i])
                     adv()
-            toks.append(Token("str", "str", bytes(out), sl, sc))
+            emit(Token("str", "str", bytes(out), sl, sc))
             continue
 
         # 구두점
         for p in PUNCT:
             if src[i : i + len(p)] == p.encode("ascii"):
                 adv(len(p))
-                toks.append(Token("punct", p, p, sl, sc))
+                emit(Token("punct", p, p, sl, sc))
                 break
         else:
             raise CompileError(sl, sc, "unexpected character")
 
-    toks.append(Token("eof", "", None, line, col))
+    emit(Token("eof", "", None, line, col))
+
+
+def lex(src: bytes) -> list[Token]:
+    """소스 바이트를 토큰 목록으로. 마지막은 항상 eof."""
+    toks: list[Token] = []
+    _lex_to(src, toks.append)
     return toks
 
 
@@ -3150,6 +3155,7 @@ def local_stub(loc: Local, pos) -> Ident:
 # 바로 그 상황이다. 산술은 cool0c.cool0 의 compile() 과 한 줄씩 같다.
 
 BOOTSTRAP_SCRATCH = 0x0E00_0000  # S1. 힙은 여기 닿을 수 없다
+TOKEN_SCRATCH_END = 0x0F00_0000  # S2. S1..S2 는 선언 토큰 작업장이다
 
 SRCTAB = 0x0080  # (ptr, len) 쌍이 놓이는 곳 (gh #5 B)
 
@@ -3269,9 +3275,10 @@ def bootstrap_heap_end(
     어긋나면 두 구현이 **큰 소스에서만** 갈리고, 그것이 §8 이 금지하는 상황이다.
     """
     top = SRC_ADDR + src_len
-    srctok_at = align_up(top, 4) + 4
-    heap = srctok_at + (nsrc + 1) * 4          # 버퍼별 토큰 경계 (gh #5 B)
-    heap += (src_len + 1) * SIZEOF_TOKEN       # 토큰
+    heap = align_up(top, 4) + 4
+    # 선언 토큰은 S1..S2 작업장을 되쓰므로 정상 컴파일의 범프 힙에는 없다.
+    if ntok is None:
+        heap += (src_len + 1) * SIZEOF_TOKEN
     # 문자열 리터럴의 **본문**도 같은 범프 힙에서, 렉싱 도중에 잡힌다
     # (Ctx 의 `heap` 주석). 이 항이 여태 빠져 있었다.
     heap += str_body_bytes
@@ -3308,6 +3315,76 @@ def check_bootstrap_memory(*args, **kw) -> None:
         raise CompileError(1, 1, "program is too large for the compiler's memory")
 
 
+def _parse_declarations(src: bytes):
+    """선언 하나만 토큰으로 붙들고 lex/parse한다."""
+    decls = []
+    chunk: list[Token] = []
+    opener = None
+    paren = brack = brace = 0
+    max_tokens = ident_bytes = ident_count = str_bytes = 0
+    decl_tokens = largest_body = 0
+
+    def finish(eof: Token):
+        nonlocal chunk, max_tokens, decl_tokens, largest_body
+        if not chunk:
+            return
+        toks = chunk + [eof]
+        parsed = Parser(toks).parse_program()
+        decls.append(parsed[0])
+        max_tokens = max(max_tokens, len(toks))
+        body = 0
+        if opener == "fn":
+            depth, start = 0, None
+            for i, t in enumerate(chunk):
+                if t.kind == "punct" and t.text == "{":
+                    if depth == 0 and start is None:
+                        start = i
+                    depth += 1
+                elif t.kind == "punct" and t.text == "}" and depth:
+                    depth -= 1
+                    if depth == 0 and start is not None:
+                        body = i - start + 1
+                        break
+        decl_tokens += len(chunk) - body
+        largest_body = max(largest_body, body)
+        chunk = []
+
+    def take(t: Token):
+        nonlocal opener, paren, brack, brace
+        nonlocal ident_bytes, ident_count, str_bytes
+        if t.kind == "eof":
+            if chunk:
+                finish(t)
+            return
+        if not chunk:
+            opener = t.text
+        chunk.append(t)
+        if t.kind == "ident":
+            ident_bytes += len(t.text)
+            ident_count += 1
+        elif t.kind == "str":
+            str_bytes += align_up(len(t.value), 4)
+        if t.kind == "punct":
+            if t.text == "(": paren += 1
+            elif t.text == ")": paren -= 1
+            elif t.text == "[": brack += 1
+            elif t.text == "]": brack -= 1
+            elif t.text == "{": brace += 1
+            elif t.text == "}": brace -= 1
+        done = ((opener in ("fn", "struct", "enum") and t.text == "}" and
+                 paren == brack == brace == 0) or
+                (opener == "const" and t.text == ";" and
+                 paren == brack == brace == 0))
+        if done:
+            finish(Token("eof", "", None, t.line, t.col + len(t.text)))
+            opener = None
+
+    _lex_to(src, take)
+    nmax = decl_tokens + largest_body + 2
+    return (decls, max_tokens, ident_bytes + WELLKNOWN_BYTES,
+            ident_count + WELLKNOWN_COUNT + 1, nmax, str_bytes)
+
+
 # ============================================================================
 # 9. 진입점
 # ============================================================================
@@ -3337,13 +3414,12 @@ def compile(src: bytes) -> tuple[int, bytes]:
     saved = sys.getrecursionlimit()
     sys.setrecursionlimit(max(saved, 8000))
     try:
-        check_bootstrap_memory(len(src), None, None)
-        toks = lex(src)
-        decls = Parser(toks).parse_program()
+        decls, ntok, name_bytes, name_count, nmax, str_bytes = _parse_declarations(src)
+        if ntok * SIZEOF_TOKEN > TOKEN_SCRATCH_END - BOOTSTRAP_SCRATCH:
+            raise CompileError(1, 1, "program is too large for the compiler's memory")
         check_bootstrap_memory(
-            len(src), len(toks), decls,
-            *_name_arena_size(toks), _arena_bound(toks),
-            str_body_bytes=_str_body_bytes(toks),
+            len(src), ntok, decls, name_bytes, name_count, nmax,
+            str_body_bytes=str_bytes,
         )
         ck = Checker(decls).run()
         return STATUS_OK, Emitter(ck).emit_module()

@@ -86,22 +86,9 @@ def test_the_spec_prints_the_page_count_the_code_emits():
 
 
 def test_the_spec_prints_the_size_limit_that_the_oracle_actually_enforces():
-    """§7 이 적은 '받아들여지는 가장 큰 소스' 가 진짜 경계여야 한다.
-
-    문서의 숫자를 읽어서 그 길이를 실제로 컴파일해 본다. 한 바이트 위는 거절돼야
-    한다 -- 안 그러면 문서가 경계를 잘못 적은 것이다.
-    """
-    m = re.search(r"받아들여지는 가장 큰 소스는 \*\*([\d,]+)\s*\n?바이트\*\*", TEXT)
-    assert m, "§7 '크기 한계' 에서 경계 바이트 수를 못 찾았다"
-    stated = int(m.group(1).replace(",", ""))
-
-    assert reference_compile(padded(stated))[0] == STATUS_OK, (
-        f"문서가 {stated:,} 바이트까지 된다는데 오라클이 거절한다"
-    )
-    assert reference_compile(padded(stated + 1))[0] != STATUS_OK, (
-        f"문서가 경계를 {stated:,} 로 적었는데 그보다 더 큰 소스도 받아들여진다"
-    )
-    assert stated < COLLISION, "경계는 토큰 아레나만의 천장보다 아래여야 한다"
+    """§7 은 소스 길이 하나를 토큰 한계라고 적지 않아야 한다."""
+    assert "프로그램 전체 토큰 아레나는 없다" in TEXT
+    assert "선언 하나의 토큰 작업장" in TEXT
 
 
 def test_the_spec_is_right_that_exactly_one_function_needs_a_frame():

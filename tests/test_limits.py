@@ -30,8 +30,8 @@ TOO_LARGE = b"1:1: program is too large for the compiler's memory\n"
 needs_wat = pytest.mark.skipif(not COOL0C_WAT.exists(), reason="cool0c.wat 이 아직 없다")
 
 
-def token_arena_end(n: int) -> int:
-    """소스 n 바이트일 때 토큰 아레나가 끝나는 주소. cool0c 의 compile_n() 과 같다.
+def old_token_arena_end(n: int) -> int:
+    """제거된 전체 프로그램 토큰 아레나가 끝났을 주소.
 
     폭을 손으로 적어 두었더니 Token 이 32 에서 36 바이트가 될 때 조용히 어긋났다.
     이제 상수에서 가져온다.
@@ -48,7 +48,7 @@ def first_collision() -> int:
     lo, hi = 1, BOOTSTRAP_SCRATCH
     while lo < hi:
         mid = (lo + hi) // 2
-        if token_arena_end(mid) >= BOOTSTRAP_SCRATCH:
+        if old_token_arena_end(mid) >= BOOTSTRAP_SCRATCH:
             hi = mid
         else:
             lo = mid + 1
@@ -71,14 +71,14 @@ def _wat() -> bytes:
 
 def test_the_collision_point_is_a_real_boundary():
     """한 바이트 아래는 닿지 않고, 그 지점부터 닿는다."""
-    assert token_arena_end(COLLISION - 1) < BOOTSTRAP_SCRATCH
-    assert token_arena_end(COLLISION) >= BOOTSTRAP_SCRATCH
+    assert old_token_arena_end(COLLISION - 1) < BOOTSTRAP_SCRATCH
+    assert old_token_arena_end(COLLISION) >= BOOTSTRAP_SCRATCH
 
 
 @pytest.mark.parametrize("d", [-1, 0, 1])
-def test_the_oracle_rejects_at_the_boundary(d):
-    """경계 바로 아래도 거절된다 -- 노드와 표가 토큰 뒤에 더 붙기 때문이다."""
-    assert reference_compile(padded(COLLISION + d)) == (1, TOO_LARGE)
+def test_whitespace_no_longer_pays_for_a_program_token_arena(d):
+    """소스 길이 기반의 옛 토큰 충돌점은 이제 실제 한계가 아니다."""
+    assert reference_compile(padded(COLLISION + d))[0] == STATUS_OK
 
 
 def test_the_oracle_takes_a_source_at_half_the_limit():
@@ -110,7 +110,10 @@ def test_the_compiler_has_room_to_grow():
     """
     src = (SRC_DIR / "cool0c.cool0").read_bytes()
     assert reference_compile(src)[0] == STATUS_OK
-    used = token_arena_end(len(src))
+    from cool0.cool0 import _parse_declarations, bootstrap_heap_end
+    decls, ntok, nb, nid, nmax, str_bytes = _parse_declarations(src)
+    used = bootstrap_heap_end(len(src), ntok, decls, nb, nid, nmax,
+                              str_body_bytes=str_bytes)
     headroom = 1.0 - used / BOOTSTRAP_SCRATCH
     assert headroom > 0.25, (
         f"cool0c.cool0 이 한계의 {100 * (1 - headroom):.0f}% 를 쓰고 있다. "
@@ -179,3 +182,16 @@ def test_a_program_of_many_small_functions_does_not_pay_for_all_of_them():
     assert alive_big < whole_big // 2
     # 함수가 10 배가 돼도 동시에 사는 것은 선언부 몫만 는다
     assert alive_big < alive_small * 10
+
+
+def test_token_working_set_is_one_declaration_not_the_program():
+    """선언 수를 늘려도 토큰 작업장 크기는 그대로다."""
+    from cool0.cool0 import _parse_declarations
+
+    one = b"fn f0() -> u32 { return 0; }\n"
+    many = b"".join(
+        b"fn f" + str(i).encode("ascii") + b"() -> u32 { return 0; }\n"
+        for i in range(2000)
+    )
+    assert _parse_declarations(one)[1] == _parse_declarations(many)[1]
+    assert reference_compile(many)[0] == STATUS_OK

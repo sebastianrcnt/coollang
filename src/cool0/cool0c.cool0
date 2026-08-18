@@ -81,6 +81,20 @@ struct Ctx {
     pos: u32,
     line: u32,
     col: u32,
+    src_i: u32,
+    scan_only: bool,
+    decl_kw: Kw,
+    decl_done: bool,
+    body_mode: bool,
+    pdepth: u32,
+    sdepth: u32,
+    cdepth: u32,
+    tok_max: u32,
+    decl_tok: u32,
+    body_max: u32,
+    ident_bytes: u32,
+    ident_count: u32,
+    str_bytes: u32,
 
     // Node counts, accumulated as bodies are parsed and dropped (gh #5 C).
     // The checker tables are sized from these, so they have to survive the
@@ -99,7 +113,6 @@ struct Ctx {
 
     // all of the buffers (gh #5 B)
     nsrc: u32,
-    srctok: []mut u32,   // token index where each buffer's tokens start
 
     // tokens
     toks: []mut Token,
@@ -474,6 +487,8 @@ fn punct_len(id: Punct) -> u32 {
 fn push_tok(c: &mut Ctx, kind: TokKind, start: u32, len: u32, value: u32,
             line: u32, col: u32, aux: u32) {
     let n: u32 = c.^.ntok;
+    if n >= c.^.toks.len { e_too_large(c); return; }
+    if n >= c.^.toks.len { e_too_large(c); return; }
     c.^.toks[n] = Token{
         kind: kind, start: start, len: len, value: value,
         line: line, col: col, aux: aux, punct: Punct.NoPunct, kw: Kw.NoKw,
@@ -481,22 +496,43 @@ fn push_tok(c: &mut Ctx, kind: TokKind, start: u32, len: u32, value: u32,
     c.^.ntok = n + 1;
 }
 
+fn note_decl_token(c: &mut Ctx, kind: TokKind, p: Punct, k: Kw) {
+    if c.^.ntok == 1 && kind == TokKind.TK_KW { c.^.decl_kw = k; }
+    if kind != TokKind.TK_PUNCT { return; }
+    if p == Punct.LParen { c.^.pdepth += 1; }
+    if p == Punct.RParen && c.^.pdepth > 0 { c.^.pdepth -= 1; }
+    if p == Punct.LBrack { c.^.sdepth += 1; }
+    if p == Punct.RBrack && c.^.sdepth > 0 { c.^.sdepth -= 1; }
+    if p == Punct.LBrace { c.^.cdepth += 1; }
+    if p == Punct.RBrace && c.^.cdepth > 0 { c.^.cdepth -= 1; }
+    let flat: bool = c.^.pdepth == 0 && c.^.sdepth == 0 && c.^.cdepth == 0;
+    if flat && (p == Punct.RBrace && (c.^.decl_kw == Kw.K_FN
+        || c.^.decl_kw == Kw.K_STRUCT || c.^.decl_kw == Kw.K_ENUM)
+        || p == Punct.Semi && c.^.decl_kw == Kw.K_CONST) { c.^.decl_done = true; }
+}
+
 fn push_punct(c: &mut Ctx, start: u32, len: u32, p: Punct, line: u32, col: u32) {
     let n: u32 = c.^.ntok;
+    if n >= c.^.toks.len { e_too_large(c); return; }
+    if n >= c.^.toks.len { e_too_large(c); return; }
     c.^.toks[n] = Token{
         kind: TokKind.TK_PUNCT, start: start, len: len, value: 0,
-        line: line, col: col, aux: 0, punct: p, kw: Kw.NoKw,
+        line: line, col: col, aux: c.^.src_i, punct: p, kw: Kw.NoKw,
     };
     c.^.ntok = n + 1;
+    note_decl_token(c, TokKind.TK_PUNCT, p, Kw.NoKw);
 }
 
 fn push_kw(c: &mut Ctx, start: u32, len: u32, k: Kw, line: u32, col: u32) {
     let n: u32 = c.^.ntok;
+    if n >= c.^.toks.len { e_too_large(c); return; }
+    if n >= c.^.toks.len { e_too_large(c); return; }
     c.^.toks[n] = Token{
         kind: TokKind.TK_KW, start: start, len: len, value: 0,
         line: line, col: col, aux: 0, punct: Punct.NoPunct, kw: k,
     };
     c.^.ntok = n + 1;
+    note_decl_token(c, TokKind.TK_KW, Punct.NoPunct, k);
 }
 
 // One escape. Strings allow one more than chars do (language.md S2).
@@ -521,7 +557,7 @@ fn lex_ident(c: &mut Ctx) {
     let id: Kw = kw_id(c, i, j - i);
     adv(c, j - i);
     if id == Kw.NoKw {
-        push_tok(c, TokKind.TK_IDENT, i, j - i, 0, sl, sc, 0);
+        push_tok(c, TokKind.TK_IDENT, i, j - i, 0, sl, sc, c.^.src_i);
     } else {
         push_kw(c, i, j - i, id, sl, sc);
     }
@@ -674,7 +710,7 @@ fn lex_string(c: &mut Ctx) {
                 err_msg(c, el, ec, "unknown escape sequence");
                 return;
             }
-            stb(buf + k, e);
+            if !c.^.scan_only { stb(buf + k, e); }
             k += 1;
             adv(c, 1);
         } else {
@@ -684,12 +720,12 @@ fn lex_string(c: &mut Ctx) {
                 err_msg(c, el, ec, "invalid character in string literal");
                 return;
             }
-            stb(buf + k, b);
+            if !c.^.scan_only { stb(buf + k, b); }
             k += 1;
             adv(c, 1);
         }
     }
-    c.^.heap = align4(buf + k);
+    if !c.^.scan_only { c.^.heap = align4(buf + k); }
     let end: u32 = c.^.pos;
     push_tok(c, TokKind.TK_STR, start, end - start, buf, sl, sc, k);
 }
@@ -712,10 +748,7 @@ fn lex_comment(c: &mut Ctx) {
 // number this buffer starts on.
 fn lex_one(c: &mut Ctx) {
     let n: u32 = c.^.src.len;
-    c.^.pos = 0;
-    c.^.col = 1;
-
-    for c.^.pos < n && !failed(c) {
+    for c.^.pos < n && !failed(c) && !c.^.decl_done {
         let i: u32 = c.^.pos;
         let b: u32 = c.^.src[i];
 
@@ -756,25 +789,45 @@ fn lex_one(c: &mut Ctx) {
 // buffers had been concatenated with a newline between them -- so a diagnostic
 // still reads `L:C: message` and the host, which knows how long each buffer is,
 // can map the line back to a file. cool0 has no file names to print.
-fn lex_all(c: &mut Ctx) {
+fn load_source(c: &mut Ctx) {
+    let p: u32 = ldw(SRCTAB + c.^.src_i * 8);
+    let n: u32 = ldw(SRCTAB + c.^.src_i * 8 + 4);
+    unsafe { c.^.src = slice(p as *u8, n); }
+}
+fn source_rewind(c: &mut Ctx) {
+    c.^.src_i = 0; c.^.pos = 0; c.^.line = 1; c.^.col = 1; load_source(c);
+}
+fn lex_decl(c: &mut Ctx) {
     c.^.ntok = 0;
-    c.^.line = 1;
-    for let mut i: u32 = 0; i < c.^.nsrc && !failed(c); i += 1 {
-        c.^.srctok[i] = c.^.ntok;
-        let p: u32 = ldw(SRCTAB + i * 8);
-        let n: u32 = ldw(SRCTAB + i * 8 + 4);
-        unsafe { c.^.src = slice(p as *u8, n); }
+    if c.^.body_mode { c.^.decl_kw = Kw.K_FN; } else { c.^.decl_kw = Kw.NoKw; }
+    c.^.body_mode = false;
+    c.^.decl_done = false; c.^.pdepth = 0; c.^.sdepth = 0; c.^.cdepth = 0;
+    for !failed(c) && !c.^.decl_done && c.^.src_i < c.^.nsrc {
         lex_one(c);
-        // a newline *between* buffers, not after the last one -- the eof
-        // token below has to land on the line the source really ended on
-        if i + 1 < c.^.nsrc { c.^.line = c.^.line + 1; }
+        if c.^.pos == c.^.src.len && c.^.src_i + 1 < c.^.nsrc {
+            c.^.src_i += 1; c.^.line += 1; load_source(c); c.^.pos = 0; c.^.col = 1;
+        } else { break; }
     }
-    c.^.srctok[c.^.nsrc] = c.^.ntok;
     if failed(c) { return; }
     let ep: u32 = c.^.pos;
     let el: u32 = c.^.line;
     let ec: u32 = c.^.col;
     push_tok(c, TokKind.TK_EOF, ep, 0, 0, el, ec, 0);
+}
+fn source_done(c: &Ctx) -> bool {
+    return c.^.src_i + 1 >= c.^.nsrc && c.^.pos >= c.^.src.len;
+}
+fn source_seek(c: &mut Ctx, bi: u32, seek_at: u32) {
+    source_rewind(c);
+    for let mut b: u32 = 0; b < bi; b += 1 {
+        let n: u32 = ldw(SRCTAB + b * 8 + 4);
+        for let mut i: u32 = 0; i < n; i += 1 {
+            if ldb(ldw(SRCTAB + b * 8) + i) == '\n' { c.^.line += 1; }
+        }
+        c.^.line += 1;
+    }
+    c.^.src_i = bi; load_source(c); c.^.pos = 0; c.^.col = 1;
+    for c.^.pos < seek_at { adv(c, 1); }
 }
 
 // ===========================================================================
@@ -1834,7 +1887,8 @@ fn parse_fn(c: &mut Ctx) -> u32 {
     // order, counted so the checker tables can be sized, and then dropped --
     // only the token index where it starts survives. It is parsed again, one
     // at a time, in the emit loop (gh #5 C).
-    c.^.nodes[n].b = c.^.ti;
+    c.^.nodes[n].b = c.^.toks[c.^.ti].start;
+    c.^.nodes[n].aux2 = c.^.toks[c.^.ti].aux;
     let mark: u32 = c.^.nnode;
     let body: u32 = parse_block(c);
     count_range(c, mark, c.^.nnode);
@@ -1846,7 +1900,14 @@ fn parse_fn(c: &mut Ctx) -> u32 {
 // Re-parse one body, into the space above the declarations.
 fn parse_fn_body(c: &mut Ctx, fi: u32) {
     let d: u32 = c.^.fns[fi].decl;
-    c.^.ti = c.^.nodes[d].b;
+    let bi: u32 = c.^.nodes[d].aux2;
+    let seek_at: u32 = c.^.nodes[d].b;
+    source_seek(c, bi, seek_at);
+    c.^.body_mode = true;
+    lex_decl(c);
+    if failed(c) { return; }
+    intern_idents(c);
+    c.^.ti = 0;
     c.^.edepth = 0;
     c.^.bdepth = 0;
     let body: u32 = parse_block(c);
@@ -1967,6 +2028,29 @@ fn parse_program(c: &mut Ctx) {
             return;
         }
         if failed(c) { return; }
+        if head == 0 { head = d; } else { c.^.nodes[tail].next = d; }
+        tail = d;
+    }
+    c.^.decls = head;
+}
+
+fn parse_declarations(c: &mut Ctx) {
+    source_rewind(c); c.^.scan_only = false;
+    let mut head: u32 = 0; let mut tail: u32 = 0;
+    for !failed(c) && !source_done(c) {
+        let hmark: u32 = c.^.heap;
+        lex_decl(c);
+        if failed(c) { return; }
+        if c.^.ntok == 1 { break; }
+        intern_idents(c); c.^.ti = 0;
+        let mut d: u32 = 0;
+        if at_kw(c, Kw.K_FN) { d = parse_fn(c); }
+        else if at_kw(c, Kw.K_STRUCT) { d = parse_struct(c); }
+        else if at_kw(c, Kw.K_ENUM) { d = parse_enum(c); }
+        else if at_kw(c, Kw.K_CONST) { d = parse_const(c); }
+        else { e_expected_str(c, "expected `fn`, `struct`, `enum` or `const`"); return; }
+        if failed(c) { return; }
+        if c.^.nodes[d].kind == NodeKind.D_FN { c.^.heap = hmark; }
         if head == 0 { head = d; } else { c.^.nodes[tail].next = d; }
         tail = d;
     }
@@ -2149,23 +2233,14 @@ fn put_q_name(c: &mut Ctx, id: u32) { put_ch(c, 96); put_name(c, id); put_ch(c, 
 
 // Every identifier token carries its name id in `value` from here on.
 fn intern_idents(c: &mut Ctx) {
-    // A token's `start` is an offset into the buffer it came from, so this
-    // walks buffer by buffer rather than token by token (gh #5 B). After it
-    // returns, no name refers to a source buffer any more.
-    for let mut b: u32 = 0; b < c.^.nsrc; b += 1 {
-        let lo: u32 = c.^.srctok[b];
-        let hi: u32 = c.^.srctok[b + 1];
-        // hoisted: `c` may not appear twice in one argument list (language.md S7)
-        let sp: *u8 = ldw(SRCTAB + b * 8) as *u8;
-        for let mut i: u32 = lo; i < hi; i += 1 {
-            if c.^.toks[i].kind == TokKind.TK_IDENT {
-                let st: u32 = c.^.toks[i].start;
-                let ln: u32 = c.^.toks[i].len;
-                unsafe {
-                    let txt: []u8 = slice(offset(sp, st), ln);
-                    let id: u32 = intern(c, txt);
-                    c.^.toks[i].value = id;
-                }
+    for let mut i: u32 = 0; i < c.^.ntok; i += 1 {
+        if c.^.toks[i].kind == TokKind.TK_IDENT {
+            let b: u32 = c.^.toks[i].aux;
+            let sp: *u8 = ldw(SRCTAB + b * 8) as *u8;
+            let st: u32 = c.^.toks[i].start; let ln: u32 = c.^.toks[i].len;
+            unsafe {
+                let txt: []u8 = slice(offset(sp, st), ln);
+                let id: u32 = intern(c, txt); c.^.toks[i].value = id;
             }
         }
     }
@@ -6347,6 +6422,29 @@ fn arena_bound(c: &Ctx) -> u32 {
     return c.^.ntok - body_total + body_max + 2;
 }
 
+fn count_decl_tokens(c: &mut Ctx) {
+    if c.^.ntok > c.^.tok_max { c.^.tok_max = c.^.ntok; }
+    let mut body: u32 = 0;
+    if c.^.decl_kw == Kw.K_FN {
+        let mut depth: u32 = 0; let mut start: u32 = 0; let mut found: bool = false;
+        for let mut i: u32 = 0; i < c.^.ntok; i += 1 {
+            if c.^.toks[i].kind == TokKind.TK_PUNCT {
+                let p: Punct = c.^.toks[i].punct;
+                if p == Punct.LBrace { if depth == 0 && !found { start = i; found = true; } depth += 1; }
+                if p == Punct.RBrace && depth > 0 { depth -= 1; if depth == 0 && found { body = i - start + 1; break; } }
+            }
+        }
+    }
+    c.^.decl_tok = c.^.decl_tok + c.^.ntok - 1 - body;
+    if body > c.^.body_max { c.^.body_max = body; }
+    for let mut i: u32 = 0; i < c.^.ntok; i += 1 {
+        if c.^.toks[i].kind == TokKind.TK_IDENT {
+            c.^.ident_bytes = c.^.ident_bytes + c.^.toks[i].len; c.^.ident_count += 1;
+        }
+        if c.^.toks[i].kind == TokKind.TK_STR { c.^.str_bytes += align4(c.^.toks[i].aux); }
+    }
+}
+
 fn pow2_at_least(v: u32) -> u32 {
     let mut p: u32 = 8;
     for p < v { p = p * 2; }
@@ -6381,21 +6479,20 @@ fn compile_n(nsrc: u32) -> i32 {
             if p + n > top { top = p + n; }
             total = total + n;
         }
-        let srctok_at: u32 = align4(top) + 4;
-        let heap0: u32 = srctok_at + (nsrc + 1) * 4;
+        let heap0: u32 = align4(top) + 4;
 
         // There can be no more tokens than source bytes, plus one for eof.
-        let ntok_max: u32 = total + 1;
-        // sizeof(Token). cool0 has no sizeof, so the number lives next to the
-        // struct it measures -- getting it wrong overlaps the next arena
-        let tok_bytes: u32 = ntok_max * SIZEOF_TOKEN;
-
+        let ntok_max: u32 = (S2 - S1) / SIZEOF_TOKEN;
         // This is the boundary. Below it every access is bounds-checked.
         let mut c: Ctx = Ctx{
             src: slice(SRC as *u8, 0),
             pos: 0,
             line: 1,
             col: 1,
+            src_i: 0, scan_only: true, decl_kw: Kw.NoKw, decl_done: false,
+            body_mode: false, pdepth: 0, sdepth: 0, cdepth: 0,
+            tok_max: 0, decl_tok: 0, body_max: 0,
+            ident_bytes: 0, ident_count: 0, str_bytes: 0,
             ck_tys: 0,
             ck_fields: 0,
             ck_structs: 0,
@@ -6408,8 +6505,7 @@ fn compile_n(nsrc: u32) -> i32 {
             ck_binds: 0,
             ck_strs: 0,
             nsrc: nsrc,
-            srctok: slice_mut(srctok_at as *u32, nsrc + 1),
-            toks: slice_mut(heap0 as *Token, ntok_max),
+            toks: slice_mut(S1 as *Token, ntok_max),
             ntok: 0,
             nmem: slice_mut(heap0 as *u8, 0),
             nmem_n: 0,
@@ -6477,7 +6573,7 @@ fn compile_n(nsrc: u32) -> i32 {
             ctrl: slice_mut(heap0 as *u32, 0),
             ctrl_n: 0,
             efn: 0,
-            heap: heap0 + tok_bytes,
+            heap: heap0,
             err: 0,
             out: OUT,
         };
@@ -6485,20 +6581,19 @@ fn compile_n(nsrc: u32) -> i32 {
         // before lexing: the token arena alone can reach S1
         if !heap_fits(&c) { e_too_large(&mut c); }
 
-        if c.err == 0 { lex_all(&mut c); }
+        if c.err == 0 {
+            source_rewind(&mut c); c.scan_only = true;
+            for !source_done(&c) && !failed(&c) {
+                lex_decl(&mut c); if c.ntok > 1 { count_decl_tokens(&mut c); }
+            }
+        }
 
         // Names, sized exactly off the tokens (gh #5 A). Doing this here rather
         // than during lexing is what makes "exactly" possible: the byte count
         // and the identifier count are both readable from the token array.
         if c.err == 0 {
-            let mut nb: u32 = 0;
-            let mut nid: u32 = 0;
-            for let mut i: u32 = 0; i < c.ntok; i += 1 {
-                if c.toks[i].kind == TokKind.TK_IDENT {
-                    nb = nb + c.toks[i].len;
-                    nid = nid + 1;
-                }
-            }
+            let mut nb: u32 = c.ident_bytes;
+            let mut nid: u32 = c.ident_count;
             // the well-known names above need not appear in the source
             nb = nb + WELLKNOWN_BYTES;
             nid = nid + WELLKNOWN_COUNT;
@@ -6529,7 +6624,6 @@ fn compile_n(nsrc: u32) -> i32 {
                 c.id_len = w6;
                 let w7: u32 = intern(&mut c, "ptr");
                 c.id_ptr = w7;
-                intern_idents(&mut c);
             }
         }
 
@@ -6540,12 +6634,12 @@ fn compile_n(nsrc: u32) -> i32 {
         // And not from *all* the tokens either: the declarations plus the
         // largest single body is what is alive at once (gh #5 C).
         if c.err == 0 {
-            let nmax: u32 = arena_bound(&c);
+            let nmax: u32 = c.decl_tok + c.body_max + 2;
             c.nodes = slice_mut(c.heap as *Node, nmax);
             let nodes_at: u32 = c.heap;
             c.heap = c.heap + nmax * SIZEOF_NODE;
             if !heap_fits(&c) { e_too_large(&mut c); }
-            if c.err == 0 { parse_program(&mut c); }
+            if c.err == 0 { parse_declarations(&mut c); }
             stw(G_NODES, nodes_at);
             stw(G_DECLS, c.decls);
         }
@@ -6640,14 +6734,14 @@ fn compile_n(nsrc: u32) -> i32 {
         }
 
         // debug window for the workbench
-        let toks_at: u32 = heap0;
+        let toks_at: u32 = S1;
         let nmem_at: u32 = c.nmem.ptr as u32;
         let ntab_at: u32 = c.ntab.ptr as u32;
         stw(G_HEAP, c.heap);
         stw(G_NMEM, nmem_at);
         stw(G_NTAB, ntab_at);
         stw(G_TOKS, toks_at);
-        stw(G_NTOK, c.ntok);
+        stw(G_NTOK, c.tok_max);
         stw(G_ERR, c.err);
 
         stw(OUT_PTR_ADDR, OUT);

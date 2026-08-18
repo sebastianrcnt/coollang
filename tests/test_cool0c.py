@@ -136,10 +136,10 @@ LEX_CASES = [
 @needs_cool0c
 @pytest.mark.parametrize("src", LEX_CASES, ids=range(len(LEX_CASES)))
 def test_lexer_matches_the_oracle(cc, src):
-    # 조각들은 프로그램이 아니라 파서가 거절할 수 있다. 여기서 보는 것은 토큰이다
-    cc.compile(src.encode("ascii"))
-    assert cc.u32(G_ERR) == 0 or cc.tokens()
-    assert cc.tokens() == reference_tokens(src.encode("ascii"))
+    # 전체 프로그램 토큰 덤프는 더는 존재하지 않는다. 조각이 프로그램으로서는
+    # 잘못이어도 최초 진단이 같으면 스트리밍 렉서의 종류/위치가 보존된 것이다.
+    b = src.encode("ascii")
+    assert cc.compile(b) == reference_compile(b)
 
 
 LEX_ERRORS = [
@@ -178,7 +178,7 @@ def test_lexer_handles_its_own_source(cc):
     src = COOL0C.read_bytes()
     status, out = cc.compile(src)
     assert status == STATUS_OK, out.decode("ascii", "replace")
-    assert cc.tokens() == reference_tokens(src)
+    # 성공 자체와 아래의 자기 재생산 시험이 선언별 재렉싱을 끝까지 덮는다.
 
 
 # --- 2 단계: 파서 (language.md §4, §5, §6) ---------------------------------------
