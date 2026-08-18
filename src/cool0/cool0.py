@@ -2533,6 +2533,7 @@ class Emitter:
             self.type_idx(self.sig_of(info))
 
         codes = []
+        self.widest_body = 0
         for info in ck.fn_order:
             codes.append(self.emit_fn(info))
 
@@ -2557,17 +2558,25 @@ class Emitter:
         ]
 
         out = bytearray(b"\x00asm\x01\x00\x00\x00")
+        widest = 0
+
+        def add(sid: int, payload: bytes):
+            nonlocal widest
+            widest = max(widest, len(payload))
+            out.extend(section(sid, payload))
+
         if self.types:
-            out += section(SEC_TYPE, type_sec)
+            add(SEC_TYPE, type_sec)
         if ck.fn_order:
-            out += section(SEC_FUNC, func_sec)
-        out += section(SEC_MEM, mem_sec)
-        out += section(SEC_GLOBAL, global_sec)
-        out += section(SEC_EXPORT, export_sec)
+            add(SEC_FUNC, func_sec)
+        add(SEC_MEM, mem_sec)
+        add(SEC_GLOBAL, global_sec)
+        add(SEC_EXPORT, export_sec)
         if ck.fn_order:
-            out += section(SEC_CODE, code_sec)
+            add(SEC_CODE, code_sec)
         if data:
-            out += section(SEC_DATA, vec(data))
+            add(SEC_DATA, vec(data))
+        check_emit_room(self.widest_body, widest, len(out))
         return bytes(out)
 
     # --- 함수 -------------------------------------------------------------
@@ -2650,6 +2659,9 @@ class Emitter:
 
         nlocals = fb.nlocal_slots + self.ntemp
         decls = vec([leb_u(nlocals) + bytes([TYPE_I32])] if nlocals else [])
+        # cool0c 는 명령 흐름만 S1..S2 작업장에 쌓는다 (gh #6). 지역변수 선언과
+        # 길이 앞머리는 섹션 쪽에 바로 쓴다.
+        self.widest_body = max(self.widest_body, len(self.b.buf))
         body = decls + bytes(self.b.buf)
         return leb_u(len(body)) + body
 
@@ -3280,6 +3292,23 @@ def check_token_workspace(ntok: int) -> None:
     아레나에 들어가는가")는 이제 뒷받침일 뿐이다.
     """
     if ntok * SIZEOF_TOKEN > TOKEN_SCRATCH_END - BOOTSTRAP_SCRATCH:
+        raise CompileError(1, 1, "program is too large for the compiler's memory")
+
+
+def check_emit_room(widest_body: int, widest_section: int, module: int) -> None:
+    """방출 커서 셋이 자기 구역에 들어가는가 (gh #6).
+
+    cool0c 는 함수 본문 하나를 S1..S2 에, 섹션 페이로드 하나를 S2..OUT 에,
+    완성된 모듈을 OUT..RODATA 에 쌓는다. 셋 다 뚜껑이 있고, 넘치면 옆 구역을
+    덮는다 -- 문자열 리터럴 40 MiB 짜리 프로그램이 실제로 RODATA 를 8 MiB
+    덮었고, 그 위가 진단 문구를 찍는 문자열 표였다.
+
+    cool0c 는 방출 도중에 진단하지 않으므로 (gh #5 C) 넘침을 기억했다가 끝에
+    한 번 알린다. 여기서도 같은 자리 -- 방출이 다 끝난 뒤 -- 에서 본다.
+    """
+    if (widest_body > TOKEN_SCRATCH_END - BOOTSTRAP_SCRATCH
+            or widest_section > OUT_ADDR - TOKEN_SCRATCH_END
+            or module > RODATA_ADDR - OUT_ADDR):
         raise CompileError(1, 1, "program is too large for the compiler's memory")
 
 

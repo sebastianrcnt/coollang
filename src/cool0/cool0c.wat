@@ -4670,11 +4670,30 @@
   ;; 1 section (Ctx+264), 2 out (Ctx+320).
   ;; ======================================================================
 
+  ;; The three emit cursors are the only writes the compiler does not bound
+  ;; (gh #6). The shadow stack, the bump heap, string literals and every slice
+  ;; index are all checked; these wrote past their region in silence, and a big
+  ;; enough program reached it -- 40 MiB of string literals put 8 MiB past
+  ;; RODATA, on top of the string table the diagnostics are printed from.
+  ;;
+  ;; The check cannot report here. gh #5 C interleaves checking and emitting one
+  ;; function at a time, and the first diagnostic is the same across
+  ;; implementations only because **emitting never diagnoses**. So an
+  ;; overflowing write is dropped and remembered; compile_n reports it once, at
+  ;; the end, after everything that could diagnose already had its turn.
   (func $w_ch (param $c i32) (param $sel i32) (param $ch i32)
-    (local $off i32)
+    (local $off i32) (local $cap i32)
     (local.set $off (i32.const 480))
-    (if (i32.eq (local.get $sel) (i32.const 0)) (then (local.set $off (i32.const 420))))
-    (if (i32.eq (local.get $sel) (i32.const 1)) (then (local.set $off (i32.const 424))))
+    (local.set $cap (i32.const 0x10000000))
+    (if (i32.eq (local.get $sel) (i32.const 0))
+        (then (local.set $off (i32.const 420))
+              (local.set $cap (i32.const 0x0C000000))))
+    (if (i32.eq (local.get $sel) (i32.const 1))
+        (then (local.set $off (i32.const 424))
+              (local.set $cap (i32.const 0x0E000000))))
+    (if (i32.ge_u (call $cg (local.get $c) (local.get $off)) (local.get $cap))
+        (then (i32.store8 (i32.add (local.get $c) (i32.const 484)) (i32.const 1))
+              (return)))
     (call $stb (call $cg (local.get $c) (local.get $off)) (local.get $ch))
     (call $cs (local.get $c) (local.get $off)
               (i32.add (call $cg (local.get $c) (local.get $off)) (i32.const 1))))
@@ -8324,7 +8343,7 @@
   (func $compile_n (export "compile_n") (param $nsrc i32) (result i32)
     (local $c i32) (local $top i32) (local $i i32) (local $p i32) (local $n i32)
     (local $heap0 i32) (local $ntok_max i32)
-    (global.set $sp (i32.sub (global.get $sp) (i32.const 484)))
+    (global.set $sp (i32.sub (global.get $sp) (i32.const 488)))
     (if (i32.lt_u (global.get $sp) (i32.const 0x18000000)) (then (unreachable)))
     (local.set $c (global.get $sp))
 
@@ -8473,6 +8492,7 @@
     (call $cs (local.get $c) (i32.const 472) (local.get $heap0))
     (call $cs (local.get $c) (i32.const 480) (i32.const 0x0E000000))
     (i32.store8 (i32.add (local.get $c) (i32.const 24)) (i32.const 1))
+    (i32.store8 (i32.add (local.get $c) (i32.const 484)) (i32.const 0))
     (i32.store8 (i32.add (local.get $c) (i32.const 32)) (i32.const 0))
     (i32.store8 (i32.add (local.get $c) (i32.const 33)) (i32.const 0))
 
@@ -8493,12 +8513,18 @@
               (if (i32.eqz (call $cg (local.get $c) (i32.const 476)))
                   (then (call $emit_module (local.get $c))))))
 
+    ;; The emit cursors are checked here and not where they overflow, so that
+    ;; emitting still never diagnoses (gh #6, w_ch).
+    (if (i32.and (i32.eqz (call $cg (local.get $c) (i32.const 476)))
+                 (i32.load8_u (i32.add (local.get $c) (i32.const 484))))
+        (then (call $e_too_large (local.get $c))))
+
     (call $publish_debug (local.get $c))
 
     (call $stw (i32.const 0x00) (i32.const 0x0E000000))
     (call $stw (i32.const 0x04) (i32.sub (call $cg (local.get $c) (i32.const 480))
                                          (i32.const 0x0E000000)))
-    (global.set $sp (i32.add (global.get $sp) (i32.const 484)))
+    (global.set $sp (i32.add (global.get $sp) (i32.const 488)))
     (if (i32.ne (call $cg (local.get $c) (i32.const 476)) (i32.const 0))
         (then (return (i32.const 1))))
     (i32.const 0))

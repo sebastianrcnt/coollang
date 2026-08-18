@@ -209,6 +209,9 @@ struct Ctx {
     // diagnostics. Only the first error writes; the rest are dropped.
     err: u32,
     out: u32,
+    // An emit cursor ran out of its region (gh #6). Not a diagnostic yet --
+    // see w_ch for why it cannot be one here.
+    spilled: bool,
 }
 
 // --- output buffer ---------------------------------------------------------
@@ -5528,17 +5531,32 @@ const W_OUT: u32 = 2;
 
 // --- byte writers ----------------------------------------------------------
 
+// The three emit cursors are the only writes the compiler does not bound
+// (gh #6). The shadow stack, the bump heap, string literals and every slice
+// index are all checked; these wrote past their region in silence, and a big
+// enough program reached it -- 40 MiB of string literals put 8 MiB past
+// `RODATA`, on top of the string table the diagnostics are printed from.
+//
+// The check cannot report here. gh #5 C interleaves checking and emitting one
+// function at a time, and the first diagnostic is the same across
+// implementations only because **emitting never diagnoses**. So an overflowing
+// write is dropped and remembered; compile_n reports it once, at the end,
+// after everything that could diagnose already had its turn.
+
 fn w_ch(c: &mut Ctx, sel: u32, ch: u32) {
     if sel == W_BODY {
+        if c.^.wb >= S2 { c.^.spilled = true; return; }
         stb(c.^.wb, ch);
         c.^.wb = c.^.wb + 1;
         return;
     }
     if sel == W_SEC {
+        if c.^.ws >= OUT { c.^.spilled = true; return; }
         stb(c.^.ws, ch);
         c.^.ws = c.^.ws + 1;
         return;
     }
+    if c.^.out >= RODATA { c.^.spilled = true; return; }
     stb(c.^.out, ch);
     c.^.out = c.^.out + 1;
 }
@@ -7087,6 +7105,7 @@ fn compile_n(nsrc: u32) -> i32 {
             heap: heap0,
             err: 0,
             out: OUT,
+            spilled: false,
         };
 
         // before lexing: the token arena alone can reach S1
@@ -7104,6 +7123,10 @@ fn compile_n(nsrc: u32) -> i32 {
             if c.err == 0 { check_program(&mut c); }
             if c.err == 0 { emit_module(&mut c); }
         }
+
+        // The emit cursors are checked here and not where they overflow, so
+        // that emitting still never diagnoses (gh #6, w_ch).
+        if c.err == 0 && c.spilled { e_too_large(&mut c); }
 
         publish_debug(&c);
 

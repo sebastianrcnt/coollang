@@ -95,17 +95,21 @@ def test_both_implementations_agree_at_the_boundary(d):
 
 @needs_current_wat
 def test_both_agree_on_a_dense_source_of_many_declarations():
-    """공백이 아니라 진짜 코드로 선언 20000 개. 두 구현이 같은 바이트를 낸다.
+    """공백이 아니라 진짜 코드로 선언 8000 개. 두 구현이 같은 바이트를 낸다.
 
     아레나 재사용(gh #5 C) 전에는 토큰도 노드도 프로그램 전체를 한꺼번에 담아야
     했다. 지금은 선언 하나치 토큰과 가장 큰 본문 하나면 된다.
 
-    이 크기는 gh #7 전에는 몇 분이 걸렸다 -- 본문마다 소스를 되감았고, 지역변수
+    이 크기는 gh #7 전에는 분 단위였다 -- 본문마다 소스를 되감았고, 지역변수
     하나마다 최상위 이름을 전부 훑었다. 둘 다 선언 수의 제곱이었다. 지금은
-    cool0c 가 오라클보다 빠르다.
+    cool0c 가 0.07 초로 오라클(1 초)보다 빠르다.
+
+    8000 인 이유는 **오라클** 쪽 시간이다. 20000 이면 커버리지 추적 아래에서
+    12 초가 걸리고, 이 스위트의 시간 제한은 15 초이며 걸리면 그 시험 하나가
+    아니라 전체가 죽는다 (pyproject.toml 참고).
     """
     unit = b"fn f%d(n: u32) -> u32 { let a: u32 = n + %d; return a * 3; }\n"
-    body = b"".join(unit % (i, i) for i in range(20000))
+    body = b"".join(unit % (i, i) for i in range(8000))
     want = reference_compile(body)
     assert want[0] == STATUS_OK
     assert run_compiler(_wat(), body) == want
@@ -250,3 +254,73 @@ def test_the_heap_check_still_rejects_when_the_arithmetic_says_so():
     with pytest.raises(CompileError) as got:
         check_bootstrap_memory(10, 10, [], nmax=BOOTSTRAP_SCRATCH)
     assert got.value.render() == TOO_LARGE
+
+
+# --- 방출 커서 셋의 뚜껑 (gh #6) ---------------------------------------------
+#
+# 함수 본문 하나는 S1..S2, 섹션 페이로드 하나는 S2..OUT, 완성된 모듈은
+# OUT..RODATA 에 쌓인다. 셋 다 뚜껑이 있는데 아무도 안 보고 있었다. 문자열
+# 리터럴 40 MiB 짜리 프로그램이 실제로 RODATA 를 8 MiB 덮었고, 그 위가 진단
+# 문구를 찍는 문자열 표라서 진단이 `1:5: xxxxxxxxxx` 로 나왔다.
+
+
+def test_the_emit_regions_are_what_the_memory_map_says():
+    from cool0.cool0 import OUT_ADDR, RODATA_ADDR, TOKEN_SCRATCH_END
+
+    assert TOKEN_SCRATCH_END - BOOTSTRAP_SCRATCH == 64 << 20   # 본문
+    assert OUT_ADDR - TOKEN_SCRATCH_END == 32 << 20            # 섹션 페이로드
+    assert RODATA_ADDR - OUT_ADDR == 32 << 20                  # 모듈
+
+
+@pytest.mark.parametrize("which", [0, 1, 2])
+def test_each_emit_cursor_is_bounded_on_its_own(which):
+    """셋을 따로 본다. 하나가 검사에서 빠져도 나머지에 가려지지 않게."""
+    from cool0.cool0 import (
+        CompileError, OUT_ADDR, RODATA_ADDR, TOKEN_SCRATCH_END, check_emit_room,
+    )
+
+    room = [TOKEN_SCRATCH_END - BOOTSTRAP_SCRATCH,
+            OUT_ADDR - TOKEN_SCRATCH_END,
+            RODATA_ADDR - OUT_ADDR]
+    at = [0, 0, 0]
+    at[which] = room[which]
+    check_emit_room(*at)          # 딱 맞으면 지나간다
+    at[which] += 1
+    with pytest.raises(CompileError) as e:
+        check_emit_room(*at)
+    assert "too large" in str(e.value)
+
+
+def literal_heavy(mib: int) -> bytes:
+    """출력이 소스만 한 프로그램. 문자열 본문은 데이터 절로 그대로 나간다.
+
+    리터럴마다 앞에 번호를 붙인다 -- 같은 문자열은 한 번만 저장되므로,
+    똑같이 찍으면 40 MiB 를 써도 출력이 1 MiB 다.
+    """
+    nl = chr(10).encode()
+    out = [b"fn f() -> u32 {"]
+    for i in range(mib):
+        out.append(b'  let s%d: []u8 = "%d%s";' % (i, i, b"x" * (1 << 20)))
+    out.append(b"  return 0;" + nl + b"}")
+    return nl.join(out)
+
+
+@needs_current_wat
+def test_cool0c_rejects_a_module_that_will_not_fit_below_rodata():
+    """실제로 넘겨 본다. 산술만 맞추면 배선이 틀려도 초록색이다.
+
+    32 MiB 가 경계다. 31 MiB 는 지나가고 (출력 32.5 MB, 구역은 33.55 MB),
+    32 MiB 는 거절된다. 여기서 `spilled` 를 세우는 자리, 그것을 끝에 읽는 자리,
+    그 사이에서 방출이 진단하지 않는 것까지 한꺼번에 지난다.
+
+    오라클은 여기 안 부른다. 32 MB 를 파이썬으로 렉싱하는 데 8 초가 걸리고
+    커버리지 추적 아래에서는 스위트 시간 제한을 넘긴다. 오라클 쪽 산술은
+    `check_emit_room` 을 직접 먹여서 본다 (바로 위 시험). 둘이 같은 지점에서
+    거절하는 것은 손으로 확인했다 -- 31 MiB 는 둘 다 통과, 32 MiB 는 둘 다
+    `program is too large for the compiler's memory`.
+    """
+    from conftest import Compiler
+
+    wat = Compiler(_wat())
+    assert wat.compile(literal_heavy(31))[0] == STATUS_OK
+    assert wat.compile(literal_heavy(32)) == (1, TOO_LARGE)
