@@ -491,7 +491,6 @@ fn push_tok(c: &mut Ctx, kind: TokKind, start: u32, len: u32, value: u32,
             line: u32, col: u32, aux: u32) {
     let n: u32 = c.^.ntok;
     if n >= c.^.toks.len { e_too_large(c); return; }
-    if n >= c.^.toks.len { e_too_large(c); return; }
     c.^.toks[n] = Token{
         kind: kind, start: start, len: len, value: value,
         line: line, col: col, aux: aux, punct: Punct.NoPunct, kw: Kw.NoKw,
@@ -517,7 +516,6 @@ fn note_decl_token(c: &mut Ctx, kind: TokKind, p: Punct, k: Kw) {
 fn push_punct(c: &mut Ctx, start: u32, len: u32, p: Punct, line: u32, col: u32) {
     let n: u32 = c.^.ntok;
     if n >= c.^.toks.len { e_too_large(c); return; }
-    if n >= c.^.toks.len { e_too_large(c); return; }
     c.^.toks[n] = Token{
         kind: TokKind.TK_PUNCT, start: start, len: len, value: 0,
         line: line, col: col, aux: c.^.src_i, punct: p, kw: Kw.NoKw,
@@ -528,7 +526,6 @@ fn push_punct(c: &mut Ctx, start: u32, len: u32, p: Punct, line: u32, col: u32) 
 
 fn push_kw(c: &mut Ctx, start: u32, len: u32, k: Kw, line: u32, col: u32) {
     let n: u32 = c.^.ntok;
-    if n >= c.^.toks.len { e_too_large(c); return; }
     if n >= c.^.toks.len { e_too_large(c); return; }
     c.^.toks[n] = Token{
         kind: TokKind.TK_KW, start: start, len: len, value: 0,
@@ -2839,7 +2836,6 @@ fn if_scalar(c: &Ctx, d: u32) -> u32 {
 fn add_scalar_name(c: &mut Ctx, d: u32) {
     if if_scalar(c, d) == 0 { return; }
     let s: u32 = c.^.nodes[d].a;
-    let l: u32 = c.^.nodes[d].b;
     let n: u32 = c.^.nscalar;
     c.^.scalars[n] = NameI{ name: s, next: 0 };
     c.^.nscalar = n + 1;
@@ -2847,7 +2843,6 @@ fn add_scalar_name(c: &mut Ctx, d: u32) {
 
 fn add_type_name(c: &mut Ctx, d: u32) {
     let s: u32 = c.^.nodes[d].a;
-    let l: u32 = c.^.nodes[d].b;
     let n: u32 = c.^.ntyname;
     c.^.tynames[n] = NameI{ name: s, next: 0 };
     c.^.ntyname = n + 1;
@@ -2904,7 +2899,6 @@ fn new_field(c: &mut Ctx, name: u32, t: u32, off: u32) -> u32 {
 
 fn declare_struct(c: &mut Ctx, d: u32) {
     let ns: u32 = c.^.nodes[d].a;
-    let nl: u32 = c.^.nodes[d].b;
     let si: u32 = c.^.nstruct;
     c.^.structs[si] = StructI{ name: ns, fields: 0, bytes: 0, align: 1, next: 0 };
     c.^.nstruct = si + 1;
@@ -2915,7 +2909,6 @@ fn declare_struct(c: &mut Ctx, d: u32) {
     let mut f: u32 = c.^.nodes[d].c;
     for f != 0 && !failed(c) {
         let fs: u32 = c.^.nodes[f].a;
-        let fl: u32 = c.^.nodes[f].b;
         let fline: u32 = c.^.nodes[f].line;
         let fcol: u32 = c.^.nodes[f].col;
         if field_named(c, head, fs) != 0 {
@@ -2953,7 +2946,6 @@ fn variant_named(c: &Ctx, head: u32, s: u32) -> u32 {
 
 fn declare_enum(c: &mut Ctx, d: u32) {
     let ns: u32 = c.^.nodes[d].a;
-    let nl: u32 = c.^.nodes[d].b;
     let ei: u32 = c.^.nenum;
     let is_scalar: u32 = if_scalar(c, d);
     c.^.enums[ei] = EnumI{
@@ -2968,7 +2960,6 @@ fn declare_enum(c: &mut Ctx, d: u32) {
     let mut v: u32 = c.^.nodes[d].c;
     for v != 0 && !failed(c) {
         let vs: u32 = c.^.nodes[v].a;
-        let vl: u32 = c.^.nodes[v].b;
         let vline: u32 = c.^.nodes[v].line;
         let vcol: u32 = c.^.nodes[v].col;
         if variant_named(c, head, vs) != 0 {
@@ -3038,7 +3029,6 @@ fn declare_const(c: &mut Ctx, d: u32) {
         return;
     }
     let ns: u32 = c.^.nodes[d].a;
-    let nl: u32 = c.^.nodes[d].b;
     let ci: u32 = c.^.nconst;
     c.^.consts[ci] = ConstI{
         name: ns, ty: t, value: 0, state: 0, decl: d, next: 0,
@@ -3513,7 +3503,6 @@ fn param_named(c: &Ctx, head: u32, s: u32) -> u32 {
 
 fn declare_fn(c: &mut Ctx, d: u32, index: u32) {
     let ns: u32 = c.^.nodes[d].a;
-    let nl: u32 = c.^.nodes[d].b;
     let fi: u32 = c.^.nfn;
     c.^.fns[fi] = FnI{
         name: ns, params: 0, nparams: 0, ret: 0, index: index, decl: d,
@@ -3526,7 +3515,6 @@ fn declare_fn(c: &mut Ctx, d: u32, index: u32) {
     let mut p: u32 = c.^.nodes[d].c;
     for p != 0 && !failed(c) {
         let ps: u32 = c.^.nodes[p].a;
-        let pl: u32 = c.^.nodes[p].b;
         let pline: u32 = c.^.nodes[p].line;
         let pcol: u32 = c.^.nodes[p].col;
         if param_named(c, head, ps) != 0 {
@@ -3780,7 +3768,6 @@ fn check_fn(c: &mut Ctx, fi: u32) {
     let mut pi: u32 = c.^.fns[fi].params;
     for p != 0 && pi != 0 && !failed(c) {
         let ps: u32 = c.^.nodes[p].a;
-        let pl: u32 = c.^.nodes[p].b;
         let pline: u32 = c.^.nodes[p].line;
         let pcol: u32 = c.^.nodes[p].col;
         let pt: u32 = c.^.params[pi].ty;
@@ -3797,7 +3784,6 @@ fn check_fn(c: &mut Ctx, fi: u32) {
         let dl: u32 = c.^.nodes[d].line;
         let dc: u32 = c.^.nodes[d].col;
         let ns: u32 = c.^.nodes[d].a;
-        let nl: u32 = c.^.nodes[d].b;
         e_missing_return(c, dl, dc, ns);
         return;
     }
@@ -4254,7 +4240,6 @@ fn bind_arm(c: &mut Ctx, a: u32) {
     let mut f: u32 = c.^.variants[v].payload;
     for b != 0 {
         let bs: u32 = c.^.nodes[b].a;
-        let bl: u32 = c.^.nodes[b].b;
         let bline: u32 = c.^.nodes[b].line;
         let bcol: u32 = c.^.nodes[b].col;
         let ft: u32 = c.^.fields[f].ty;
@@ -4347,19 +4332,16 @@ fn scalar_enum_lit(c: &Ctx, e: u32) -> u32 {
     let base: u32 = c.^.nodes[e].a;
     if c.^.nodes[base].kind != NodeKind.E_IDENT { return 0; }
     let bs: u32 = c.^.nodes[base].a;
-    let bl: u32 = c.^.nodes[base].b;
     let ei: u32 = find_enum(c, bs);
     if ei == 0 { return 0; }
     if c.^.enums[ei].scalar == 0 { return 0; }
     let vs: u32 = c.^.nodes[e].b;
-    let vl: u32 = c.^.nodes[e].c;
     return find_variant(c, ei, vs);
 }
 
 fn scalar_enum_lit_enum(c: &Ctx, e: u32) -> u32 {
     let base: u32 = c.^.nodes[e].a;
     let bs: u32 = c.^.nodes[base].a;
-    let bl: u32 = c.^.nodes[base].b;
     return find_enum(c, bs);
 }
 
@@ -4370,7 +4352,6 @@ fn is_enum_lit(c: &Ctx, e: u32) -> bool {
     let base: u32 = c.^.nodes[b].a;
     if c.^.nodes[base].kind != NodeKind.E_IDENT { return false; }
     let s: u32 = c.^.nodes[base].a;
-    let l: u32 = c.^.nodes[base].b;
     return find_enum(c, s) != 0;
 }
 
@@ -4448,7 +4429,6 @@ fn check_struct_lit(c: &mut Ctx, e: u32, want: u32) -> u32 {
     let line: u32 = c.^.nodes[e].line;
     let col: u32 = c.^.nodes[e].col;
     let ns: u32 = c.^.nodes[e].a;
-    let nl: u32 = c.^.nodes[e].b;
     let si: u32 = find_struct(c, ns);
     if si == 0 {
         e_unknown_struct(c, line, col, ns);
@@ -4517,10 +4497,8 @@ fn check_enum_lit(c: &mut Ctx, e: u32, want: u32) -> u32 {
     }
     let base: u32 = c.^.nodes[fld].a;
     let bs: u32 = c.^.nodes[base].a;
-    let bl: u32 = c.^.nodes[base].b;
     let ei: u32 = find_enum(c, bs);
     let vs: u32 = c.^.nodes[fld].b;
-    let vl: u32 = c.^.nodes[fld].c;
     let v: u32 = find_variant(c, ei, vs);
     let ens: u32 = c.^.enums[ei].name;
     if v == 0 {
@@ -4946,7 +4924,6 @@ fn check_call(c: &mut Ctx, e: u32) -> u32 {
         return TY_I32;
     }
     let cs: u32 = c.^.nodes[callee].a;
-    let cl: u32 = c.^.nodes[callee].b;
     let fi: u32 = find_fn(c, cs);
     if fi == 0 {
         if err_open(c, line, col) {
@@ -5190,7 +5167,6 @@ fn slice_field(c: &mut Ctx, e: u32) -> u32 {
     let base: u32 = c.^.nodes[e].a;
     if c.^.nodes[base].kind == NodeKind.E_IDENT {
         let bs: u32 = c.^.nodes[base].a;
-        let bl: u32 = c.^.nodes[base].b;
         if find_enum(c, bs) != 0 { return 0; }
     }
     // probe without committing: a failure here is not the program's diagnostic

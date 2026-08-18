@@ -7217,6 +7217,110 @@
       (br $cont)))
     (i32.const 0))
 
+  (func $ldw (param $a i32) (result i32)
+    (i32.load (local.get $a)))
+
+  (func $stw (param $a i32) (param $v i32)
+    (i32.store (local.get $a) (local.get $v)))
+
+  (func $pow2_at_least (param $v i32) (result i32)
+    (local $p i32)
+    (local.set $p (i32.const 8))
+    (block $brk (loop $cont
+      (br_if $brk (i32.eqz (i32.lt_u (local.get $p) (local.get $v))))
+      (block $cnt)
+      (local.set $p (i32.mul (local.get $p) (i32.const 2)))
+      (br $cont)))
+    (local.get $p))
+
+  ;; `as` reinterprets bits, so the only difference is the shift instruction.
+  (func $sshr (param $a i32) (param $sh i32) (result i32)
+    (i32.shr_s (local.get $a) (local.get $sh)))
+
+  (func $to_signed_lt (param $a i32) (param $b i32) (result i32)
+    (i32.lt_s (local.get $a) (local.get $b)))
+
+  (func $to_signed_gt (param $a i32) (param $b i32) (result i32)
+    (i32.gt_s (local.get $a) (local.get $b)))
+
+  (func $signed_of (param $signed i32) (param $s i32) (param $u i32) (result i32)
+    (if (local.get $signed) (then (return (local.get $s))))
+    (local.get $u))
+
+  (func $cur_punct (param $c i32) (result i32)
+    (call $tk (local.get $c) (call $cg (local.get $c) (i32.const 204))
+              (i32.const 28)))
+
+  (func $cur_kw (param $c i32) (result i32)
+    (call $tk (local.get $c) (call $cg (local.get $c) (i32.const 204))
+              (i32.const 32)))
+
+  (func $b_ch (param $c i32) (param $ch i32)
+    (call $w_ch (local.get $c) (i32.const 1) (local.get $ch)))
+
+  (func $b_u (param $c i32) (param $n i32)
+    (call $w_u (local.get $c) (i32.const 1) (local.get $n)))
+
+  ;; Which expression a node is, if any. S_MATCH is a statement too --
+  ;; is_expr tells them apart (language.md S5, S6).
+  (func $expr_kind (param $k i32) (result i32)
+    (if (i32.eq (local.get $k) (i32.const 1)) (then (return (i32.const 1))))
+    (if (i32.eq (local.get $k) (i32.const 2)) (then (return (i32.const 2))))
+    (if (i32.eq (local.get $k) (i32.const 3)) (then (return (i32.const 3))))
+    (if (i32.eq (local.get $k) (i32.const 4)) (then (return (i32.const 4))))
+    (if (i32.eq (local.get $k) (i32.const 5)) (then (return (i32.const 5))))
+    (if (i32.eq (local.get $k) (i32.const 6)) (then (return (i32.const 6))))
+    (if (i32.eq (local.get $k) (i32.const 7)) (then (return (i32.const 7))))
+    (if (i32.eq (local.get $k) (i32.const 8)) (then (return (i32.const 8))))
+    (if (i32.eq (local.get $k) (i32.const 9)) (then (return (i32.const 9))))
+    (if (i32.eq (local.get $k) (i32.const 10)) (then (return (i32.const 10))))
+    (if (i32.eq (local.get $k) (i32.const 11)) (then (return (i32.const 11))))
+    (if (i32.eq (local.get $k) (i32.const 12)) (then (return (i32.const 12))))
+    (if (i32.eq (local.get $k) (i32.const 13)) (then (return (i32.const 13))))
+    (if (i32.eq (local.get $k) (i32.const 14)) (then (return (i32.const 14))))
+    (if (i32.eq (local.get $k) (i32.const 15)) (then (return (i32.const 15))))
+    (if (i32.eq (local.get $k) (i32.const 16)) (then (return (i32.const 16))))
+    (if (i32.eq (local.get $k) (i32.const 17)) (then (return (i32.const 17))))
+    (if (i32.eq (local.get $k) (i32.const 31)) (then (return (i32.const 18))))
+    (i32.const 0))
+
+  ;; Which statement a node is, if any (language.md S6).
+  (func $stmt_kind (param $k i32) (result i32)
+    (if (i32.eq (local.get $k) (i32.const 23)) (then (return (i32.const 1))))
+    (if (i32.eq (local.get $k) (i32.const 24)) (then (return (i32.const 2))))
+    (if (i32.eq (local.get $k) (i32.const 25)) (then (return (i32.const 3))))
+    (if (i32.eq (local.get $k) (i32.const 26)) (then (return (i32.const 4))))
+    (if (i32.eq (local.get $k) (i32.const 27)) (then (return (i32.const 5))))
+    (if (i32.eq (local.get $k) (i32.const 28)) (then (return (i32.const 6))))
+    (if (i32.eq (local.get $k) (i32.const 29)) (then (return (i32.const 7))))
+    (if (i32.eq (local.get $k) (i32.const 30)) (then (return (i32.const 8))))
+    (if (i32.eq (local.get $k) (i32.const 31)) (then (return (i32.const 9))))
+    (if (i32.eq (local.get $k) (i32.const 32)) (then (return (i32.const 10))))
+    (if (i32.eq (local.get $k) (i32.const 33)) (then (return (i32.const 11))))
+    (if (i32.eq (local.get $k) (i32.const 34)) (then (return (i32.const 12))))
+    (if (i32.eq (local.get $k) (i32.const 35)) (then (return (i32.const 13))))
+    (i32.const 0))
+
+  ;; Which type-as-written a node is, if any (language.md S3).
+  (func $ty_node_kind (param $k i32) (result i32)
+    (if (i32.eq (local.get $k) (i32.const 18)) (then (return (i32.const 1))))
+    (if (i32.eq (local.get $k) (i32.const 19)) (then (return (i32.const 2))))
+    (if (i32.eq (local.get $k) (i32.const 20)) (then (return (i32.const 3))))
+    (if (i32.eq (local.get $k) (i32.const 21)) (then (return (i32.const 4))))
+    (if (i32.eq (local.get $k) (i32.const 22)) (then (return (i32.const 5))))
+    (i32.const 0))
+
+  ;; Which declaration a node is, if any (language.md S4).
+  (func $decl_kind (param $k i32) (result i32)
+    (if (i32.eq (local.get $k) (i32.const 36)) (then (return (i32.const 1))))
+    (if (i32.eq (local.get $k) (i32.const 37)) (then (return (i32.const 2))))
+    (if (i32.eq (local.get $k) (i32.const 38)) (then (return (i32.const 3))))
+    (if (i32.eq (local.get $k) (i32.const 39)) (then (return (i32.const 4))))
+    (if (i32.eq (local.get $k) (i32.const 40)) (then (return (i32.const 5))))
+    (if (i32.eq (local.get $k) (i32.const 41)) (then (return (i32.const 6))))
+    (if (i32.eq (local.get $k) (i32.const 42)) (then (return (i32.const 7))))
+    (i32.const 0))
+
   ;; string literals, first appearance order, exactly as cool0c.cool0 lays out its own
   (data (i32.const 0x10000000)
     "fnstructenumconstletmutifelseforbreakcontinuereturnmatchunsafeastruefalsesliceslice_muto"
