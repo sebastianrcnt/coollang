@@ -1,0 +1,2 @@
+// expect: error 2:47: `u32` has no field `ptr`
+fn f(a: u32) -> u32 { let x: u32 = a; return x.ptr as u32; }

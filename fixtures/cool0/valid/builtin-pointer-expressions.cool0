@@ -1,0 +1,44 @@
+// expect: ok
+// The three builtin expressions that deal in raw pointers (language.md S5).
+// The milestone cannot speak for `offset` or `s.ptr`: cool0c.cool0 does not use
+// them, so only this corpus keeps the three implementations honest about them.
+struct Node { tag: u32, next: u32 }
+
+fn arena(base: u32, n: u32) -> u32 {
+    unsafe {
+        let a: []mut Node = slice_mut(base as *Node, n);
+        a[0] = Node{ tag: 1, next: 1 };
+        let b: []Node = slice(base as *Node, n);
+        return b.len + b[0].tag;
+    }
+}
+
+fn walk(p: *Node, i: u32) -> u32 {
+    unsafe { return offset(p, i).^.tag; }
+}
+
+fn back(p: *Node) -> u32 {
+    // the index is u32 and arithmetic wraps (language.md S10), so this is one
+    // element backwards -- there is no separate operation for it
+    unsafe { return offset(p, 0 - 1).^.tag; }
+}
+
+fn subslice(s: []u8, from: u32, n: u32) -> u32 {
+    unsafe {
+        let t: []u8 = slice(offset(s.ptr, from), n);
+        return t.len + t[0];
+    }
+}
+
+fn ptr_is_a_pointer(s: []mut u8) -> u32 {
+    unsafe { return s.ptr as u32 + s.len; }
+}
+
+fn weakening(a: []mut u8, n: &mut Node) -> u32 {
+    // []mut T in a []T position and &mut T in a &T position (language.md S3)
+    return takes_shared(a) + peek(n);
+}
+
+fn takes_shared(s: []u8) -> u32 { return s.len; }
+
+fn peek(n: &Node) -> u32 { return n.^.tag; }

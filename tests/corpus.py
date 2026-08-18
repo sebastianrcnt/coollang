@@ -16,6 +16,7 @@ from fixtures import load_invalid, load_valid
 PROGRAM_NAMES = [
     "empty", "noop", "add", "consts", "all-operators", "control-flow",
     "aggregates", "slices", "unsafe-pointers", "recursion", "borrows", "abi-shape",
+    "builtin-pointer-expressions",
 ]
 
 # fixtures/cool0/invalid/ 에서 이 모듈이 맡는 이름들 (원래 corpus.py 의 DIAGNOSTICS)
@@ -25,6 +26,8 @@ DIAGNOSTIC_NAMES = [
     "aggregate-by-value", "slice-return", "missing-return", "non-exhaustive",
     "aliasing", "borrow-escapes", "unsafe-required", "u8-local",
     "break-outside-loop", "duplicate-name", "const-cycle", "deep-nesting",
+    "slice-without-unsafe", "slice-mut-without-unsafe", "offset-of-a-non-pointer",
+    "slice-of-a-slice", "offset-index-not-u32", "ptr-on-a-non-slice",
 ]
 
 _valid_by_name = {name: src for name, src in load_valid()}

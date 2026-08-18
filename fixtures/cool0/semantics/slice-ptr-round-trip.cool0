@@ -1,0 +1,18 @@
+// expect: g(12288) == 34
+// `s.ptr` is the other half of the pair `s.len` reads, so a slice can go back
+// to the pointer it came from and be re-sliced (language.md S3, S5). Without
+// it `slice()` would be one-way and a subslice would be impossible.
+fn g(base: u32) -> u32 {
+    unsafe {
+        let all: []mut u8 = slice_mut(base as *u8, 5);
+        all[0] = 10;
+        all[1] = 20;
+        all[2] = 30;
+        all[3] = 40;
+        all[4] = 50;
+
+        // drop the first two: ptr + 2, length 3
+        let rest: []u8 = slice(offset(all.ptr, 2), 3);
+        return rest.len + rest[0] + rest[2] / 50;
+    }
+}

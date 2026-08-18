@@ -1,0 +1,2 @@
+// expect: error 2:41: `slice_mut` requires `unsafe`
+fn f(p: *u8) -> u32 { let s: []mut u8 = slice_mut(p, 2); return s[0]; }

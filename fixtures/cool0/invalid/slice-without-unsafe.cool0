@@ -1,0 +1,2 @@
+// expect: error 2:31: `slice` requires `unsafe`
+fn f(p: *u8) -> u32 { let s = slice(p, 2); return s[0]; }

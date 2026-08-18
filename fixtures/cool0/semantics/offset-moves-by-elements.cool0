@@ -1,0 +1,24 @@
+// expect: f(12288) == 806
+// `offset(p, i)` moves i elements, not i bytes (language.md S5). With *u32 one
+// step is four bytes; with *u8 it is one. If the stride were dropped both walks
+// would land on the same address and the answer would change.
+fn f(base: u32) -> u32 {
+    unsafe {
+        let w: *u32 = base as *u32;
+        offset(w, 0).^ = 1;
+        offset(w, 1).^ = 2;
+        offset(w, 2).^ = 3;
+
+        // the same region seen a byte at a time: little endian, so the low byte
+        // of each word sits at 0, 4, 8
+        let b: *u8 = base as *u8;
+        let lo0: u32 = offset(b, 0).^;
+        let lo1: u32 = offset(b, 4).^;
+        let lo2: u32 = offset(b, 8).^;
+
+        // and going back one step from the third word finds the second
+        let back: u32 = offset(offset(w, 2), 0 - 1).^;
+
+        return lo0 * 256 + lo1 * 16 + lo2 + back * 256 + offset(w, 2).^;
+    }
+}

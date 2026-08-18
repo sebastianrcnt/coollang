@@ -1,0 +1,2 @@
+// expect: error 2:47: expected a raw pointer, found `[]u8`
+fn f(s: []u8) -> u32 { unsafe { let t = slice(s, 1); return t[0]; } }

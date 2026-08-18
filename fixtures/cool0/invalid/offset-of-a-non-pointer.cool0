@@ -1,0 +1,2 @@
+// expect: error 2:46: expected a raw pointer, found `u32`
+fn f(a: u32) -> u32 { unsafe { return offset(a, 1) as u32; } }
