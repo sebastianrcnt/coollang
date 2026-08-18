@@ -1,0 +1,4 @@
+// expect: error 4:24: expected `S`, found `E`
+struct S { a: u32 }
+enum E { A(u32) }
+fn f() { let s: S = E.A(1); }

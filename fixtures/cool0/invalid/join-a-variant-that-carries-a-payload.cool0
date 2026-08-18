@@ -1,0 +1,4 @@
+// expect: error 4:27: `|` cannot join `A`, which carries a payload
+// `|` may only join variants with no payload -- there would be nothing to bind.
+enum E { A(u32), B }
+fn f(e: &E) { match e.^ { A | B => { } } }

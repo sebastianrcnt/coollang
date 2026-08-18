@@ -35,6 +35,9 @@ GAP_NAMES = [
     "compound-shift-on-a-struct-place", "scalar-where-a-struct-is-wanted",
     "enum-used-as-a-struct-literal", "the-len-probe-fails",
     "a-type-used-as-a-place", "borrow-of-an-unknown-field", "else-if-chain-limit",
+    "join-a-variant-that-carries-a-payload", "unknown-variant-of-an-aggregate-enum",
+    "aggregate-enum-literal-where-a-struct-is-wanted",
+    "aggregate-enum-variant-inside-an-expression",
 ]
 
 # fixtures/cool0/valid/ 에서 이 모듈이 맡는 이름들 (원래 gaps.py 의 GAP_PROGRAMS)
@@ -51,13 +54,21 @@ GAP_PROGRAM_NAMES = [
     "left-associative-operator-chains",
     "pointer-comparison-through-casts", "a-call-as-the-for-post-statement",
     "nested-match", "aggregate-local-plus-recursion",
+    "match-statement-joins-payloadless-variants",
 ]
 
 _valid_by_name = {name: src for name, src in load_valid()}
-_invalid_by_name = {name: src for name, src, _diag in load_invalid()}
+_invalid_by_name = {name: (src, diag) for name, src, diag in load_invalid()}
 
 # (소스, 설명). 같은 진단이 나와야 하는 것들
-GAPS = [(_invalid_by_name[name], name.replace("-", " ")) for name in GAP_NAMES]
+GAPS = [(_invalid_by_name[name][0], name.replace("-", " ")) for name in GAP_NAMES]
+
+# 이름 -> 픽스처가 적어 둔 진단 한 줄. 세 구현이 서로 같은지가 아니라, 오라클이
+# 명세가 정한 그 문구를 내는지를 본다 -- 이쪽은 cool0c.wat 이 필요 없다.
+GAP_DIAGNOSTICS = [
+    (name.replace("-", " "), _invalid_by_name[name][0], _invalid_by_name[name][1])
+    for name in GAP_NAMES
+]
 
 # (소스, 설명). 컴파일에 성공해야 하는 것들
 GAP_PROGRAMS = [

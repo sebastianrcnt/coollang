@@ -1,0 +1,5 @@
+// expect: error 5:25: enum literal is only allowed as an initializer
+// A payload-less variant of an *aggregate* enum is still a place, not a value,
+// so it may only appear as an initializer.
+enum E { A(u32), B }
+fn f() -> u32 { return E.B as u32; }

@@ -1,2 +1,2 @@
-// expect: error 1:24: expected `u32`, found `i32`
+// expect: error 2:24: expected `u32`, found `i32`
 const D: u32 = 1 >> (2 as i32);

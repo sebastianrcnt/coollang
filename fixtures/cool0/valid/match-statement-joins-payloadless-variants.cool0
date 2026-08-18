@@ -1,0 +1,10 @@
+// expect: ok
+// `A | B` in statement form. The expression form is covered elsewhere; this is
+// the arm-joining path in parse_match itself.
+enum E { A, B, C }
+fn f(e: E) -> u32 {
+    match e {
+        A | B => { return 1; }
+        _ => { return 2; }
+    }
+}

@@ -1,0 +1,5 @@
+// expect: error 5:22: `E` has no variant `Zork`
+// The scalar-enum path has its own fixture; this one has a payload, so it goes
+// through check_enum_lit instead.
+enum E { A(u32), B }
+fn f() { let e: E = E.Zork; }

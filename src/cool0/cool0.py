@@ -343,10 +343,6 @@ def is_int(t: Ty) -> bool:
     return t in (I32, U32, INTLIT)
 
 
-def is_aggregate(t: Ty) -> bool:
-    return isinstance(t, Named)
-
-
 def slot_count(t: Ty) -> int:
     """wasm 값 슬롯 수. 슬라이스는 (ptr, len) 둘, 나머지 스칼라는 하나."""
     if isinstance(t, Slice):

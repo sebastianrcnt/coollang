@@ -17,7 +17,7 @@ import pytest
 import wasmtime
 
 from conftest import ENGINE, run_compiler, needs_current_wat
-from gaps import GAP_PROGRAMS, GAPS
+from gaps import GAP_DIAGNOSTICS, GAP_PROGRAMS, GAPS
 from cool0.cool0 import STATUS_OK, compile as reference_compile
 
 SRC_DIR = pathlib.Path(__file__).resolve().parent.parent / "src" / "cool0"
@@ -42,6 +42,32 @@ def agree(three, src: bytes):
     assert run_compiler(a, src) == p, "A disagrees with the oracle"
     assert run_compiler(b, src) == p, "B disagrees with the oracle"
     return p
+
+
+# --- 오라클만으로 확인되는 것 (cool0c.wat 이 필요 없다) ------------------------
+#
+# 아래 세 구현 비교는 WAT 가 뒤처지면 통째로 스킵된다. 그런데 이 픽스처들이
+# **오라클에서 유일하게 실행되는 자리**이기도 해서, 한동안 스킵되는 사이 참조
+# 구현의 커버리지가 100% 에서 98% 로 조용히 내려앉아 있었다 -- 진단 37 줄이
+# 아무 시험에도 안 걸리는 상태였다. `fail_under = 100` 이 그걸 잡아야 했는데,
+# 잡은 뒤에도 원인이 "WAT 가 낡았다"로 보이지 않아 방치됐다.
+#
+# 그래서 나눈다. 오라클이 명세대로 거절하는지는 WAT 와 아무 상관이 없다.
+
+
+@pytest.mark.parametrize(
+    "why,src,diag", GAP_DIAGNOSTICS, ids=[w for w, _, _ in GAP_DIAGNOSTICS]
+)
+def test_the_oracle_gives_each_gap_its_documented_diagnostic(why, src, diag):
+    """픽스처 첫 줄의 `// expect: error ...` 를 글자 그대로 낸다."""
+    assert reference_compile(src) == (1, diag)
+
+
+@pytest.mark.parametrize("src,why", GAP_PROGRAMS, ids=[w for _, w in GAP_PROGRAMS])
+def test_the_oracle_compiles_each_gap_program(src, why):
+    status, out = reference_compile(src.encode("ascii"))
+    assert status == STATUS_OK, out.decode("ascii", "replace")
+    wasmtime.Module(ENGINE, out)
 
 
 # --- 한 번도 나온 적 없던 진단들 ---------------------------------------------

@@ -1,2 +1,2 @@
-// expect: error 1:16: invalid digit in integer literal
+// expect: error 2:16: invalid digit in integer literal
 const Z: u32 = 0x__1;

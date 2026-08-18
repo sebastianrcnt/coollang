@@ -1,2 +1,2 @@
-// expect: error 1:28: `<`: `i32` and `u32` do not match
+// expect: error 2:28: `<`: `i32` and `u32` do not match
 const B: bool = (1 as i32) < (2 as u32);
