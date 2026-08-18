@@ -25,3 +25,14 @@ addopts = "-p no:faulthandler"
 # 잡는다 -- 진짜 행은 무한이라 15초면 충분히 걸리고, 멀쩡한 느린 테스트
 # (test_milestone 은 145 KB 소스를 세 번 컴파일한다) 때문에 전체 결과를 잃지 않는다.
 timeout = 15
+
+[tool.coverage.run]
+source = ["src"]
+branch = false
+
+[tool.coverage.report]
+# 도달 불가한 자리는 전부 `# pragma: no cover` 로 이유와 함께 표시돼 있다.
+# 그래서 여기 기준은 100 이다 -- 새로 죽는 줄이 생기면 그 자리에서 실패한다.
+fail_under = 100
+show_missing = true
+skip_covered = true

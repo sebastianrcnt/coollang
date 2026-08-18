@@ -335,7 +335,8 @@ def ty_str(t: Ty) -> str:
         return "*" + ty_str(t.inner)
     if isinstance(t, Named):
         return t.name
-    return "?"
+    # 도달 불가. 위에서 모든 Ty 종류를 다룬다
+    return "?"  # pragma: no cover
 
 
 def is_int(t: Ty) -> bool:
@@ -879,7 +880,9 @@ class Parser:
         if self.eat("else"):
             if self.at("if"):
                 # else-if 사슬도 재귀다. 블록 깊이에 함께 센다
-                if self.block_depth >= MAX_DEPTH:
+                # 도달 불가. else-if 는 언제나 then 블록을 먼저 파싱하므로
+                # parse_block 의 같은 검사가 반드시 먼저 걸린다
+                if self.block_depth >= MAX_DEPTH:  # pragma: no cover
                     raise _err(self.tok.pos, "block nests too deeply")
                 self.block_depth += 1
                 els = [self.parse_if()]
@@ -1244,7 +1247,7 @@ class Checker:
             return Ref(self.resolve_ty(t.inner), t.mut)
         if t.kind == "ptr":
             return Ptr(self.resolve_ty(t.inner))
-        raise AssertionError(t.kind)
+        raise AssertionError(t.kind)  # pragma: no cover
 
     def size_of(self, t: Ty) -> int:
         if t in (I32, U32):
@@ -1257,7 +1260,7 @@ class Checker:
             return 4
         if isinstance(t, Named):
             return self.agg(t.name).size
-        raise AssertionError(ty_str(t))
+        raise AssertionError(ty_str(t))  # pragma: no cover
 
     def align_of(self, t: Ty) -> int:
         if t in (I32, U32) or isinstance(t, (Slice, Ref, Ptr)):
@@ -1266,7 +1269,7 @@ class Checker:
             return 1
         if isinstance(t, Named):
             return self.agg(t.name).align
-        raise AssertionError(ty_str(t))
+        raise AssertionError(ty_str(t))  # pragma: no cover
 
     def agg(self, name: str):
         return self.structs.get(name) or self.enums[name]
@@ -1463,7 +1466,10 @@ class Checker:
             elif op == "^":
                 r = lv ^ rv
             else:
-                raise _err(e.pos, f"`{op}` is not allowed in a constant expression")
+                # 도달 불가. 이항 연산자는 전부 위에서 다뤄진다
+                raise _err(  # pragma: no cover
+                    e.pos, f"`{op}` is not allowed in a constant expression"
+                )
             return r & M, t
         raise _err(e.pos, "not a constant expression")
 
@@ -1625,7 +1631,7 @@ class Checker:
             self.unsafe_depth -= 1
             return
 
-        raise AssertionError(type(s))
+        raise AssertionError(type(s))  # pragma: no cover
 
     def check_local_ty(self, t: Ty, pos):
         if t is U8:
@@ -1742,7 +1748,9 @@ class Checker:
 
     def retype(self, e: Node, t: Ty):
         """굳지 않은 정수 리터럴 하위식을 t 로 굳힌다."""
-        if getattr(e, "ty", None) is not INTLIT:
+        # 굳지 않은 노드에서만 부른다. 합성 노드가 INTLIT 이면 자식도 INTLIT 이라
+        # 이 이른 반환은 도달하지 않는다
+        if getattr(e, "ty", None) is not INTLIT:  # pragma: no cover
             return
         e.ty = t
         if isinstance(e, Unary):
@@ -1874,12 +1882,13 @@ class Checker:
                 return ty  # 장소로만 쓰인다. 상위에서 거른다
             return read_ty(ty)
 
-        raise AssertionError(type(e))
+        raise AssertionError(type(e))  # pragma: no cover
 
     def slice_field(self, e: Field) -> Optional[str]:
         if e.name not in ("len", "ptr"):
             return None
-        if isinstance(e.base, Ident) and e.base.name in self.enums:
+        # 도달 불가. is_enum_lit 이 먼저 걸러낸다
+        if isinstance(e.base, Ident) and e.base.name in self.enums:  # pragma: no cover
             return None
         try:
             probe = self.probe_ty(e.base)
@@ -1891,7 +1900,8 @@ class Checker:
         """부작용 없이 타입만 미리 본다 (`.len` 판별용)."""
         saved = getattr(e, "ty", None)
         t = self.check_expr(e, None)
-        if saved is not None:
+        # 도달 불가. 탐침은 그 노드를 처음 보는 자리에서만 일어난다
+        if saved is not None:  # pragma: no cover
             e.ty = saved
         return t
 
@@ -1938,7 +1948,8 @@ class Checker:
         return BOOL if cmp else lt
 
     def check_binop_types(self, pos, op: str, lt: Ty, rt: Ty, rhs: Node):
-        if op in ("<<", ">>"):
+        # 도달 불가. 시프트는 check_binary 와 check_stmt 에서 먼저 반환한다
+        if op in ("<<", ">>"):  # pragma: no cover
             if not is_int(lt):
                 raise _err(pos, f"`{op}` requires an integer, found `{ty_str(lt)}`")
             if rt is not U32:
@@ -2041,7 +2052,9 @@ class Checker:
         for name in ("args", "enum_args"):
             for child in getattr(e, name, ()) or ():
                 self.walk_locals(child, visit)
-        if isinstance(e, StructLit):
+        # 도달 불가. 부르는 곳이 check_aliasing 뿐이고 거기는 인자 목록만 본다.
+        # language.md §5 가 인자 자리의 struct 리터럴을 금지한다
+        if isinstance(e, StructLit):  # pragma: no cover
             for _, _, v in e.fields:
                 self.walk_locals(v, visit)
 
@@ -2117,7 +2130,9 @@ class Checker:
         if data in self.strings:
             return self.strings[data]
         addr = self.rodata_next
-        if addr + len(data) > SHADOW_FLOOR:
+        # 지금은 도달 불가 -- 리터럴 총량은 소스 길이 이하이고 소스는 289 KB 에서
+        # 막히므로 8 MiB 에 닿을 수 없다. 그 한계가 올라가면 이 검사가 살아난다
+        if addr + len(data) > SHADOW_FLOOR:  # pragma: no cover
             raise _err(pos, "string literals do not fit below the shadow stack")
         self.strings[data] = addr
         self.rodata_next = addr + len(data)
@@ -2285,7 +2300,7 @@ class Body:
         for k in range(len(self.ctrl) - 1, -1, -1):
             if self.ctrl[k] == kind:
                 return len(self.ctrl) - 1 - k
-        raise AssertionError("no enclosing " + kind)
+        raise AssertionError("no enclosing " + kind)  # pragma: no cover
 
 
 class Emitter:
@@ -2516,7 +2531,7 @@ class Emitter:
             self.b.op(OP_I32_ADD)
             self.release(tp, tl, ti)
             return
-        raise AssertionError(type(e))
+        raise AssertionError(type(e))  # pragma: no cover
 
     def in_wasm_local(self, e: Node) -> bool:
         return isinstance(e, Ident) and getattr(e, "local", None) is not None and not e.local.in_memory
@@ -2552,7 +2567,7 @@ class Emitter:
             return e.base.ty.elem
         if isinstance(e, Deref):
             return e.base.ty.inner
-        raise AssertionError(type(e))
+        raise AssertionError(type(e))  # pragma: no cover
 
     # --- 식 ---------------------------------------------------------------
 
@@ -2625,7 +2640,7 @@ class Emitter:
         if isinstance(e, (Field, Index, Deref)):
             self.emit_place_load(e, self.place_ty(e))
             return
-        raise AssertionError(type(e))
+        raise AssertionError(type(e))  # pragma: no cover
 
     def emit_binary(self, e: Binary):
         if e.op in ("&&", "||"):
@@ -2866,7 +2881,7 @@ class Emitter:
             self.emit_block(s.body)
             return
 
-        raise AssertionError(type(s))
+        raise AssertionError(type(s))  # pragma: no cover
 
     def emit_match(self, s: Match):
         b = self.b
@@ -3040,7 +3055,7 @@ def compile_text(src: str) -> tuple[int, bytes]:
     return compile(src.encode("ascii"))
 
 
-if __name__ == "__main__":  # 호스트. 컴파일러의 일부가 아니다
+if __name__ == "__main__":  # 호스트. 컴파일러가 아니다  # pragma: no cover
     import sys
 
     if len(sys.argv) != 3:
