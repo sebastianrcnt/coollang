@@ -1,0 +1,4 @@
+// expect: error 1:16: invalid digit in integer literal
+// grammar.ebnf: `"0x", hex_digit, { hex_digit | "_" }` -- the separator cannot
+// come first. Parity cannot catch this: both implementations were wrong together.
+const X: u32 = 0x_FF;

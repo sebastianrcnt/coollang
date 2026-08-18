@@ -15,6 +15,9 @@ from fixtures import load_invalid, load_valid
 
 # fixtures/cool0/invalid/ 에서 이 모듈이 맡는 이름들 (원래 gaps.py 의 GAPS)
 GAP_NAMES = [
+    "underscore-after-hex-prefix", "underscore-after-binary-prefix",
+    "two-underscores-after-hex-prefix", "non-digit-after-hex-prefix",
+    "integer-literal-far-out-of-range",
     "unterminated-char-at-eof", "unterminated-char-after-escape",
     "unterminated-string-after-escape", "print-a-raw-pointer-type",
     "return-a-raw-pointer-type", "not-a-constant", "const-cast-from-bool",

@@ -1,0 +1,3 @@
+// expect: error 1:16: invalid digit in integer literal
+// `g` is not a hex digit; the first character after the prefix has to be one
+const W: u32 = 0xg;

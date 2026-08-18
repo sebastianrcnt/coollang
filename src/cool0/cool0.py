@@ -185,19 +185,26 @@ def lex(src: bytes) -> list[Token]:
                 else:
                     base, digits = 2, "01"
                 j = i + 2
-            start = j
-            body = []
-            while j < n and (chr(src[j]) in digits or src[j] == 0x5F):
+            # `_` separates digits, so it cannot come first -- grammar.ebnf spells
+            # the prefix forms as `"0x", hex_digit, { hex_digit | "_" }`
+            ndigits = 0
+            value = 0
+            over = False
+            while j < n and (chr(src[j]) in digits or (src[j] == 0x5F and ndigits)):
                 if src[j] != 0x5F:
-                    body.append(chr(src[j]))
+                    d = int(chr(src[j]), base)
+                    # detect overflow past 32 bits while scanning; never build a
+                    # bignum from the source, or a long literal escapes compile()
+                    if value > (0xFFFF_FFFF - d) // base:
+                        over = True
+                    value = value * base + d
+                    ndigits += 1
                 j += 1
-            if not body:
-                raise CompileError(sl, sc, "integer literal has no digits")
             if j < n and is_ident_cont(src[j]):
                 raise CompileError(sl, sc, "invalid digit in integer literal")
-            del start
-            value = int("".join(body), base)
-            if value > 0xFFFF_FFFF:
+            if not ndigits:
+                raise CompileError(sl, sc, "integer literal has no digits")
+            if over:
                 raise CompileError(sl, sc, "integer literal out of range")
             text = src[i:j].decode("ascii")
             adv(j - i)

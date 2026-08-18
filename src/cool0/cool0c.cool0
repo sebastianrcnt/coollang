@@ -470,9 +470,11 @@ fn lex_number(c: &mut Ctx) {
     let mut ndigits: u32 = 0;
     let mut value: u32 = 0;
     let mut over: bool = false;
+    // `_` separates digits, so it cannot come first -- grammar.ebnf spells the
+    // prefix forms as `"0x", hex_digit, { hex_digit | "_" }`
     for j < n {
         let b: u32 = c.^.src[j];
-        if b == '_' {
+        if b == '_' && ndigits != 0 {
             j += 1;
         } else {
             let d: u32 = digit_val(b, base);
@@ -484,12 +486,12 @@ fn lex_number(c: &mut Ctx) {
             j += 1;
         }
     }
-    if ndigits == 0 {
-        err_msg(c, sl, sc, "integer literal has no digits");
-        return;
-    }
     if j < n && is_ident_cont(c.^.src[j]) {
         err_msg(c, sl, sc, "invalid digit in integer literal");
+        return;
+    }
+    if ndigits == 0 {
+        err_msg(c, sl, sc, "integer literal has no digits");
         return;
     }
     if over {

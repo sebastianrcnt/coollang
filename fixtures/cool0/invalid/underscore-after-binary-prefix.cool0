@@ -1,0 +1,2 @@
+// expect: error 1:16: invalid digit in integer literal
+const Y: u32 = 0b_1;
