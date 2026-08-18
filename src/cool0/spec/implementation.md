@@ -161,8 +161,8 @@ for      <초기화>
              br 0
            end
          end
-match    <대상 주소> -> 임시
-         block
+match    <대상 주소> -> 임시                          ; 문 형태: block (void)
+         block                                        ; 식 형태: block (result i32)
            팔마다: 태그를 읽어 비교, if <바인딩><몸통> br 1 end
            `_` 팔의 몸통, 없으면 unreachable
          end
@@ -170,6 +170,13 @@ match    <대상 주소> -> 임시
 
 `continue` 블록은 후처리가 없어도 낸다. `match` 의 팔은 선언 순서가 아니라 **적힌
 순서**로 비교한다. 완전성이 보장되므로 마지막 `unreachable` 은 죽은 코드다.
+
+**식 형태 match** (language.md §5) 는 같은 모양이되, 바깥 `block` 이 `(result
+i32)` 이고 각 팔의 `<몸통>` 이 문 목록이 아니라 식 하나를 계산해 스택에 남긴다.
+팔을 감싸는 `if` 는 여전히 `(void)` 다 -- 안에서 값을 얹고 곧장 `br 1` 로 바깥
+`block` 까지 넘기므로 `if` 자신은 값을 내지 않아도 된다. cool0 의 스칼라 타입은
+전부 wasm 값 하나(`i32`)이므로 결과 타입은 언제나 `i32` 다 (§2) -- 슬라이스와
+집합체는 애초에 식 형태의 결과가 될 수 없다(language.md §5, §9).
 
 ### return 과 함수의 꼬리
 

@@ -285,6 +285,11 @@ class Dump:
                     f"{self.ex(self.f(n, 'B'))} {self.ex(self.f(n, 'C'))})")
         if k == "offset":
             return f"(offset {p} {d} {self.ex(self.f(n, 'A'))} {self.ex(self.f(n, 'B'))})"
+        if k == "match":
+            # only the expression form reaches ex() -- the statement form is
+            # only ever a top-level statement, dumped by stmt() below
+            arms = " ".join(self.lst(self.f(n, "B"), self.arm_expr))
+            return f"(matchexpr {p} {d} {self.ex(self.f(n, 'A'))} [{arms}])"
         raise AssertionError(k)
 
     def litfield(self, n: int) -> str:
@@ -331,6 +336,14 @@ class Dump:
         )
         binds = " ".join(self.lst(self.f(n, "C"), lambda b: self.name(b)))
         return f"(arm {self.pos(n)} {v} [{binds}] {self.block(self.f(n, 'D'))})"
+
+    def arm_expr(self, n: int) -> str:
+        # same shape as arm(), but D is a value (matchexpr's arms), not a block
+        v = "_" if self.f(n, "E") else "|".join(
+            [self.name(n)] + self.lst(self.f(n, "AUX2"), self.name)
+        )
+        binds = " ".join(self.lst(self.f(n, "C"), lambda b: self.name(b)))
+        return f"(arm {self.pos(n)} {v} [{binds}] {self.ex(self.f(n, 'D'))})"
 
     def decl(self, n: int) -> str:
         k = NK[self.f(n, "KIND")]
@@ -426,6 +439,14 @@ class RefDump:
                 for fp, nm, v in e.fields
             )
             return f"(structlit {p} {d} {e.name} [{fs}])"
+        if isinstance(e, Match):
+            # only the expression form reaches ex() -- see Dump.ex() in cool0c
+            arms = []
+            for a in e.arms:
+                v2 = "|".join(a.variants) if a.variants else "_"
+                binds = " ".join(b[1] for b in a.binds)
+                arms.append(f"(arm {a.pos[0]} {a.pos[1]} {v2} [{binds}] {self.ex(a.value)})")
+            return f"(matchexpr {p} {d} {self.ex(e.scrutinee)} [{' '.join(arms)}])"
         raise AssertionError(type(e))
 
     def block(self, stmts) -> str:
@@ -685,6 +706,20 @@ CHECK_SOURCES = [
     "enum E { A, B(i32) } fn f() -> i32 { let e: E = E.A; match e { A => { return 0; } B(x) => { return x; } } }",
     "enum E { A, B } fn f() { let mut e: E = E.A; e = E.B; }",
     "enum E { } fn f() { }",
+    # match -- 식 형태 (language.md S5)
+    "enum E { A, B(i32), C(i32, u32) } fn f() -> i32 { let e: E = E.A; return match e { A => 1, B(n) => n, C(a, b) => a }; }",
+    "enum E { A, B } fn f() { let e: E = E.A; let x: i32 = match e { A => 1 }; }",
+    "enum E { A, B } fn f() { let e: E = E.A; let x = match e { A => 1, _ => true }; }",
+    "enum E { A, B } fn f() { let e: E = E.A; let x: u32 = match e { A => 1, _ => 2 }; }",
+    "enum E { A, B } fn f() { let e: E = E.A; let x = match e { A => 1, _ => 2 }; let y: u32 = x; }",
+    "enum E { A, B } fn f(p: *u8) -> u32 { unsafe { let e: E = E.A; "
+    "let s: []u8 = match e { A => slice(p, 1), _ => slice(p, 2) }; return s.len; } }",
+    "struct S { a: i32 } enum E { A, B } fn f() { let e: E = E.A; let s: S = S{ a: 1 }; "
+    "let x: S = match e { A => s, _ => s }; }",
+    "enum P { Add, Sub, Mul } fn f(p: P) -> bool { return match p { Add | Sub => true, Mul => false }; }",
+    "enum E { A, B } fn id(x: i32) -> i32 { return x; } fn f() { let e: E = E.A; let x = id(match e { A => 1, _ => 2 }); }",
+    "enum E { A, B } fn f() { let e: E = E.A; let x = match e { A => { } _ => { } }; }",
+    "enum P { Add, Sub } fn f(p: P) -> u32 { return match p { Add => 0x6A, Sub => 0x6B }; }",
     # unsafe
     "fn f() { let p: *u32 = 0 as *u32; let x = p.^; }",
     "fn f() { let p: *u32 = 0 as *u32; unsafe { let x = p.^; } }",

@@ -411,12 +411,12 @@ fn punct_id(c: &Ctx, i: u32) -> Punct {
 }
 
 fn punct_len(id: Punct) -> u32 {
-    match id {
-        ShlEq | ShrEq => { return 3; }
+    return match id {
+        ShlEq | ShrEq => 3,
         Arrow | FatArrow | EqEq | Ne | Le | Ge | AndAnd | OrOr | Shl | Shr
-        | AddEq | SubEq | MulEq | DivEq | ModEq | AndEq | OrEq | XorEq => { return 2; }
-        _ => { return 1; }
-    }
+        | AddEq | SubEq | MulEq | DivEq | ModEq | AndEq | OrEq | XorEq => 2,
+        _ => 1,
+    };
 }
 
 fn push_tok(c: &mut Ctx, kind: u32, start: u32, len: u32, value: u32,
@@ -761,9 +761,12 @@ const S_BREAK: u32 = 35;
 const S_CONTINUE: u32 = 36;
 const S_RETURN: u32 = 37;    // A value
 const S_MATCH: u32 = 38;     // A scrutinee, B arms, C enum info, D has-wild
+                             // E is-expr (language.md S5): arm bodies are values, not blocks
 const S_UNSAFE: u32 = 39;    // A body
 const S_ARM: u32 = 40;       // A name start, B name len, C binds, D body, E wild
                              // AUX variant, AUX2 head of the S_ALT list
+                             // in an expression-form match (S_MATCH.E != 0), D is the
+                             // arm's value expression instead of a statement list
 const S_BIND: u32 = 41;      // A name start, B name len; AUX local
 const S_ALT: u32 = 42;       // A name start, B name len; AUX variant. the tail of `A | B`
 
@@ -823,52 +826,51 @@ fn eat_kw(c: &mut Ctx, k: u32) -> bool {
 
 // --- rendering tokens into diagnostics -------------------------------------
 
+// `put_str` takes a slice, and a match expression cannot produce one
+// (language.md S5) -- so this stays an if-chain, like `put_kw` below it.
 fn put_punct(c: &mut Ctx, p: Punct) {
-    match p {
-        ShlEq => { put_str(c, "<<="); }
-        ShrEq => { put_str(c, ">>="); }
-        Arrow => { put_str(c, "->"); }
-        FatArrow => { put_str(c, "=>"); }
-        EqEq => { put_str(c, "=="); }
-        Ne => { put_str(c, "!="); }
-        Le => { put_str(c, "<="); }
-        Ge => { put_str(c, ">="); }
-        AndAnd => { put_str(c, "&&"); }
-        OrOr => { put_str(c, "||"); }
-        Shl => { put_str(c, "<<"); }
-        Shr => { put_str(c, ">>"); }
-        AddEq => { put_str(c, "+="); }
-        SubEq => { put_str(c, "-="); }
-        MulEq => { put_str(c, "*="); }
-        DivEq => { put_str(c, "/="); }
-        ModEq => { put_str(c, "%="); }
-        AndEq => { put_str(c, "&="); }
-        OrEq => { put_str(c, "|="); }
-        XorEq => { put_str(c, "^="); }
-        LParen => { put_str(c, "("); }
-        RParen => { put_str(c, ")"); }
-        LBrace => { put_str(c, "{"); }
-        RBrace => { put_str(c, "}"); }
-        LBrack => { put_str(c, "["); }
-        RBrack => { put_str(c, "]"); }
-        Comma => { put_str(c, ","); }
-        Semi => { put_str(c, ";"); }
-        Colon => { put_str(c, ":"); }
-        Dot => { put_str(c, "."); }
-        Eq => { put_str(c, "="); }
-        Lt => { put_str(c, "<"); }
-        Gt => { put_str(c, ">"); }
-        Add => { put_str(c, "+"); }
-        Sub => { put_str(c, "-"); }
-        Mul => { put_str(c, "*"); }
-        Div => { put_str(c, "/"); }
-        Mod => { put_str(c, "%"); }
-        And => { put_str(c, "&"); }
-        Or => { put_str(c, "|"); }
-        Xor => { put_str(c, "^"); }
-        Not => { put_str(c, "!"); }
-        NoPunct => { }
-    }
+    if p == Punct.ShlEq { put_str(c, "<<="); return; }
+    if p == Punct.ShrEq { put_str(c, ">>="); return; }
+    if p == Punct.Arrow { put_str(c, "->"); return; }
+    if p == Punct.FatArrow { put_str(c, "=>"); return; }
+    if p == Punct.EqEq { put_str(c, "=="); return; }
+    if p == Punct.Ne { put_str(c, "!="); return; }
+    if p == Punct.Le { put_str(c, "<="); return; }
+    if p == Punct.Ge { put_str(c, ">="); return; }
+    if p == Punct.AndAnd { put_str(c, "&&"); return; }
+    if p == Punct.OrOr { put_str(c, "||"); return; }
+    if p == Punct.Shl { put_str(c, "<<"); return; }
+    if p == Punct.Shr { put_str(c, ">>"); return; }
+    if p == Punct.AddEq { put_str(c, "+="); return; }
+    if p == Punct.SubEq { put_str(c, "-="); return; }
+    if p == Punct.MulEq { put_str(c, "*="); return; }
+    if p == Punct.DivEq { put_str(c, "/="); return; }
+    if p == Punct.ModEq { put_str(c, "%="); return; }
+    if p == Punct.AndEq { put_str(c, "&="); return; }
+    if p == Punct.OrEq { put_str(c, "|="); return; }
+    if p == Punct.XorEq { put_str(c, "^="); return; }
+    if p == Punct.LParen { put_str(c, "("); return; }
+    if p == Punct.RParen { put_str(c, ")"); return; }
+    if p == Punct.LBrace { put_str(c, "{"); return; }
+    if p == Punct.RBrace { put_str(c, "}"); return; }
+    if p == Punct.LBrack { put_str(c, "["); return; }
+    if p == Punct.RBrack { put_str(c, "]"); return; }
+    if p == Punct.Comma { put_str(c, ","); return; }
+    if p == Punct.Semi { put_str(c, ";"); return; }
+    if p == Punct.Colon { put_str(c, ":"); return; }
+    if p == Punct.Dot { put_str(c, "."); return; }
+    if p == Punct.Eq { put_str(c, "="); return; }
+    if p == Punct.Lt { put_str(c, "<"); return; }
+    if p == Punct.Gt { put_str(c, ">"); return; }
+    if p == Punct.Add { put_str(c, "+"); return; }
+    if p == Punct.Sub { put_str(c, "-"); return; }
+    if p == Punct.Mul { put_str(c, "*"); return; }
+    if p == Punct.Div { put_str(c, "/"); return; }
+    if p == Punct.Mod { put_str(c, "%"); return; }
+    if p == Punct.And { put_str(c, "&"); return; }
+    if p == Punct.Or { put_str(c, "|"); return; }
+    if p == Punct.Xor { put_str(c, "^"); return; }
+    if p == Punct.Not { put_str(c, "!"); return; }
 }
 
 fn put_kw(c: &mut Ctx, k: u32) {
@@ -1088,24 +1090,24 @@ const CMP_LEVEL: u32 = 2;
 const NLEVELS: u32 = 9;
 
 fn is_cmp(p: Punct) -> bool {
-    match p {
-        EqEq | Ne | Lt | Gt | Le | Ge => { return true; }
-        _ => { return false; }
-    }
+    return match p {
+        EqEq | Ne | Lt | Gt | Le | Ge => true,
+        _ => false,
+    };
 }
 
 fn op_at_level(p: Punct, level: u32) -> bool {
-    match p {
-        OrOr => { return level == 0; }
-        AndAnd => { return level == 1; }
-        Or => { return level == 3; }
-        Xor => { return level == 4; }
-        And => { return level == 5; }
-        Shl | Shr => { return level == 6; }
-        Add | Sub => { return level == 7; }
-        Mul | Div | Mod => { return level == 8; }
-        _ => { return false; }
-    }
+    return match p {
+        OrOr => level == 0,
+        AndAnd => level == 1,
+        Or => level == 3,
+        Xor => level == 4,
+        And => level == 5,
+        Shl | Shr => level == 6,
+        Add | Sub => level == 7,
+        Mul | Div | Mod => level == 8,
+        _ => false,
+    };
 }
 
 fn parse_expr(c: &mut Ctx, asl: bool) -> u32 { return parse_bin(c, 0, asl); }
@@ -1352,6 +1354,7 @@ fn parse_primary(c: &mut Ctx, asl: bool) -> u32 {
         let di: u32 = depth_of(c, ix);
         return deep(c, n, max2(dp, di));
     }
+    if at_kw(c, K_MATCH) { return parse_match_expr(c); }
     if at_p(c, Punct.LParen) {
         bump(c);
         let e: u32 = parse_expr(c, true);
@@ -1434,11 +1437,11 @@ fn parse_block(c: &mut Ctx) -> u32 {
 }
 
 fn is_assign_op(p: Punct) -> bool {
-    match p {
+    return match p {
         Eq | AddEq | SubEq | MulEq | DivEq | ModEq
-        | AndEq | OrEq | XorEq | ShlEq | ShrEq => { return true; }
-        _ => { return false; }
-    }
+        | AndEq | OrEq | XorEq | ShlEq | ShrEq => true,
+        _ => false,
+    };
 }
 
 fn parse_stmt(c: &mut Ctx) -> u32 {
@@ -1591,6 +1594,64 @@ fn parse_for(c: &mut Ctx) -> u32 {
     return n;
 }
 
+// Parses the pattern part of one arm (`_`, `A`, `A | B`, or `A(x, y)`) into
+// `arm`'s name/alt/bind fields. The caller parses `=>` and the body -- a block
+// for a statement match, a value for an expression match (language.md S5, S6).
+fn parse_arm_pattern(c: &mut Ctx, arm: u32) {
+    let ts: u32 = c.^.toks[c.^.ti].start;
+    let tl: u32 = c.^.toks[c.^.ti].len;
+    if cur_kind(c) == TK_IDENT && src_eq(c, ts, tl, "_") {
+        bump(c);
+        c.^.nodes[arm].e = 1;
+        return;
+    }
+    let it: u32 = expect_ident(c);
+    if it == NONE { return; }
+    let s: u32 = c.^.toks[it].start;
+    let l: u32 = c.^.toks[it].len;
+    c.^.nodes[arm].a = s;
+    c.^.nodes[arm].b = l;
+    if !at_p(c, Punct.LParen) {
+        // `A | B | C` -- only variants that carry no payload can be joined
+        let mut ah: u32 = 0;
+        let mut at2: u32 = 0;
+        for eat_p(c, Punct.Or) {
+            let ai: u32 = expect_ident(c);
+            if ai == NONE { break; }
+            let al: u32 = c.^.toks[ai].line;
+            let ac: u32 = c.^.toks[ai].col;
+            let alt: u32 = node(c, S_ALT, al, ac);
+            let as2: u32 = c.^.toks[ai].start;
+            let aln: u32 = c.^.toks[ai].len;
+            c.^.nodes[alt].a = as2;
+            c.^.nodes[alt].b = aln;
+            if ah == 0 { ah = alt; } else { c.^.nodes[at2].next = alt; }
+            at2 = alt;
+        }
+        c.^.nodes[arm].aux2 = ah;
+    }
+    if eat_p(c, Punct.LParen) {
+        let mut bh: u32 = 0;
+        let mut bt: u32 = 0;
+        for !failed(c) && !at_p(c, Punct.RParen) {
+            let bline: u32 = cur_line(c);
+            let bcol: u32 = cur_col(c);
+            let bi: u32 = expect_ident(c);
+            if bi == NONE { break; }
+            let b: u32 = node(c, S_BIND, bline, bcol);
+            let bs: u32 = c.^.toks[bi].start;
+            let bl: u32 = c.^.toks[bi].len;
+            c.^.nodes[b].a = bs;
+            c.^.nodes[b].b = bl;
+            if bh == 0 { bh = b; } else { c.^.nodes[bt].next = b; }
+            bt = b;
+            if !eat_p(c, Punct.Comma) { break; }
+        }
+        expect_p(c, Punct.RParen);
+        c.^.nodes[arm].c = bh;
+    }
+}
+
 fn parse_match(c: &mut Ctx) -> u32 {
     let line: u32 = cur_line(c);
     let col: u32 = cur_col(c);
@@ -1605,58 +1666,7 @@ fn parse_match(c: &mut Ctx) -> u32 {
         let aline: u32 = cur_line(c);
         let acol: u32 = cur_col(c);
         let arm: u32 = node(c, S_ARM, aline, acol);
-        let ts: u32 = c.^.toks[c.^.ti].start;
-        let tl: u32 = c.^.toks[c.^.ti].len;
-        if cur_kind(c) == TK_IDENT && src_eq(c, ts, tl, "_") {
-            bump(c);
-            c.^.nodes[arm].e = 1;
-        } else {
-            let it: u32 = expect_ident(c);
-            if it == NONE { break; }
-            let s: u32 = c.^.toks[it].start;
-            let l: u32 = c.^.toks[it].len;
-            c.^.nodes[arm].a = s;
-            c.^.nodes[arm].b = l;
-            if !at_p(c, Punct.LParen) {
-                // `A | B | C` -- only variants that carry no payload can be joined
-                let mut ah: u32 = 0;
-                let mut at2: u32 = 0;
-                for eat_p(c, Punct.Or) {
-                    let ai: u32 = expect_ident(c);
-                    if ai == NONE { break; }
-                    let al: u32 = c.^.toks[ai].line;
-                    let ac: u32 = c.^.toks[ai].col;
-                    let alt: u32 = node(c, S_ALT, al, ac);
-                    let as2: u32 = c.^.toks[ai].start;
-                    let aln: u32 = c.^.toks[ai].len;
-                    c.^.nodes[alt].a = as2;
-                    c.^.nodes[alt].b = aln;
-                    if ah == 0 { ah = alt; } else { c.^.nodes[at2].next = alt; }
-                    at2 = alt;
-                }
-                c.^.nodes[arm].aux2 = ah;
-            }
-            if eat_p(c, Punct.LParen) {
-                let mut bh: u32 = 0;
-                let mut bt: u32 = 0;
-                for !failed(c) && !at_p(c, Punct.RParen) {
-                    let bline: u32 = cur_line(c);
-                    let bcol: u32 = cur_col(c);
-                    let bi: u32 = expect_ident(c);
-                    if bi == NONE { break; }
-                    let b: u32 = node(c, S_BIND, bline, bcol);
-                    let bs: u32 = c.^.toks[bi].start;
-                    let bl: u32 = c.^.toks[bi].len;
-                    c.^.nodes[b].a = bs;
-                    c.^.nodes[b].b = bl;
-                    if bh == 0 { bh = b; } else { c.^.nodes[bt].next = b; }
-                    bt = b;
-                    if !eat_p(c, Punct.Comma) { break; }
-                }
-                expect_p(c, Punct.RParen);
-                c.^.nodes[arm].c = bh;
-            }
-        }
+        parse_arm_pattern(c, arm);
         expect_p(c, Punct.FatArrow);
         let body: u32 = parse_block(c);
         c.^.nodes[arm].d = body;
@@ -1666,6 +1676,38 @@ fn parse_match(c: &mut Ctx) -> u32 {
     expect_p(c, Punct.RBrace);
     c.^.nodes[n].b = head;
     return n;
+}
+
+// The expression form (language.md S5): arms are comma-separated and each
+// body is a value, not a block.
+fn parse_match_expr(c: &mut Ctx) -> u32 {
+    let line: u32 = cur_line(c);
+    let col: u32 = cur_col(c);
+    expect_kw(c, K_MATCH);
+    let n: u32 = node(c, S_MATCH, line, col);
+    c.^.nodes[n].e = 1;
+    let scr: u32 = parse_expr(c, false);
+    c.^.nodes[n].a = scr;
+    expect_p(c, Punct.LBrace);
+    let mut head: u32 = 0;
+    let mut tail: u32 = 0;
+    let mut maxd: u32 = depth_of(c, scr);
+    for !failed(c) && !at_p(c, Punct.RBrace) {
+        let aline: u32 = cur_line(c);
+        let acol: u32 = cur_col(c);
+        let arm: u32 = node(c, S_ARM, aline, acol);
+        parse_arm_pattern(c, arm);
+        expect_p(c, Punct.FatArrow);
+        let value: u32 = parse_expr(c, true);
+        c.^.nodes[arm].d = value;
+        maxd = max2(maxd, depth_of(c, value));
+        if head == 0 { head = arm; } else { c.^.nodes[tail].next = arm; }
+        tail = arm;
+        if !eat_p(c, Punct.Comma) { break; }
+    }
+    expect_p(c, Punct.RBrace);
+    c.^.nodes[n].b = head;
+    return deep(c, n, maxd);
 }
 
 // --- declarations (language.md S4) -----------------------------------------
@@ -3345,20 +3387,19 @@ fn check_local_ty(c: &mut Ctx, t: u32, line: u32, col: u32) {
 }
 
 // the base operator behind a compound assignment
-// the base operator behind a compound assignment
 fn assign_base_op(p: Punct) -> Punct {
-    match p {
-        AddEq => { return Punct.Add; }
-        SubEq => { return Punct.Sub; }
-        MulEq => { return Punct.Mul; }
-        DivEq => { return Punct.Div; }
-        ModEq => { return Punct.Mod; }
-        AndEq => { return Punct.And; }
-        OrEq => { return Punct.Or; }
-        XorEq => { return Punct.Xor; }
-        ShlEq => { return Punct.Shl; }
-        _ => { return Punct.Shr; }
-    }
+    return match p {
+        AddEq => Punct.Add,
+        SubEq => Punct.Sub,
+        MulEq => Punct.Mul,
+        DivEq => Punct.Div,
+        ModEq => Punct.Mod,
+        AndEq => Punct.And,
+        OrEq => Punct.Or,
+        XorEq => Punct.Xor,
+        ShlEq => Punct.Shl,
+        _ => Punct.Shr,
+    };
 }
 
 fn check_stmt(c: &mut Ctx, s: u32) {
@@ -3585,7 +3626,11 @@ fn list_len(c: &Ctx, head: u32) -> u32 {
     return n;
 }
 
-fn check_match(c: &mut Ctx, s: u32) {
+// Checks the scrutinee and the shape of every arm (variants, `|`, binding
+// arity, exhaustiveness) but not the arm bodies -- a statement match and an
+// expression match check those differently (language.md S5, S6, S9), and
+// completeness is required of both, with no exception.
+fn check_match_common(c: &mut Ctx, s: u32) {
     let scr: u32 = c.^.nodes[s].a;
     // One look. An aggregate enum cannot be returned (language.md S3), so an
     // expression of that type is always a place and check_expr fills in
@@ -3626,10 +3671,6 @@ fn check_match(c: &mut Ctx, s: u32) {
                 return;
             }
             wild = 1;
-            push_scope(c);
-            let ad: u32 = c.^.nodes[a].d;
-            check_block(c, ad);
-            pop_scope(c);
             a = c.^.nodes[a].next;
             continue;
         }
@@ -3695,24 +3736,6 @@ fn check_match(c: &mut Ctx, s: u32) {
             e_bind_arity(c, al, ac, ans, anl, nargs, nb);
             return;
         }
-        push_scope(c);
-        let mut b: u32 = binds;
-        let mut f: u32 = c.^.variants[v].payload;
-        for b != 0 && !failed(c) {
-            let bs: u32 = c.^.nodes[b].a;
-            let bl: u32 = c.^.nodes[b].b;
-            let bline: u32 = c.^.nodes[b].line;
-            let bcol: u32 = c.^.nodes[b].col;
-            let ft: u32 = c.^.fields[f].ty;
-            let bt: u32 = read_ty(c, ft);
-            let loc: u32 = declare_local(c, bs, bl, bt, 0, 0, bline, bcol);
-            c.^.nodes[b].aux = loc;
-            b = c.^.nodes[b].next;
-            f = c.^.fields[f].next;
-        }
-        let ad: u32 = c.^.nodes[a].d;
-        check_block(c, ad);
-        pop_scope(c);
         seen += 1;
         a = c.^.nodes[a].next;
     }
@@ -3730,6 +3753,96 @@ fn check_match(c: &mut Ctx, s: u32) {
         }
     }
     c.^.nodes[s].d = wild;
+}
+
+// Declares this arm's bindings as locals in the scope the caller just pushed.
+fn bind_arm(c: &mut Ctx, a: u32) {
+    let v: u32 = c.^.nodes[a].aux;
+    if v == 0 { return; }
+    let mut b: u32 = c.^.nodes[a].c;
+    let mut f: u32 = c.^.variants[v].payload;
+    for b != 0 {
+        let bs: u32 = c.^.nodes[b].a;
+        let bl: u32 = c.^.nodes[b].b;
+        let bline: u32 = c.^.nodes[b].line;
+        let bcol: u32 = c.^.nodes[b].col;
+        let ft: u32 = c.^.fields[f].ty;
+        let bt: u32 = read_ty(c, ft);
+        let loc: u32 = declare_local(c, bs, bl, bt, 0, 0, bline, bcol);
+        c.^.nodes[b].aux = loc;
+        b = c.^.nodes[b].next;
+        f = c.^.fields[f].next;
+    }
+}
+
+fn check_match(c: &mut Ctx, s: u32) {
+    check_match_common(c, s);
+    if failed(c) { return; }
+    let mut a: u32 = c.^.nodes[s].b;
+    for a != 0 && !failed(c) {
+        push_scope(c);
+        bind_arm(c, a);
+        let ad: u32 = c.^.nodes[a].d;
+        check_block(c, ad);
+        pop_scope(c);
+        a = c.^.nodes[a].next;
+    }
+}
+
+fn e_match_slice(c: &mut Ctx, line: u32, col: u32) {
+    err_msg(c, line, col,
+        "match expression cannot produce a slice (wasm 1.0 has a single result)");
+}
+
+fn e_match_agg(c: &mut Ctx, line: u32, col: u32, t: u32) {
+    if err_open(c, line, col) {
+        put_str(c, "match expression cannot produce aggregate ");
+        put_q_ty(c, t);
+        err_end(c);
+    }
+}
+
+// The expression form (language.md S5). Every arm must yield the same type,
+// with an unsettled integer literal taking whatever the other arms (or the
+// caller's `want`) settle on -- the same rule `coerce` uses everywhere else.
+fn check_match_expr(c: &mut Ctx, s: u32, want: u32) -> u32 {
+    check_match_common(c, s);
+    if failed(c) { return TY_I32; }
+    let mut result: u32 = want;
+    let mut a: u32 = c.^.nodes[s].b;
+    for a != 0 && !failed(c) {
+        push_scope(c);
+        bind_arm(c, a);
+        let value: u32 = c.^.nodes[a].d;
+        let vt: u32 = check_expr(c, value, result);
+        pop_scope(c);
+        c.^.nodes[a].ty = vt;
+        if result == 0 && ty_kind(c, vt) != TYK_INTLIT { result = vt; }
+        a = c.^.nodes[a].next;
+    }
+    if failed(c) { return TY_I32; }
+    if result == 0 { return TY_INTLIT; }
+    let line: u32 = c.^.nodes[s].line;
+    let col: u32 = c.^.nodes[s].col;
+    if ty_kind(c, result) == TYK_SLICE { e_match_slice(c, line, col); return TY_I32; }
+    if is_aggregate(c, result) { e_match_agg(c, line, col, result); return TY_I32; }
+    a = c.^.nodes[s].b;
+    for a != 0 && !failed(c) {
+        let value: u32 = c.^.nodes[a].d;
+        let vt: u32 = c.^.nodes[a].ty;
+        if ty_kind(c, vt) == TYK_INTLIT && is_int_ty(c, result) {
+            retype(c, value, result);
+        } else if ty_kind(c, vt) != TYK_INTLIT && compatible(c, vt, result) {
+            // already the right type
+        } else {
+            let vline: u32 = c.^.nodes[value].line;
+            let vcol: u32 = c.^.nodes[value].col;
+            e_expected_ty(c, vline, vcol, result, vt);
+        }
+        a = c.^.nodes[a].next;
+    }
+    if failed(c) { return TY_I32; }
+    return result;
 }
 
 // ===========================================================================
@@ -3981,6 +4094,15 @@ fn retype(c: &mut Ctx, e: u32, t: u32) {
             let rc: u32 = c.^.nodes[e].c;
             retype(c, rc, t);
         }
+        return;
+    }
+    if k == S_MATCH {
+        let mut a: u32 = c.^.nodes[e].b;
+        for a != 0 {
+            let value: u32 = c.^.nodes[a].d;
+            retype(c, value, t);
+            a = c.^.nodes[a].next;
+        }
     }
 }
 
@@ -3995,6 +4117,14 @@ fn weakens_to(c: &Ctx, got: u32, want: u32) -> bool {
     return ty_arg(c, got) == ty_arg(c, want);
 }
 
+// Can `got` be used where `want` is expected, as-is (equal, or a mutability
+// weakening)? This is `coerce` without the integer-literal settling, so
+// callers that already have both types in hand (match arms) can reuse it.
+fn compatible(c: &Ctx, got: u32, want: u32) -> bool {
+    if got == want { return true; }
+    return weakens_to(c, got, want);
+}
+
 fn coerce(c: &mut Ctx, e: u32, want: u32) -> u32 {
     let got: u32 = check_expr(c, e, want);
     if failed(c) { return want; }
@@ -4003,13 +4133,10 @@ fn coerce(c: &mut Ctx, e: u32, want: u32) -> u32 {
         retype(c, e, want);
         return want;
     }
-    if weakens_to(c, got, want) { return want; }
-    if got != want {
-        let line: u32 = c.^.nodes[e].line;
-        let col: u32 = c.^.nodes[e].col;
-        e_expected_ty(c, line, col, want, got);
-        return want;
-    }
+    if compatible(c, got, want) { return want; }
+    let line: u32 = c.^.nodes[e].line;
+    let col: u32 = c.^.nodes[e].col;
+    e_expected_ty(c, line, col, want, got);
     return want;
 }
 
@@ -4577,6 +4704,7 @@ fn check_expr_inner(c: &mut Ctx, e: u32, want: u32) -> u32 {
         err_msg(c, line, col, "struct literal is only allowed as an initializer");
         return TY_I32;
     }
+    if k == S_MATCH { return check_match_expr(c, e, want); }
     if k == E_SLICE {
         let ec: u32 = c.^.nodes[e].c;
         if c.^.unsafed == 0 {
@@ -5202,30 +5330,34 @@ fn emit_value(c: &mut Ctx, vk: u32, a1: u32, a2: u32, a3: u32) {
 
 // --- expressions -----------------------------------------------------------
 
+// A match arm is a value, not a block, so the `if signed { s } else { u }`
+// that used to live in six of these arms becomes one call each.
+fn signed_of(signed: bool, s: u32, u: u32) -> u32 { if signed { return s; } return u; }
+
 fn arith_op(op: Punct, signed: bool) -> u32 {
-    match op {
-        Add => { return 0x6A; }
-        Sub => { return 0x6B; }
-        Mul => { return 0x6C; }
-        Div => { if signed { return 0x6D; } return 0x6E; }
-        Mod => { if signed { return 0x6F; } return 0x70; }
-        And => { return 0x71; }
-        Or => { return 0x72; }
-        Xor => { return 0x73; }
-        Shl => { return 0x74; }
-        _ => { if signed { return 0x75; } return 0x76; }
-    }
+    return match op {
+        Add => 0x6A,
+        Sub => 0x6B,
+        Mul => 0x6C,
+        Div => signed_of(signed, 0x6D, 0x6E),
+        Mod => signed_of(signed, 0x6F, 0x70),
+        And => 0x71,
+        Or => 0x72,
+        Xor => 0x73,
+        Shl => 0x74,
+        _ => signed_of(signed, 0x75, 0x76),
+    };
 }
 
 fn cmp_opcode(op: Punct, signed: bool) -> u32 {
-    match op {
-        EqEq => { return 0x46; }
-        Ne => { return 0x47; }
-        Lt => { if signed { return 0x48; } return 0x49; }
-        Gt => { if signed { return 0x4A; } return 0x4B; }
-        Le => { if signed { return 0x4C; } return 0x4D; }
-        _ => { if signed { return 0x4E; } return 0x4F; }
-    }
+    return match op {
+        EqEq => 0x46,
+        Ne => 0x47,
+        Lt => signed_of(signed, 0x48, 0x49),
+        Gt => signed_of(signed, 0x4A, 0x4B),
+        Le => signed_of(signed, 0x4C, 0x4D),
+        _ => signed_of(signed, 0x4E, 0x4F),
+    };
 }
 
 fn emit_binary(c: &mut Ctx, e: u32) {
@@ -5350,6 +5482,7 @@ fn emit_expr(c: &mut Ctx, e: u32) {
         release1(c, t);
         return;
     }
+    if k == S_MATCH { emit_match_expr(c, e); return; }
     let pt: u32 = place_ty(c, e);
     emit_place_load(c, e, pt);
 }
@@ -5505,20 +5638,27 @@ fn emit_block(c: &mut Ctx, head: u32) {
     }
 }
 
-fn emit_match(c: &mut Ctx, s: u32) {
+// A statement match makes no value (a block per arm); an expression match
+// makes one (a value per arm). Everything else about the two is identical, so
+// one core does both (implementation.md S5).
+fn emit_arm_body(c: &mut Ctx, arm: u32, is_expr: bool) {
+    let body: u32 = c.^.nodes[arm].d;
+    if is_expr { emit_expr(c, body); } else { emit_block(c, body); }
+}
+
+fn emit_match_core(c: &mut Ctx, s: u32, is_expr: bool) {
     let ta: u32 = temp(c);
     let scr: u32 = c.^.nodes[s].a;
     let scalar: u32 = c.^.nodes[s].aux2;
     // the tag is the value: no address, no load
     if scalar != 0 { emit_expr(c, scr); } else { emit_addr(c, scr); }
     b_idx(c, OP_LOCAL_SET, ta);
-    b_blocked(c, OP_BLOCK, BLOCK_VOID);
+    if is_expr { b_blocked(c, OP_BLOCK, TYPE_I32); } else { b_blocked(c, OP_BLOCK, BLOCK_VOID); }
     ctrl_push(c, CTRL_MATCH);
     let mut arm: u32 = c.^.nodes[s].b;
     for arm != 0 {
-        let body: u32 = c.^.nodes[arm].d;
         if c.^.nodes[arm].e != 0 {
-            emit_block(c, body);
+            emit_arm_body(c, arm, is_expr);
         } else {
             let v: u32 = c.^.nodes[arm].aux;
             let tag: u32 = c.^.variants[v].tag;
@@ -5557,7 +5697,7 @@ fn emit_match(c: &mut Ctx, s: u32) {
                 b = c.^.nodes[b].next;
                 f = c.^.fields[f].next;
             }
-            emit_block(c, body);
+            emit_arm_body(c, arm, is_expr);
             let d: u32 = depth_to(c, CTRL_MATCH);
             b_idx(c, OP_BR, d);
             ctrl_pop(c);
@@ -5570,6 +5710,10 @@ fn emit_match(c: &mut Ctx, s: u32) {
     b_op(c, OP_END);
     release1(c, ta);
 }
+
+fn emit_match(c: &mut Ctx, s: u32) { emit_match_core(c, s, false); }
+
+fn emit_match_expr(c: &mut Ctx, e: u32) { emit_match_core(c, e, true); }
 
 fn emit_stmt(c: &mut Ctx, s: u32) {
     let k: u32 = c.^.nodes[s].kind;

@@ -144,7 +144,10 @@ for_clause     = let_statement, ";", expression, ";", simple_statement ;
 match_statement = "match", expression, "{", { match_arm }, "}" ;
 match_arm      = pattern, "=>", block ;
 pattern        = "_"
+               | identifier, { "|", identifier }
                | identifier, [ "(", [ identifier, { ",", identifier }, [ "," ] ], ")" ] ;
+                 (* `A | B` 는 페이로드가 없는 배리언트끼리만 이을 수 있다.
+                    language.md S6 *)
 
 unsafe_statement = "unsafe", block ;
 
@@ -189,6 +192,7 @@ primary_expr   = int_literal
                | "(", expression, ")"
                | builtin_expression
                | struct_literal
+               | match_expr
                | identifier ;
 
 builtin_expression = ( "slice" | "slice_mut" | "offset" ),
@@ -198,3 +202,10 @@ struct_literal = identifier,
                  "{", [ literal_field, { ",", literal_field }, [ "," ] ], "}" ;
 literal_field  = identifier, ":", expression ;
                  (* 위 1번 참고 -- 이 생성은 헤더 최상위에서 쓰이지 않는다 *)
+
+match_expr     = "match", expression, "{",
+                 [ match_expr_arm, { ",", match_expr_arm }, [ "," ] ],
+                 "}" ;
+match_expr_arm = pattern, "=>", expression ;
+                 (* 팔은 쉼표로 나눈다. 몸이 블록이 아니라 식이라는 점만
+                    match_statement 과 다르다. language.md S5 *)

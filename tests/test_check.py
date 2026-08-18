@@ -363,8 +363,98 @@ def test_match_bindings_are_immutable():
     assert "cannot assign to an immutable place" in compile_err(src)
 
 
-def test_match_is_a_statement_not_an_expression():
-    assert "expected expression" in compile_err(fn("let x = match e { };"))
+def test_match_expr_block_arm_is_a_parse_error():
+    # 식 형태의 팔은 식이다. 블록을 적으면 `{` 가 식의 시작이 아니라서 파서가 거절한다
+    err = compile_err(ENUM_SRC + fn("let e: E = E.A; let x = match e { A => { } _ => { } };"))
+    assert "expected expression, found `{`" in err
+
+
+def test_match_expr_yields_a_value():
+    src = ENUM_SRC + fn("let e: E = E.A; let x: i32 = match e { A => 1, B(n) => n, C(a, b) => a };")
+    compile_ok(src)
+
+
+def test_match_expr_must_be_exhaustive():
+    err = compile_err(ENUM_SRC + fn("let e: E = E.A; let x: i32 = match e { A => 1 };"))
+    assert "non-exhaustive match: missing `B`" in err
+
+
+def test_match_expr_arms_must_have_the_same_type():
+    # 첫 팔이 결과 타입을 정한다. 정수 리터럴은 굳지 않았으니 아직 후보가 아니다
+    err = compile_err(ENUM_SRC + fn("let e: E = E.A; let x = match e { A => 1, _ => true };"))
+    assert "expected `bool`, found `integer literal`" in err
+
+    err = compile_err(ENUM_SRC + fn("let e: E = E.A; let a: bool = true; let x = match e { A => a, _ => 1 };"))
+    assert "expected `bool`, found `integer literal`" in err
+
+    err = compile_err(ENUM_SRC + fn(
+        "let e: E = E.A; let a: u32 = 1; let b: bool = true; "
+        "let x = match e { A => a, _ => b };"
+    ))
+    assert "expected `u32`, found `bool`" in err
+
+
+def test_match_expr_propagates_the_declared_type_to_literal_arms():
+    src = ENUM_SRC + fn("let e: E = E.A; let x: u32 = match e { A => 1, _ => 2 };")
+    compile_ok(src)
+
+
+def test_match_expr_infers_its_type_from_the_first_settled_arm():
+    src = ENUM_SRC + fn(
+        "let e: E = E.A; let a: u32 = 1; let x = match e { A => 1, _ => a }; "
+        "let y: u32 = x;"
+    )
+    compile_ok(src)
+
+
+def test_match_expr_defaults_to_i32_when_every_arm_is_an_unsettled_literal():
+    src = ENUM_SRC + fn(
+        "let e: E = E.A; let x = match e { A => 1, _ => 2 }; let y: u32 = x;"
+    )
+    err = compile_err(src)
+    assert "expected `u32`, found `i32`" in err
+
+
+def test_match_expr_cannot_produce_a_slice():
+    src = ENUM_SRC + "fn f(p: *u8) -> u32 { unsafe { " \
+        "let e: E = E.A; let s: []u8 = match e { A => slice(p, 1), _ => slice(p, 2) }; return s.len; } }"
+    err = compile_err(src)
+    assert "match expression cannot produce a slice" in err
+
+
+def test_match_expr_cannot_produce_an_aggregate():
+    src = "struct S { a: i32 }\n" + ENUM_SRC + fn(
+        "let e: E = E.A; let s: S = S{ a: 1 }; let x: S = match e { A => s, _ => s };"
+    )
+    err = compile_err(src)
+    assert "match expression cannot produce aggregate `S`" in err
+
+
+def test_match_expr_binding_in_a_payload_arm():
+    src = ENUM_SRC + fn("let e: E = E.B(7); let x: i32 = match e { A => 0, B(n) => n, C(a, b) => a };")
+    compile_ok(src)
+
+
+def test_match_expr_as_a_call_argument():
+    src = ENUM_SRC + "fn id(x: i32) -> i32 { return x; }\n" + fn(
+        "let e: E = E.A; let x = id(match e { A => 1, _ => 2 });"
+    )
+    compile_ok(src)
+
+
+def test_match_expr_as_a_return_value():
+    src = ENUM_SRC + "fn f(e: &E) -> i32 { return match e.^ { A => 1, B(n) => n, C(a, b) => a }; }"
+    compile_ok(src)
+
+
+def test_match_expr_with_scalar_enum_scrutinee():
+    src = "enum P { Add, Sub }\n" + "fn f(p: P) -> u32 { return match p { Add => 0x6A, Sub => 0x6B }; }"
+    compile_ok(src)
+
+
+def test_match_expr_can_join_payload_less_variants_with_pipe():
+    src = "enum P { Add, Sub, Mul }\n" + "fn f(p: P) -> bool { return match p { Add | Sub => true, Mul => false }; }"
+    compile_ok(src)
 
 
 def test_enum_literal_arity():

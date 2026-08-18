@@ -566,7 +566,8 @@ class Arm(Node):
     pos: tuple
     variants: list  # 빈 목록이면 `_`. 둘 이상이면 `A | B` (language.md §6)
     binds: list  # [(pos, name)]
-    body: list
+    body: list  # 문 형태에서만 쓰인다. 식 형태는 비워 둔다
+    value: Optional[Node] = None  # 식 형태에서만 쓰인다 (§5)
 
 
 @dataclass
@@ -574,6 +575,7 @@ class Match(Node):
     pos: tuple
     scrutinee: Node
     arms: list
+    is_expr: bool = False  # 식 형태인가 (`match { A => v, ... }`) 아니면 문 형태인가
 
 
 @dataclass
@@ -936,6 +938,42 @@ class Parser:
         self.expect("}")
         return Match(pos, scrutinee, arms)
 
+    def parse_match_expr(self) -> Match:
+        """식 형태 match. 팔은 쉼표로 나뉘고 몸은 블록이 아니라 식이다."""
+        pos = self.tok.pos
+        self.expect("match")
+        scrutinee = self.parse_expr()
+        self.expect("{")
+        arms = []
+        kids = [scrutinee]
+        while not self.at("}"):
+            apos = self.tok.pos
+            if self.tok.kind == "ident" and self.tok.text == "_":
+                self.i += 1
+                variants, binds = [], []
+            else:
+                variants = [self.expect_ident().text]
+                binds = []
+                if self.eat("("):
+                    while not self.at(")"):
+                        b = self.expect_ident()
+                        binds.append((b.pos, b.text))
+                        if not self.eat(","):
+                            break
+                    self.expect(")")
+                else:
+                    while self.eat("|"):
+                        variants.append(self.expect_ident().text)
+            self.expect("=>")
+            value = self.parse_expr(allow_struct_lit=True)
+            arms.append(Arm(apos, variants, binds, [], value))
+            kids.append(value)
+            if not self.eat(","):
+                break
+        self.expect("}")
+        m = Match(pos, scrutinee, arms, True)
+        return self.deep(m, *kids)
+
     # --- 식 ---------------------------------------------------------------
 
     def parse_expr(self, allow_struct_lit: bool = False) -> Node:
@@ -1068,6 +1106,8 @@ class Parser:
             index = self.parse_expr(allow_struct_lit=True)
             self.expect(")")
             return self.deep(OffsetExpr(pos, ptr, index), ptr, index)
+        if self.at("match"):
+            return self.parse_match_expr()
         if self.at("("):
             self.i += 1
             e = self.parse_expr(allow_struct_lit=True)
@@ -1670,7 +1710,12 @@ class Checker:
         if t is VOID:
             raise _err(pos, "local cannot have type `void`")
 
-    def check_match(self, s: Match):
+    def check_match_common(self, s: Match):
+        """대상·완전성·팔 모양을 검사한다. 팔의 몸(문 또는 식)은 부르는 쪽이 맡는다.
+
+        문 형태와 식 형태가 이 검사를 공유한다 -- 완전성은 두 형태 모두 예외 없이
+        강제한다 (language.md §9). `match` 는 언제나 완전해야 한다.
+        """
         # 스칼라 enum 은 값이라 장소일 필요가 없다. 페이로드가 있는 enum 은
         # 태그를 읽고 바인딩을 꺼내야 하므로 여전히 주소가 필요하다
         probe = self.probe_ty(s.scrutinee)
@@ -1693,9 +1738,6 @@ class Checker:
                     raise _err(arm.pos, "`_` must be the last arm")
                 has_wild = True
                 arm.variant_infos = []
-                self.push_scope()
-                self.check_block(arm.body)
-                self.scopes.pop()
                 continue
             arm.variant_infos = []
             for name in arm.variants:
@@ -1720,19 +1762,64 @@ class Checker:
                     f"variant `{v.name}` takes {len(v.payload)} binding(s), "
                     f"found {len(arm.binds)}",
                 )
-            self.push_scope()
-            arm.bind_locals = []
-            for (bpos, bname), f in zip(arm.binds, v.payload):
-                arm.bind_locals.append(
-                    self.declare_local(bname, read_ty(f.ty), False, False, bpos)
-                )
-            self.check_block(arm.body)
-            self.scopes.pop()
         if not has_wild and len(seen) != len(info.variants):
             missing = [v.name for v in info.variants if v.name not in seen]
             raise _err(s.pos, f"non-exhaustive match: missing `{missing[0]}`")
         s.has_wild = has_wild
         s.covered = len(seen)
+
+    def bind_arm(self, arm: Arm):
+        """팔의 바인딩을 지금 스코프에 지역변수로 선언한다."""
+        arm.bind_locals = []
+        if not arm.variant_infos:
+            return
+        v = arm.variant_infos[0]
+        for (bpos, bname), f in zip(arm.binds, v.payload):
+            arm.bind_locals.append(
+                self.declare_local(bname, read_ty(f.ty), False, False, bpos)
+            )
+
+    def check_match(self, s: Match):
+        """문 형태. 팔은 블록이고 값을 만들지 않는다 (language.md §6)."""
+        self.check_match_common(s)
+        for arm in s.arms:
+            self.push_scope()
+            self.bind_arm(arm)
+            self.check_block(arm.body)
+            self.scopes.pop()
+
+    def check_match_expr(self, e: Match, want: Optional[Ty]) -> Ty:
+        """식 형태. 모든 팔이 같은 타입의 값을 내야 한다.
+
+        `want` 는 첫 번째로 정해지는 타입까지 팔마다 아래로 흐른다 -- 굳지 않은
+        정수 리터럴 팔이 있어도 `let x: u32 = match e { A => 1, _ => 2 };` 가
+        되어야 한다 (language.md §5).
+        """
+        self.check_match_common(e)
+        result = want
+        checked = []
+        for arm in e.arms:
+            self.push_scope()
+            self.bind_arm(arm)
+            vt = self.check_expr(arm.value, result)
+            self.scopes.pop()
+            checked.append(vt)
+            if result is None and vt is not INTLIT:
+                result = vt
+        if result is None:
+            return INTLIT  # 모든 팔이 아직 굳지 않았다. 부모가 굳힌다
+        if isinstance(result, Slice):
+            raise _err(e.pos, "match expression cannot produce a slice (wasm 1.0 has a single result)")
+        if self.is_agg(result):
+            raise _err(e.pos, f"match expression cannot produce aggregate `{ty_str(result)}`")
+        for arm, vt in zip(e.arms, checked):
+            if vt is INTLIT and result in INT_TYPES:
+                self.retype(arm.value, result)
+            elif vt is not INTLIT and self.compatible(vt, result):
+                pass
+            else:
+                raise _err(arm.value.pos, f"expected `{ty_str(result)}`, found `{ty_str(vt)}`")
+        return result
 
     # --- 식 ---------------------------------------------------------------
 
@@ -1826,29 +1913,40 @@ class Checker:
             self.retype(e.lhs, t)
             if e.op not in ("<<", ">>"):
                 self.retype(e.rhs, t)
+        elif isinstance(e, Match):
+            for arm in e.arms:
+                self.retype(arm.value, t)
 
-    def coerce(self, e: Node, want: Ty) -> Ty:
-        got = self.check_expr(e, want)
-        if got is INTLIT and want in INT_TYPES:
-            self.retype(e, want)
-            return want
+    def compatible(self, got: Ty, want: Ty) -> bool:
+        """`got` 을 `want` 자리에 그대로 쓸 수 있는가 (가변성 약화까지 포함)."""
+        if got == want:
+            return True
         if (
             isinstance(got, Ref)
             and isinstance(want, Ref)
             and got.mut
             and not want.mut
             and got.inner == want.inner
-        ) or (
+        ):
+            return True
+        if (
             isinstance(got, Slice)
             and isinstance(want, Slice)
             and got.mut
             and not want.mut
             and got.elem == want.elem
         ):
+            return True
+        return False
+
+    def coerce(self, e: Node, want: Ty) -> Ty:
+        got = self.check_expr(e, want)
+        if got is INTLIT and want in INT_TYPES:
+            self.retype(e, want)
             return want
-        if got != want:
-            raise _err(e.pos, f"expected `{ty_str(want)}`, found `{ty_str(got)}`")
-        return want
+        if self.compatible(got, want):
+            return want
+        raise _err(e.pos, f"expected `{ty_str(want)}`, found `{ty_str(got)}`")
 
     def check_expr(self, e: Node, want: Optional[Ty]) -> Ty:
         t = self._check_expr(e, want)
@@ -1867,6 +1965,9 @@ class Checker:
             return Slice(U8, False)
         if isinstance(e, StructLit):
             raise _err(e.pos, "struct literal is only allowed as an initializer")
+
+        if isinstance(e, Match):
+            return self.check_match_expr(e, want)
 
         if isinstance(e, SliceExpr):
             if self.unsafe_depth == 0:
@@ -2720,6 +2821,9 @@ class Emitter:
         if isinstance(e, (Field, Index, Deref)):
             self.emit_place_load(e, self.place_ty(e))
             return
+        if isinstance(e, Match):
+            self.emit_match_expr(e)
+            return
         raise AssertionError(type(e))  # pragma: no cover
 
     def emit_binary(self, e: Binary):
@@ -2964,6 +3068,24 @@ class Emitter:
         raise AssertionError(type(s))  # pragma: no cover
 
     def emit_match(self, s: Match):
+        """문 형태. 값을 만들지 않는다 -- 몸이 블록이다."""
+        self.emit_match_core(s, is_expr=False)
+
+    def emit_match_expr(self, e: Match):
+        """식 형태. 완전성이 보장되므로 나오는 값은 언제나 하나다 (language.md §9)."""
+        self.emit_match_core(e, is_expr=True)
+
+    def emit_arm_body(self, arm: Arm, is_expr: bool):
+        if is_expr:
+            self.emit_expr(arm.value)
+        else:
+            self.emit_block(arm.body)
+
+    def emit_match_core(self, s: Match, is_expr: bool):
+        """implementation.md §5. 문 형태는 `block (void)`, 식 형태는 `block (result T)` --
+        코드 생성이 거의 같아서 하나로 묶는다. wasm 값은 어느 cool0 스칼라 타입이든
+        슬롯 하나(`i32`)이므로 결과 타입은 그냥 언제나 `i32` 다.
+        """
         b = self.b
         ta = self.temp()
         if s.scalar:
@@ -2972,11 +3094,11 @@ class Emitter:
         else:
             self.emit_addr(s.scrutinee)
         b.idx(OP_LOCAL_SET, ta)
-        b.op(OP_BLOCK, BLOCK_VOID)
+        b.op(OP_BLOCK, TYPE_I32 if is_expr else BLOCK_VOID)
         b.push("match")
         for arm in s.arms:
             if not arm.variants:
-                self.emit_block(arm.body)
+                self.emit_arm_body(arm, is_expr)
                 continue
             v = arm.variant_infos[0]
             for j, vi in enumerate(arm.variant_infos):
@@ -2996,7 +3118,7 @@ class Emitter:
                     local_stub(loc, arm.pos),
                     lambda ta=ta, f=f: self.emit_load_at(ta, f.off, f.ty),
                 )
-            self.emit_block(arm.body)
+            self.emit_arm_body(arm, is_expr)
             b.idx(OP_BR, b.depth_to("match"))
             b.pop()
             b.op(OP_END)
