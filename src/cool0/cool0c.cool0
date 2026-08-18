@@ -3795,127 +3795,134 @@ fn assign_base_op(p: Punct) -> Punct {
     };
 }
 
+// `let`. Without a written type the initialiser decides it, and an integer
+// literal that never settled becomes i32 (language.md S3).
+fn check_let(c: &mut Ctx, s: u32) {
+    let line: u32 = c.^.nodes[s].line;
+    let col: u32 = c.^.nodes[s].col;
+    let tn: u32 = c.^.nodes[s].c;
+    let init: u32 = c.^.nodes[s].d;
+    let mut declared: u32 = 0;
+    if tn != 0 {
+        declared = resolve_ty(c, tn);
+        if failed(c) { return; }
+        check_local_ty(c, declared, line, col);
+        if failed(c) { return; }
+    }
+    let mut t: u32 = check_init(c, init, declared);
+    if failed(c) { return; }
+    if declared == 0 {
+        if ty_kind(c, t) == TYK_INTLIT {
+            t = TY_I32;
+            retype(c, init, t);
+        }
+        check_local_ty(c, t, line, col);
+        if failed(c) { return; }
+    } else {
+        t = declared;
+    }
+    let name: u32 = c.^.nodes[s].a;
+    let mutable: u32 = c.^.nodes[s].e;
+    let loc: u32 = declare_local(c, name, t, mutable, 0, line, col);
+    c.^.nodes[s].aux = loc;
+}
+
+fn check_assign(c: &mut Ctx, s: u32) {
+    let line: u32 = c.^.nodes[s].line;
+    let col: u32 = c.^.nodes[s].col;
+    let target: u32 = c.^.nodes[s].a;
+    let value: u32 = c.^.nodes[s].c;
+    let ty: u32 = check_place(c, target);
+    if failed(c) { return; }
+    if c.^.place_mut == 0 { e_immutable_place(c, line, col); return; }
+    let want: u32 = read_ty(c, ty);
+    let op: Punct = c.^.nodes[s].op;
+    if op == Punct.Eq {
+        check_init(c, value, want);
+        return;
+    }
+    let base: Punct = assign_base_op(op);
+    if base == Punct.Shl || base == Punct.Shr {
+        // the shift amount is u32 wherever it appears (language.md S5)
+        if !is_int_ty(c, want) { e_op_needs_int(c, line, col, base, want); return; }
+        coerce(c, value, TY_U32);
+        return;
+    }
+    coerce(c, value, want);
+    if failed(c) { return; }
+    check_binop_types(c, line, col, base, want, want);
+}
+
+fn check_return(c: &mut Ctx, s: u32) {
+    let line: u32 = c.^.nodes[s].line;
+    let col: u32 = c.^.nodes[s].col;
+    let value: u32 = c.^.nodes[s].a;
+    let fi: u32 = c.^.curfn;
+    let ret: u32 = c.^.fns[fi].ret;
+    if value == 0 {
+        if ty_kind(c, ret) != TYK_VOID { e_no_value(c, line, col, ret); }
+        return;
+    }
+    if ty_kind(c, ret) == TYK_VOID {
+        err_msg(c, line, col, "function has no return type");
+        return;
+    }
+    coerce(c, value, ret);
+}
+
+fn e_outside_loop(c: &mut Ctx, line: u32, col: u32, is_break: bool) {
+    if err_open(c, line, col) {
+        put_ch(c, 96);
+        if is_break { put_str(c, "break"); } else { put_str(c, "continue"); }
+        put_ch(c, 96);
+        put_str(c, " outside of a loop");
+        err_end(c);
+    }
+}
+
 fn check_stmt(c: &mut Ctx, s: u32) {
     if failed(c) { return; }
-    let k: NodeKind = c.^.nodes[s].kind;
     let line: u32 = c.^.nodes[s].line;
     let col: u32 = c.^.nodes[s].col;
     let sa: u32 = c.^.nodes[s].a;
     let sb: u32 = c.^.nodes[s].b;
     let sc: u32 = c.^.nodes[s].c;
     let sd: u32 = c.^.nodes[s].d;
-
-    if k == NodeKind.S_LET {
-        let tn: u32 = sc;
-        let mut declared: u32 = 0;
-        if tn != 0 {
-            declared = resolve_ty(c, tn);
-            if failed(c) { return; }
-            check_local_ty(c, declared, line, col);
-            if failed(c) { return; }
+    match stmt_kind(c.^.nodes[s].kind) {
+        Let => { check_let(c, s); }
+        Assign => { check_assign(c, s); }
+        ExprStmt => {
+            let t: u32 = check_expr(c, sa, 0);
+            if !failed(c) && ty_kind(c, t) != TYK_VOID { c.^.nodes[s].aux = 1; }
         }
-        let mut t: u32 = check_init(c, sd, declared);
-        if failed(c) { return; }
-        if declared == 0 {
-            if ty_kind(c, t) == TYK_INTLIT {
-                t = TY_I32;
-                retype(c, sd, t);
-            }
-            check_local_ty(c, t, line, col);
-            if failed(c) { return; }
-        } else {
-            t = declared;
-        }
-        let se: u32 = c.^.nodes[s].e;
-        let loc: u32 = declare_local(c, sa, t, se, 0, line, col);
-        c.^.nodes[s].aux = loc;
-        return;
-    }
-
-    if k == NodeKind.S_ASSIGN {
-        let ty: u32 = check_place(c, sa);
-        if failed(c) { return; }
-        if c.^.place_mut == 0 { e_immutable_place(c, line, col); return; }
-        let want: u32 = read_ty(c, ty);
-        let op: Punct = c.^.nodes[s].op;
-        if op == Punct.Eq {
-            check_init(c, sc, want);
-            return;
-        }
-        let base: Punct = assign_base_op(op);
-        if base == Punct.Shl || base == Punct.Shr {
-            if !is_int_ty(c, want) { e_op_needs_int(c, line, col, base, want); return; }
-            coerce(c, sc, TY_U32);
-            return;
-        }
-        coerce(c, sc, want);
-        if failed(c) { return; }
-        check_binop_types(c, line, col, base, want, want);
-        return;
-    }
-
-    if k == NodeKind.S_EXPR {
-        let t: u32 = check_expr(c, sa, 0);
-        if failed(c) { return; }
-        if ty_kind(c, t) != TYK_VOID { c.^.nodes[s].aux = 1; }
-        return;
-    }
-
-    if k == NodeKind.S_IF {
-        coerce(c, sa, TY_BOOL);
-        if failed(c) { return; }
-        check_block(c, sb);
-        if sd != 0 { check_block(c, sc); }
-        return;
-    }
-
-    if k == NodeKind.S_FOR {
-        push_scope(c);
-        if sa != 0 { check_stmt(c, sa); }
-        if sb != 0 { coerce(c, sb, TY_BOOL); }
-        c.^.loopd = c.^.loopd + 1;
-        check_block(c, sd);
-        if sc != 0 { check_stmt(c, sc); }
-        c.^.loopd = c.^.loopd - 1;
-        pop_scope(c);
-        return;
-    }
-
-    if k == NodeKind.S_BREAK || k == NodeKind.S_CONTINUE {
-        if c.^.loopd == 0 {
-            if err_open(c, line, col) {
-                put_ch(c, 96);
-                if k == NodeKind.S_BREAK { put_str(c, "break"); } else { put_str(c, "continue"); }
-                put_ch(c, 96);
-                put_str(c, " outside of a loop");
-                err_end(c);
+        If => {
+            coerce(c, sa, TY_BOOL);
+            if !failed(c) {
+                check_block(c, sb);
+                if sd != 0 { check_block(c, sc); }
             }
         }
-        return;
-    }
-
-    if k == NodeKind.S_RETURN {
-        let fi: u32 = c.^.curfn;
-        let ret: u32 = c.^.fns[fi].ret;
-        if sa == 0 {
-            if ty_kind(c, ret) != TYK_VOID { e_no_value(c, line, col, ret); }
-            return;
+        For => {
+            push_scope(c);
+            if sa != 0 { check_stmt(c, sa); }
+            if sb != 0 { coerce(c, sb, TY_BOOL); }
+            c.^.loopd = c.^.loopd + 1;
+            check_block(c, sd);
+            if sc != 0 { check_stmt(c, sc); }
+            c.^.loopd = c.^.loopd - 1;
+            pop_scope(c);
         }
-        if ty_kind(c, ret) == TYK_VOID {
-            err_msg(c, line, col, "function has no return type");
-            return;
+        Break => { if c.^.loopd == 0 { e_outside_loop(c, line, col, true); } }
+        Continue => { if c.^.loopd == 0 { e_outside_loop(c, line, col, false); } }
+        Return => { check_return(c, s); }
+        MatchStmt => { check_match(c, s); }
+        Unsafe => {
+            c.^.unsafed = c.^.unsafed + 1;
+            check_block(c, sa);
+            c.^.unsafed = c.^.unsafed - 1;
         }
-        coerce(c, sa, ret);
-        return;
-    }
-
-    if k == NodeKind.S_MATCH { check_match(c, s); return; }
-
-    if k == NodeKind.S_UNSAFE {
-        c.^.unsafed = c.^.unsafed + 1;
-        check_block(c, sa);
-        c.^.unsafed = c.^.unsafed - 1;
-        return;
+        // arms and their parts are checked by check_match, not from here
+        NotStmt | Arm | Bind | Alt => { }
     }
 }
 
@@ -4917,79 +4924,93 @@ fn e_no_field_name(c: &mut Ctx, line: u32, col: u32, bs: u32, bl: u32, s: u32) {
 }
 
 // Returns the place type; mutability and root local come back in c.place_*.
-fn check_place(c: &mut Ctx, e: u32) -> u32 {
-    if failed(c) { return TY_I32; }
-    let k: NodeKind = c.^.nodes[e].kind;
+// A bare name. Constants and type names are not places, and saying so beats
+// "unknown name" when the name is right there (implementation.md S9).
+fn check_ident_place(c: &mut Ctx, e: u32) -> u32 {
     let line: u32 = c.^.nodes[e].line;
     let col: u32 = c.^.nodes[e].col;
-    let ea: u32 = c.^.nodes[e].a;
-    let eb: u32 = c.^.nodes[e].b;
-
-    if k == NodeKind.E_IDENT {
-        let loc: u32 = lookup(c, ea);
-        if loc == 0 {
-            if find_const(c, ea) != 0 {
-                if err_open(c, line, col) {
-                    put_q_name(c, ea);
-                    put_str(c, " is a constant, not a place");
-                    err_end(c);
-                }
-                return TY_I32;
+    let name: u32 = c.^.nodes[e].a;
+    let loc: u32 = lookup(c, name);
+    if loc == 0 {
+        if find_const(c, name) != 0 {
+            if err_open(c, line, col) {
+                put_q_name(c, name);
+                put_str(c, " is a constant, not a place");
+                err_end(c);
             }
-            if find_type_name(c, ea) {
-                if err_open(c, line, col) {
-                    put_q_name(c, ea);
-                    put_str(c, " is a type, not a place");
-                    err_end(c);
-                }
-                return TY_I32;
+            return TY_I32;
+        }
+        if find_type_name(c, name) {
+            if err_open(c, line, col) {
+                put_q_name(c, name);
+                put_str(c, " is a type, not a place");
+                err_end(c);
             }
-            e_unknown_name(c, line, col, ea);
             return TY_I32;
         }
-        let lt: u32 = c.^.locals[loc].ty;
-        c.^.nodes[e].aux = loc;
-        c.^.nodes[e].aux2 = 0;
-        c.^.nodes[e].ty = read_ty(c, lt);
-        c.^.place_mut = c.^.locals[loc].is_mut;
-        c.^.place_root = loc;
-        return lt;
+        e_unknown_name(c, line, col, name);
+        return TY_I32;
     }
+    let lt: u32 = c.^.locals[loc].ty;
+    c.^.nodes[e].aux = loc;
+    c.^.nodes[e].aux2 = 0;
+    c.^.nodes[e].ty = read_ty(c, lt);
+    c.^.place_mut = c.^.locals[loc].is_mut;
+    c.^.place_root = loc;
+    return lt;
+}
 
-    if k == NodeKind.E_FIELD {
-        let ec: u32 = c.^.nodes[e].c;
-        let bt: u32 = check_place(c, ea);
-        if failed(c) { return TY_I32; }
-        let bmut: u32 = c.^.place_mut;
-        let broot: u32 = c.^.place_root;
-        if ty_kind(c, bt) != TYK_NAMED {
-            e_no_field_ty(c, line, col, bt, eb);
-            return TY_I32;
-        }
-        let si: u32 = agg_struct(c, bt);
-        if si == 0 {
-            e_no_field_ty(c, line, col, bt, eb);
-            return TY_I32;
-        }
-        let fhead: u32 = c.^.structs[si].fields;
-        let f: u32 = field_named(c, fhead, eb);
-        if f == 0 {
-            let sns: u32 = c.^.structs[si].name;
-            e_no_field_name(c, line, col, sns, eb, ec);
-            return TY_I32;
-        }
-        let ft: u32 = c.^.fields[f].ty;
-        c.^.nodes[e].d = f;
-        c.^.nodes[e].ty = read_ty(c, ft);
-        c.^.place_mut = bmut;
-        c.^.place_root = broot;
-        return ft;
+// `b.f`. The base's mutability and root carry through -- a field of a mutable
+// place is mutable, and the borrow rules follow the root (language.md S7).
+fn check_field_place(c: &mut Ctx, e: u32) -> u32 {
+    let line: u32 = c.^.nodes[e].line;
+    let col: u32 = c.^.nodes[e].col;
+    let base: u32 = c.^.nodes[e].a;
+    let name: u32 = c.^.nodes[e].b;
+    let namelen: u32 = c.^.nodes[e].c;
+    let bt: u32 = check_place(c, base);
+    if failed(c) { return TY_I32; }
+    let bmut: u32 = c.^.place_mut;
+    let broot: u32 = c.^.place_root;
+    let si: u32 = agg_struct(c, bt);
+    if si == 0 {
+        e_no_field_ty(c, line, col, bt, name);
+        return TY_I32;
     }
+    let fhead: u32 = c.^.structs[si].fields;
+    let f: u32 = field_named(c, fhead, name);
+    if f == 0 {
+        let sns: u32 = c.^.structs[si].name;
+        e_no_field_name(c, line, col, sns, name, namelen);
+        return TY_I32;
+    }
+    let ft: u32 = c.^.fields[f].ty;
+    c.^.nodes[e].d = f;
+    c.^.nodes[e].ty = read_ty(c, ft);
+    c.^.place_mut = bmut;
+    c.^.place_root = broot;
+    return ft;
+}
 
-    if k == NodeKind.E_INDEX {
-        let bt: u32 = check_expr(c, ea, 0);
-        if failed(c) { return TY_I32; }
-        if ty_kind(c, bt) != TYK_SLICE {
+fn check_index_place(c: &mut Ctx, e: u32) -> u32 {
+    let line: u32 = c.^.nodes[e].line;
+    let col: u32 = c.^.nodes[e].col;
+    let base: u32 = c.^.nodes[e].a;
+    let index: u32 = c.^.nodes[e].b;
+    let bt: u32 = check_expr(c, base, 0);
+    if failed(c) { return TY_I32; }
+    match c.^.types[bt] {
+        Slice(elem, flag) => {
+            coerce(c, index, TY_U32);
+            if failed(c) { return TY_I32; }
+            let rt: u32 = root_local(c, base);
+            c.^.nodes[e].d = size_of(c, elem);
+            c.^.nodes[e].ty = read_ty(c, elem);
+            c.^.place_mut = flag;
+            c.^.place_root = rt;
+            return elem;
+        }
+        _ => {
             if err_open(c, line, col) {
                 put_str(c, "cannot index ");
                 put_q_ty(c, bt);
@@ -4997,59 +5018,65 @@ fn check_place(c: &mut Ctx, e: u32) -> u32 {
             }
             return TY_I32;
         }
-        coerce(c, eb, TY_U32);
-        if failed(c) { return TY_I32; }
-        match c.^.types[bt] {
-            Slice(elem, flag) => {
-                let rt: u32 = root_local(c, ea);
-                c.^.nodes[e].d = size_of(c, elem);
-                c.^.nodes[e].ty = read_ty(c, elem);
-                c.^.place_mut = flag;
-                c.^.place_root = rt;
-                return elem;
-            }
-            _ => { return TY_I32; }
-        }
     }
+}
 
-    if k == NodeKind.E_DEREF {
-        let bt: u32 = check_expr(c, ea, 0);
-        if failed(c) { return TY_I32; }
-        // The inner type used to be read with ty_arg() *before* the kind was
-        // known, which worked only because Ref and Ptr happen to keep it in
-        // the same slot. The pattern binds it and the kind together instead.
-        match c.^.types[bt] {
-            Ref(inner, m) => {
-                let rt: u32 = root_local(c, ea);
-                c.^.nodes[e].ty = read_ty(c, inner);
-                c.^.place_mut = m;
-                c.^.place_root = rt;
-                return inner;
-            }
-            Ptr(inner) => {
-                if c.^.unsafed == 0 {
-                    err_msg(c, line, col, "raw pointer dereference requires `unsafe`");
-                    return TY_I32;
-                }
-                let rt: u32 = root_local(c, ea);
-                c.^.nodes[e].ty = read_ty(c, inner);
-                c.^.place_mut = 1;
-                c.^.place_root = rt;
-                return inner;
-            }
-            _ => {
-                if err_open(c, line, col) {
-                    put_str(c, "cannot dereference ");
-                    put_q_ty(c, bt);
-                    err_end(c);
-                }
+// `p.^`. The inner type used to be read with ty_arg() *before* the kind was
+// known, which worked only because Ref and Ptr keep it in the same slot. The
+// pattern binds the kind and the payload together instead.
+fn check_deref_place(c: &mut Ctx, e: u32) -> u32 {
+    let line: u32 = c.^.nodes[e].line;
+    let col: u32 = c.^.nodes[e].col;
+    let base: u32 = c.^.nodes[e].a;
+    let bt: u32 = check_expr(c, base, 0);
+    if failed(c) { return TY_I32; }
+    match c.^.types[bt] {
+        Ref(inner, m) => {
+            let rt: u32 = root_local(c, base);
+            c.^.nodes[e].ty = read_ty(c, inner);
+            c.^.place_mut = m;
+            c.^.place_root = rt;
+            return inner;
+        }
+        Ptr(inner) => {
+            if c.^.unsafed == 0 {
+                err_msg(c, line, col, "raw pointer dereference requires `unsafe`");
                 return TY_I32;
             }
+            let rt: u32 = root_local(c, base);
+            c.^.nodes[e].ty = read_ty(c, inner);
+            c.^.place_mut = 1;
+            c.^.place_root = rt;
+            return inner;
+        }
+        _ => {
+            if err_open(c, line, col) {
+                put_str(c, "cannot dereference ");
+                put_q_ty(c, bt);
+                err_end(c);
+            }
+            return TY_I32;
         }
     }
+}
 
-    err_msg(c, line, col, "expected a place expression");
-    return TY_I32;
+// A place is somewhere a value lives: a local, a field of one, an element of a
+// slice, or what a borrow or pointer points at (language.md S5).
+fn check_place(c: &mut Ctx, e: u32) -> u32 {
+    if failed(c) { return TY_I32; }
+    let line: u32 = c.^.nodes[e].line;
+    let col: u32 = c.^.nodes[e].col;
+    match expr_kind(c.^.nodes[e].kind) {
+        Ident => { return check_ident_place(c, e); }
+        Field => { return check_field_place(c, e); }
+        Index => { return check_index_place(c, e); }
+        Deref => { return check_deref_place(c, e); }
+        NotExpr | Int | Char | Str | Bool | Unary | Binary | Borrow | Cast
+        | Call | StructLit | LitField | SliceExpr | OffsetExpr | MatchExpr => {
+            err_msg(c, line, col, "expected a place expression");
+            return TY_I32;
+        }
+    }
 }
 
 // A slice has exactly two built-in fields, `len` and `ptr` (language.md S3).
@@ -5806,97 +5833,108 @@ fn emit_binary(c: &mut Ctx, e: u32) {
     b_op(c, arith_op(op, sg));
 }
 
-fn emit_expr(c: &mut Ctx, e: u32) {
-    let k: NodeKind = c.^.nodes[e].kind;
-    if k == NodeKind.E_FIELD && c.^.nodes[e].aux2 == 2 {
+// A field expression is three different things (implementation.md S5): the tag
+// of a scalar enum literal, a slice's built-in `len`/`ptr`, or a real field of
+// a struct. The first two are not places.
+fn emit_field_expr(c: &mut Ctx, e: u32) {
+    if c.^.nodes[e].aux2 == 2 {
         let tag: u32 = c.^.nodes[e].aux;
         b_i32const(c, tag);
         return;
     }
+    if c.^.nodes[e].d != 0 {
+        let pt: u32 = place_ty(c, e);
+        emit_place_load(c, e, pt);
+        return;
+    }
+    // a slice's built-in field: 1 is `len`, 2 is `ptr`
+    let which: u32 = c.^.nodes[e].aux;
+    let base: u32 = c.^.nodes[e].a;
+    emit_expr(c, base);
+    if which == 2 {
+        // (ptr, len) is on the stack; drop the len
+        b_op(c, OP_DROP);
+        return;
+    }
+    let t: u32 = temp(c);
+    b_idx(c, OP_LOCAL_SET, t);
+    b_op(c, OP_DROP);
+    b_idx(c, OP_LOCAL_GET, t);
+    release1(c, t);
+}
+
+// Arguments left to right; a borrow argument passes an address (S3).
+fn emit_call(c: &mut Ctx, e: u32) {
+    let mut a: u32 = c.^.nodes[e].b;
+    for a != 0 {
+        if c.^.nodes[a].kind == NodeKind.E_BORROW {
+            let opnd: u32 = c.^.nodes[a].b;
+            emit_addr(c, opnd);
+        } else {
+            emit_expr(c, a);
+        }
+        a = c.^.nodes[a].next;
+    }
+    let fi: u32 = c.^.nodes[e].d;
+    let idx: u32 = c.^.fns[fi].index;
+    b_idx(c, OP_CALL, idx);
+}
+
+fn emit_expr(c: &mut Ctx, e: u32) {
     let ea: u32 = c.^.nodes[e].a;
     let eb: u32 = c.^.nodes[e].b;
-    if k == NodeKind.E_INT || k == NodeKind.E_CHAR || k == NodeKind.E_BOOL { b_i32const(c, ea); return; }
-    if k == NodeKind.E_STR {
-        let addr: u32 = c.^.nodes[e].aux;
-        b_i32const(c, addr);
-        b_i32const(c, eb);
-        return;
-    }
-    if k == NodeKind.E_IDENT {
-        let loc: u32 = ident_local(c, e);
-        if loc != 0 {
-            let lt: u32 = c.^.locals[loc].ty;
-            emit_place_load(c, e, lt);
-            return;
+    let ec: u32 = c.^.nodes[e].c;
+    match expr_kind(c.^.nodes[e].kind) {
+        Int | Char | Bool => { b_i32const(c, ea); }
+        Str => {
+            let addr: u32 = c.^.nodes[e].aux;
+            b_i32const(c, addr);
+            b_i32const(c, eb);
         }
-        let v: u32 = c.^.nodes[e].aux;
-        b_i32const(c, v);
-        return;
-    }
-    if k == NodeKind.E_CAST { emit_expr(c, ea); return; }
-    if k == NodeKind.E_UNARY {
-        if c.^.nodes[e].op == Punct.Not {
-            emit_expr(c, eb);
-            b_op(c, OP_I32_EQZ);
-            return;
-        }
-        b_i32const(c, 0);
-        emit_expr(c, eb);
-        b_op(c, OP_I32_SUB);
-        return;
-    }
-    if k == NodeKind.E_SLICE {
-        // the two operands already are the (ptr, len) pair (implementation.md S5)
-        let ec: u32 = c.^.nodes[e].c;
-        emit_expr(c, eb);
-        emit_expr(c, ec);
-        return;
-    }
-    if k == NodeKind.E_OFFSET {
-        let stride: u32 = c.^.nodes[e].d;
-        emit_expr(c, ea);
-        emit_expr(c, eb);
-        b_i32const(c, stride);
-        b_op(c, OP_I32_MUL);
-        b_op(c, OP_I32_ADD);
-        return;
-    }
-    if k == NodeKind.E_BINARY { emit_binary(c, e); return; }
-    if k == NodeKind.E_CALL {
-        let mut a: u32 = eb;
-        for a != 0 {
-            if c.^.nodes[a].kind == NodeKind.E_BORROW {
-                let opnd: u32 = c.^.nodes[a].b;
-                emit_addr(c, opnd);
+        Ident => {
+            let loc: u32 = ident_local(c, e);
+            if loc != 0 {
+                let lt: u32 = c.^.locals[loc].ty;
+                emit_place_load(c, e, lt);
             } else {
-                emit_expr(c, a);
+                let v: u32 = c.^.nodes[e].aux;
+                b_i32const(c, v);
             }
-            a = c.^.nodes[a].next;
         }
-        let fi: u32 = c.^.nodes[e].d;
-        let idx: u32 = c.^.fns[fi].index;
-        b_idx(c, OP_CALL, idx);
-        return;
-    }
-    if k == NodeKind.E_FIELD && c.^.nodes[e].d == 0 {
-        // a slice's built-in field: 1 is `len`, 2 is `ptr`
-        let which: u32 = c.^.nodes[e].aux;
-        emit_expr(c, ea);
-        if which == 2 {
-            // (ptr, len) is on the stack; drop the len
-            b_op(c, OP_DROP);
-            return;
+        Cast => { emit_expr(c, ea); }
+        Unary => {
+            if c.^.nodes[e].op == Punct.Not {
+                emit_expr(c, eb);
+                b_op(c, OP_I32_EQZ);
+            } else {
+                b_i32const(c, 0);
+                emit_expr(c, eb);
+                b_op(c, OP_I32_SUB);
+            }
         }
-        let t: u32 = temp(c);
-        b_idx(c, OP_LOCAL_SET, t);
-        b_op(c, OP_DROP);
-        b_idx(c, OP_LOCAL_GET, t);
-        release1(c, t);
-        return;
+        SliceExpr => {
+            // the operands already are the (ptr, len) pair (implementation.md S5)
+            emit_expr(c, eb);
+            emit_expr(c, ec);
+        }
+        OffsetExpr => {
+            let stride: u32 = c.^.nodes[e].d;
+            emit_expr(c, ea);
+            emit_expr(c, eb);
+            b_i32const(c, stride);
+            b_op(c, OP_I32_MUL);
+            b_op(c, OP_I32_ADD);
+        }
+        Binary => { emit_binary(c, e); }
+        Call => { emit_call(c, e); }
+        Field => { emit_field_expr(c, e); }
+        MatchExpr => { emit_match_expr(c, e); }
+        // everything left is a place, or cannot reach here at all
+        NotExpr | Borrow | Index | Deref | StructLit | LitField => {
+            let pt: u32 = place_ty(c, e);
+            emit_place_load(c, e, pt);
+        }
     }
-    if k == NodeKind.S_MATCH { emit_match_expr(c, e); return; }
-    let pt: u32 = place_ty(c, e);
-    emit_place_load(c, e, pt);
 }
 
 // --- stores ----------------------------------------------------------------
@@ -6127,138 +6165,140 @@ fn emit_match(c: &mut Ctx, s: u32) { emit_match_core(c, s, false); }
 
 fn emit_match_expr(c: &mut Ctx, e: u32) { emit_match_core(c, e, true); }
 
+// `x op= v`. The place is read, combined and written back; a place that lives
+// in a wasm local needs no address at all (implementation.md S5).
+fn emit_compound_assign(c: &mut Ctx, s: u32) {
+    let target: u32 = c.^.nodes[s].a;
+    let value: u32 = c.^.nodes[s].c;
+    let base: Punct = assign_base_op(c.^.nodes[s].op);
+    let ty: u32 = place_ty(c, target);
+    let rt: u32 = read_ty(c, ty);
+    let signed: bool = ty_kind(c, rt) == TYK_I32;
+    if in_wasm_local(c, target) {
+        let loc: u32 = ident_local(c, target);
+        let slot: u32 = c.^.locals[loc].slot;
+        b_idx(c, OP_LOCAL_GET, slot);
+        emit_expr(c, value);
+        b_op(c, arith_op(base, signed));
+        b_idx(c, OP_LOCAL_SET, slot);
+        return;
+    }
+    // the address is computed once and kept in a temp -- evaluating the place
+    // twice could run its side effects twice
+    let ta: u32 = temp(c);
+    emit_addr(c, target);
+    b_idx(c, OP_LOCAL_SET, ta);
+    b_idx(c, OP_LOCAL_GET, ta);
+    b_idx(c, OP_LOCAL_GET, ta);
+    load_op(c, ty);
+    emit_expr(c, value);
+    b_op(c, arith_op(base, signed));
+    store_op(c, ty);
+    release1(c, ta);
+}
+
+fn emit_for(c: &mut Ctx, s: u32) {
+    let init: u32 = c.^.nodes[s].a;
+    let cond: u32 = c.^.nodes[s].b;
+    let post: u32 = c.^.nodes[s].c;
+    let body: u32 = c.^.nodes[s].d;
+    if init != 0 { emit_stmt(c, init); }
+    b_blocked(c, OP_BLOCK, BLOCK_VOID);
+    ctrl_push(c, CTRL_BRK);
+    b_blocked(c, OP_LOOP, BLOCK_VOID);
+    ctrl_push(c, CTRL_LOOP);
+    if cond != 0 {
+        emit_expr(c, cond);
+        b_op(c, OP_I32_EQZ);
+        let d: u32 = depth_to(c, CTRL_BRK);
+        b_idx(c, OP_BR_IF, d);
+    }
+    // the continue target is its own block, emitted even with no post
+    // statement (implementation.md S5)
+    b_blocked(c, OP_BLOCK, BLOCK_VOID);
+    ctrl_push(c, CTRL_CNT);
+    emit_block(c, body);
+    ctrl_pop(c);
+    b_op(c, OP_END);
+    if post != 0 { emit_stmt(c, post); }
+    let dl: u32 = depth_to(c, CTRL_LOOP);
+    b_idx(c, OP_BR, dl);
+    ctrl_pop(c);
+    b_op(c, OP_END);
+    ctrl_pop(c);
+    b_op(c, OP_END);
+}
+
 fn emit_stmt(c: &mut Ctx, s: u32) {
-    let k: NodeKind = c.^.nodes[s].kind;
     let sa: u32 = c.^.nodes[s].a;
     let sb: u32 = c.^.nodes[s].b;
     let sc: u32 = c.^.nodes[s].c;
     let sd: u32 = c.^.nodes[s].d;
-
-    if k == NodeKind.S_LET {
-        let loc: u32 = c.^.nodes[s].aux;
-        if is_agg_lit(c, sd) {
-            let ta: u32 = temp(c);
-            frame_addr(c, loc);
-            b_idx(c, OP_LOCAL_SET, ta);
-            emit_agg_init(c, ta, sd);
-            release1(c, ta);
-            return;
+    match stmt_kind(c.^.nodes[s].kind) {
+        Let => {
+            let loc: u32 = c.^.nodes[s].aux;
+            if is_agg_lit(c, sd) {
+                let ta: u32 = temp(c);
+                frame_addr(c, loc);
+                b_idx(c, OP_LOCAL_SET, ta);
+                emit_agg_init(c, ta, sd);
+                release1(c, ta);
+            } else {
+                emit_store_local(c, loc, 0, sd, 0, 0);
+            }
         }
-        emit_store_local(c, loc, 0, sd, 0, 0);
-        return;
-    }
-
-    if k == NodeKind.S_ASSIGN {
-        let op: Punct = c.^.nodes[s].op;
-        if op == Punct.Eq {
-            if is_agg_lit(c, sc) {
+        Assign => {
+            if c.^.nodes[s].op != Punct.Eq {
+                emit_compound_assign(c, s);
+            } else if is_agg_lit(c, sc) {
                 let ta: u32 = temp(c);
                 emit_addr(c, sa);
                 b_idx(c, OP_LOCAL_SET, ta);
                 emit_agg_init(c, ta, sc);
                 release1(c, ta);
-                return;
+            } else {
+                emit_store_to(c, sa, 0, sc, 0, 0);
             }
-            emit_store_to(c, sa, 0, sc, 0, 0);
-            return;
         }
-        let base: Punct = assign_base_op(op);
-        let ty: u32 = place_ty(c, sa);
-        let rt: u32 = read_ty(c, ty);
-        let signed: bool = ty_kind(c, rt) == TYK_I32;
-        if in_wasm_local(c, sa) {
-            let loc: u32 = ident_local(c, sa);
-            let slot: u32 = c.^.locals[loc].slot;
-            b_idx(c, OP_LOCAL_GET, slot);
-            emit_expr(c, sc);
-            b_op(c, arith_op(base, signed));
-            b_idx(c, OP_LOCAL_SET, slot);
-            return;
+        ExprStmt => {
+            emit_expr(c, sa);
+            if c.^.nodes[s].aux != 0 {
+                let et: u32 = c.^.nodes[sa].ty;
+                let n: u32 = slot_count(c, et);
+                for let mut i: u32 = 0; i < n; i += 1 { b_op(c, OP_DROP); }
+            }
         }
-        let ta: u32 = temp(c);
-        emit_addr(c, sa);
-        b_idx(c, OP_LOCAL_SET, ta);
-        b_idx(c, OP_LOCAL_GET, ta);
-        b_idx(c, OP_LOCAL_GET, ta);
-        load_op(c, ty);
-        emit_expr(c, sc);
-        b_op(c, arith_op(base, signed));
-        store_op(c, ty);
-        release1(c, ta);
-        return;
-    }
-
-    if k == NodeKind.S_EXPR {
-        emit_expr(c, sa);
-        if c.^.nodes[s].aux != 0 {
-            let et: u32 = c.^.nodes[sa].ty;
-            let n: u32 = slot_count(c, et);
-            for let mut i: u32 = 0; i < n; i += 1 { b_op(c, OP_DROP); }
+        If => {
+            emit_expr(c, sa);
+            b_blocked(c, OP_IF, BLOCK_VOID);
+            ctrl_push(c, CTRL_IF);
+            emit_block(c, sb);
+            if sd != 0 {
+                b_op(c, OP_ELSE);
+                emit_block(c, sc);
+            }
+            ctrl_pop(c);
+            b_op(c, OP_END);
         }
-        return;
-    }
-
-    if k == NodeKind.S_IF {
-        emit_expr(c, sa);
-        b_blocked(c, OP_IF, BLOCK_VOID);
-        ctrl_push(c, CTRL_IF);
-        emit_block(c, sb);
-        if sd != 0 {
-            b_op(c, OP_ELSE);
-            emit_block(c, sc);
-        }
-        ctrl_pop(c);
-        b_op(c, OP_END);
-        return;
-    }
-
-    if k == NodeKind.S_FOR {
-        if sa != 0 { emit_stmt(c, sa); }
-        b_blocked(c, OP_BLOCK, BLOCK_VOID);
-        ctrl_push(c, CTRL_BRK);
-        b_blocked(c, OP_LOOP, BLOCK_VOID);
-        ctrl_push(c, CTRL_LOOP);
-        if sb != 0 {
-            emit_expr(c, sb);
-            b_op(c, OP_I32_EQZ);
+        For => { emit_for(c, s); }
+        Break => {
             let d: u32 = depth_to(c, CTRL_BRK);
-            b_idx(c, OP_BR_IF, d);
+            b_idx(c, OP_BR, d);
         }
-        b_blocked(c, OP_BLOCK, BLOCK_VOID);
-        ctrl_push(c, CTRL_CNT);
-        emit_block(c, sd);
-        ctrl_pop(c);
-        b_op(c, OP_END);
-        if sc != 0 { emit_stmt(c, sc); }
-        let dl: u32 = depth_to(c, CTRL_LOOP);
-        b_idx(c, OP_BR, dl);
-        ctrl_pop(c);
-        b_op(c, OP_END);
-        ctrl_pop(c);
-        b_op(c, OP_END);
-        return;
+        Continue => {
+            let d: u32 = depth_to(c, CTRL_CNT);
+            b_idx(c, OP_BR, d);
+        }
+        Return => {
+            if sa != 0 { emit_expr(c, sa); }
+            emit_epilogue(c);
+            b_op(c, OP_RETURN);
+        }
+        MatchStmt => { emit_match(c, s); }
+        Unsafe => { emit_block(c, sa); }
+        // arms and their parts are emitted by emit_match, not from here
+        NotStmt | Arm | Bind | Alt => { }
     }
-
-    if k == NodeKind.S_BREAK {
-        let d: u32 = depth_to(c, CTRL_BRK);
-        b_idx(c, OP_BR, d);
-        return;
-    }
-    if k == NodeKind.S_CONTINUE {
-        let d: u32 = depth_to(c, CTRL_CNT);
-        b_idx(c, OP_BR, d);
-        return;
-    }
-
-    if k == NodeKind.S_RETURN {
-        if sa != 0 { emit_expr(c, sa); }
-        emit_epilogue(c);
-        b_op(c, OP_RETURN);
-        return;
-    }
-
-    if k == NodeKind.S_MATCH { emit_match(c, s); return; }
-    if k == NodeKind.S_UNSAFE { emit_block(c, sa); return; }
 }
 
 // --- functions -------------------------------------------------------------
