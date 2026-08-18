@@ -105,7 +105,7 @@ def test_the_spec_prints_the_size_limit_that_the_oracle_actually_enforces():
 
 
 def test_the_spec_is_right_that_exactly_one_function_needs_a_frame():
-    """§6 의 주장: `cool0c.cool0` 에서 프레임을 쓰는 함수는 `compile` 뿐이다.
+    """§6 의 주장: `cool0c.cool0` 에서 프레임을 쓰는 함수는 `compile_n` 뿐이다.
 
     이건 숫자가 아니라 **구조에 대한 주장**이고, 그래서 조용히 틀려질 수 있다.
     집합체 지역변수 하나나 `&x` 하나가 새로 생기면 프레임이 하나 더 는다. 그때
@@ -128,8 +128,8 @@ def test_the_spec_is_right_that_exactly_one_function_needs_a_frame():
         c0.Emitter.assign_storage = original
 
     assert status == STATUS_OK, out.decode("ascii", "replace")
-    assert framed == ["compile"], (
-        f"프레임을 쓰는 함수가 {framed} 다. §6 은 `compile` 하나뿐이라고 적고 있다"
+    assert framed == ["compile_n"], (
+        f"프레임을 쓰는 함수가 {framed} 다. §6 은 `compile_n` 하나뿐이라고 적고 있다"
     )
 
 

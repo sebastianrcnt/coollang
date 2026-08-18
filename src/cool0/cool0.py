@@ -3151,6 +3151,9 @@ def local_stub(loc: Local, pos) -> Ident:
 
 BOOTSTRAP_SCRATCH = 0x0E00_0000  # S1. 힙은 여기 닿을 수 없다
 
+SRCTAB = 0x0080  # (ptr, len) 쌍이 놓이는 곳 (gh #5 B)
+
+
 
 def _count_arena_nodes(decls) -> dict:
     """cool0c 의 count_nodes 가 세는 것과 같은 것을 센다."""
@@ -3230,6 +3233,18 @@ def check_bootstrap_memory(src_len: int, ntok: Optional[int], decls) -> None:
 # ============================================================================
 # 9. 진입점
 # ============================================================================
+
+
+def compile_many(sources: list[bytes]) -> tuple[int, bytes]:
+    """소스 여럿 (gh #5 B).
+
+    정의가 곧 구현이다: 버퍼 사이에 줄바꿈 하나를 넣어 **이어 붙인 것과 같다.**
+    그래서 줄 번호가 버퍼를 넘어 이어지고, 진단은 여전히 `L:C: 문구` 이며,
+    토큰에도 노드에도 버퍼 번호를 실을 필요가 없다 (implementation.md §7).
+
+    cool0c 의 compile_n 이 이것과 바이트까지 같아야 한다.
+    """
+    return compile(chr(10).encode().join(sources))
 
 
 def compile(src: bytes) -> tuple[int, bytes]:

@@ -29,6 +29,11 @@ const OUT_PTR_ADDR: u32 = 0x0000;
 const OUT_LEN_ADDR: u32 = 0x0004;
 const SRC: u32 = 0x1000;
 
+// gh #5 B. `compile_n(nsrc)` reads `nsrc` (ptr, len) pairs from here. The
+// one-buffer entry point `compile(len)` writes a single pair and calls it, so
+// there is one code path, not two.
+const SRCTAB: u32 = 0x0080;
+
 // Debug window. The workbench (tests/test_cool0c.py) reads these to compare
 // stages against the oracle. They are written once per stage and never read
 // by the compiler itself.
@@ -60,6 +65,8 @@ fn ldb(a: u32) -> u32 { unsafe { let p: *u8 = a as *u8; return p.^; } }
 
 fn stb(a: u32, v: u32) { unsafe { let p: *u8 = a as *u8; p.^ = v; } }
 
+fn ldw(a: u32) -> u32 { unsafe { let p: *u32 = a as *u32; return p.^; } }
+
 fn align4(v: u32) -> u32 { return (v + 3) / 4 * 4; }
 
 // ===========================================================================
@@ -67,11 +74,16 @@ fn align4(v: u32) -> u32 { return (v + 3) / 4 * 4; }
 // ===========================================================================
 
 struct Ctx {
-    // source and lexer cursor
+    // The source buffer being lexed right now, and the cursor into it. After
+    // lexing and interning, nothing reads either one again (gh #5 B).
     src: []u8,
     pos: u32,
     line: u32,
     col: u32,
+
+    // all of the buffers (gh #5 B)
+    nsrc: u32,
+    srctok: []mut u32,   // token index where each buffer's tokens start
 
     // tokens
     toks: []mut Token,
@@ -178,13 +190,6 @@ fn put_ch(c: &mut Ctx, ch: u32) {
 
 fn put_str(c: &mut Ctx, s: []u8) {
     for let mut i: u32 = 0; i < s.len; i += 1 { put_ch(c, s[i]); }
-}
-
-fn put_src(c: &mut Ctx, start: u32, len: u32) {
-    for let mut i: u32 = 0; i < len; i += 1 {
-        let b: u32 = c.^.src[start + i];
-        put_ch(c, b);
-    }
 }
 
 fn put_num(c: &mut Ctx, v: u32) {
@@ -668,12 +673,12 @@ fn lex_comment(c: &mut Ctx) {
     }
 }
 
-fn lex(c: &mut Ctx) {
+// One buffer. The caller has already pointed `c.src` at it and set the line
+// number this buffer starts on.
+fn lex_one(c: &mut Ctx) {
     let n: u32 = c.^.src.len;
     c.^.pos = 0;
-    c.^.line = 1;
     c.^.col = 1;
-    c.^.ntok = 0;
 
     for c.^.pos < n && !failed(c) {
         let i: u32 = c.^.pos;
@@ -710,6 +715,26 @@ fn lex(c: &mut Ctx) {
         adv(c, punct_len(p));
         push_punct(c, i, punct_len(p), p, sl, sc);
     }
+}
+
+// Every buffer, in order. Line numbers continue from one to the next, as if the
+// buffers had been concatenated with a newline between them -- so a diagnostic
+// still reads `L:C: message` and the host, which knows how long each buffer is,
+// can map the line back to a file. cool0 has no file names to print.
+fn lex_all(c: &mut Ctx) {
+    c.^.ntok = 0;
+    c.^.line = 1;
+    for let mut i: u32 = 0; i < c.^.nsrc && !failed(c); i += 1 {
+        c.^.srctok[i] = c.^.ntok;
+        let p: u32 = ldw(SRCTAB + i * 8);
+        let n: u32 = ldw(SRCTAB + i * 8 + 4);
+        unsafe { c.^.src = slice(p as *u8, n); }
+        lex_one(c);
+        // a newline *between* buffers, not after the last one -- the eof
+        // token below has to land on the line the source really ended on
+        if i + 1 < c.^.nsrc { c.^.line = c.^.line + 1; }
+    }
+    c.^.srctok[c.^.nsrc] = c.^.ntok;
     if failed(c) { return; }
     let ep: u32 = c.^.pos;
     let el: u32 = c.^.line;
@@ -918,16 +943,27 @@ fn put_kw(c: &mut Ctx, k: u32) {
 }
 
 // Token.describe() in cool0.py
+//
+// Nothing here reads the source. After lexing, an identifier is an interned
+// name and a keyword or punctuation mark spells itself, so a diagnostic can
+// be written without the buffer the token came from (gh #5 B).
 fn put_describe(c: &mut Ctx, i: u32) {
     let k: u32 = c.^.toks[i].kind;
     if k == TK_EOF { put_str(c, "end of file"); return; }
     if k == TK_INT { put_str(c, "integer literal"); return; }
     if k == TK_CHAR { put_str(c, "character literal"); return; }
     if k == TK_STR { put_str(c, "string literal"); return; }
-    let s: u32 = c.^.toks[i].start;
-    let l: u32 = c.^.toks[i].len;
     put_ch(c, 96);
-    put_src(c, s, l);
+    if k == TK_IDENT {
+        let nm: u32 = c.^.toks[i].value;
+        put_name(c, nm);
+    } else if k == TK_KW {
+        let kw: u32 = c.^.toks[i].value;
+        put_kw(c, kw);
+    } else {
+        let pp: Punct = c.^.toks[i].punct;
+        put_punct(c, pp);
+    }
     put_ch(c, 96);
 }
 
@@ -2049,16 +2085,23 @@ fn put_q_name(c: &mut Ctx, id: u32) { put_ch(c, 96); put_name(c, id); put_ch(c, 
 
 // Every identifier token carries its name id in `value` from here on.
 fn intern_idents(c: &mut Ctx) {
-    // hoisted: `c` may not appear twice in one argument list (language.md S7)
-    let sp: *u8 = c.^.src.ptr;
-    for let mut i: u32 = 0; i < c.^.ntok; i += 1 {
-        if c.^.toks[i].kind == TK_IDENT {
-            let st: u32 = c.^.toks[i].start;
-            let ln: u32 = c.^.toks[i].len;
-            unsafe {
-                let txt: []u8 = slice(offset(sp, st), ln);
-                let id: u32 = intern(c, txt);
-                c.^.toks[i].value = id;
+    // A token's `start` is an offset into the buffer it came from, so this
+    // walks buffer by buffer rather than token by token (gh #5 B). After it
+    // returns, no name refers to a source buffer any more.
+    for let mut b: u32 = 0; b < c.^.nsrc; b += 1 {
+        let lo: u32 = c.^.srctok[b];
+        let hi: u32 = c.^.srctok[b + 1];
+        // hoisted: `c` may not appear twice in one argument list (language.md S7)
+        let sp: *u8 = ldw(SRCTAB + b * 8) as *u8;
+        for let mut i: u32 = lo; i < hi; i += 1 {
+            if c.^.toks[i].kind == TK_IDENT {
+                let st: u32 = c.^.toks[i].start;
+                let ln: u32 = c.^.toks[i].len;
+                unsafe {
+                    let txt: []u8 = slice(offset(sp, st), ln);
+                    let id: u32 = intern(c, txt);
+                    c.^.toks[i].value = id;
+                }
             }
         }
     }
@@ -6178,25 +6221,47 @@ fn pow2_at_least(v: u32) -> u32 {
 // Entry point (implementation.md S7)
 // ===========================================================================
 
+// The one-buffer entry point of implementation.md S7, kept exactly as it was:
+// the host writes the source at SRC and calls this. It builds a one-entry
+// descriptor table and hands over to compile_n, so there is a single code path.
 fn compile(src_len_in: u32) -> i32 {
+    stw(SRCTAB, SRC);
+    stw(SRCTAB + 4, src_len_in);
+    return compile_n(1);
+}
+
+// gh #5 B. `nsrc` (ptr, len) pairs live at SRCTAB. Buffers are compiled as if
+// concatenated: line numbers continue across them.
+fn compile_n(nsrc: u32) -> i32 {
     unsafe {
-        // The heap starts just past the source. Everything the compiler builds
-        // is bump-allocated from here and never freed -- one run, then the host
-        // reclaims the memory (language.md S1).
-        let heap0: u32 = align4(SRC + src_len_in) + 4;
+        // The heap starts past the last byte of the last buffer. Everything the
+        // compiler builds is bump-allocated from here and never freed -- one
+        // run, then the host reclaims the memory (language.md S1).
+        let mut top: u32 = SRC;
+        let mut total: u32 = 0;
+        for let mut i: u32 = 0; i < nsrc; i += 1 {
+            let p: u32 = ldw(SRCTAB + i * 8);
+            let n: u32 = ldw(SRCTAB + i * 8 + 4);
+            if p + n > top { top = p + n; }
+            total = total + n;
+        }
+        let srctok_at: u32 = align4(top) + 4;
+        let heap0: u32 = srctok_at + (nsrc + 1) * 4;
 
         // There can be no more tokens than source bytes, plus one for eof.
-        let ntok_max: u32 = src_len_in + 1;
+        let ntok_max: u32 = total + 1;
         // sizeof(Token). cool0 has no sizeof, so the number lives next to the
         // struct it measures -- getting it wrong overlaps the next arena
         let tok_bytes: u32 = ntok_max * SIZEOF_TOKEN;
 
         // This is the boundary. Below it every access is bounds-checked.
         let mut c: Ctx = Ctx{
-            src: slice(SRC as *u8, src_len_in),
+            src: slice(SRC as *u8, 0),
             pos: 0,
             line: 1,
             col: 1,
+            nsrc: nsrc,
+            srctok: slice_mut(srctok_at as *u32, nsrc + 1),
             toks: slice_mut(heap0 as *Token, ntok_max),
             ntok: 0,
             nmem: slice_mut(heap0 as *u8, 0),
@@ -6273,7 +6338,7 @@ fn compile(src_len_in: u32) -> i32 {
         // before lexing: the token arena alone can reach S1
         if !heap_fits(&c) { e_too_large(&mut c); }
 
-        if c.err == 0 { lex(&mut c); }
+        if c.err == 0 { lex_all(&mut c); }
 
         // Names, sized exactly off the tokens (gh #5 A). Doing this here rather
         // than during lexing is what makes "exactly" possible: the byte count

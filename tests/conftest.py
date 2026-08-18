@@ -85,6 +85,33 @@ def run_compiler(compiler_wasm: bytes, src: bytes) -> tuple[int, bytes]:
     return status, bytes(mem.read(store, ptr, ptr + length))
 
 
+def run_compiler_n(compiler_wasm: bytes, sources: list[bytes]) -> tuple[int, bytes]:
+    """소스 여럿으로 부른다 (gh #5 B, implementation.md §7).
+
+    호스트가 버퍼들을 아무 데나 놓고 `SRCTAB` 에 (ptr, len) 쌍을 적은 뒤
+    `compile_n(nsrc)` 을 부른다. 여기서는 0x1000 부터 4 바이트 정렬로 나란히
+    놓는다 -- 붙여 놓을 의무는 없다는 것을 보이려고 사이를 띄운다.
+    """
+    from cool0.cool0 import SRC_ADDR, SRCTAB
+
+    store = wasmtime.Store(ENGINE)
+    inst = wasmtime.Instance(store, wasmtime.Module(ENGINE, compiler_wasm), [])
+    ex = inst.exports(store)
+    mem = ex["memory"]
+
+    at = SRC_ADDR
+    for i, src in enumerate(sources):
+        mem.write(store, src, at)
+        mem.write(store, at.to_bytes(4, "little"), SRCTAB + i * 8)
+        mem.write(store, len(src).to_bytes(4, "little"), SRCTAB + i * 8 + 4)
+        at = (at + len(src) + 4 + 3) // 4 * 4       # 사이를 띄운다
+
+    status = ex["compile_n"](store, len(sources))
+    ptr = int.from_bytes(bytes(mem.read(store, 0, 4)), "little")
+    length = int.from_bytes(bytes(mem.read(store, 4, 8)), "little")
+    return status, bytes(mem.read(store, ptr, ptr + length))
+
+
 def run(src: str, fn: str, *args):
     """컴파일하고, 인스턴스를 만들고, 함수 하나를 부른다."""
     return instantiate(src).call(fn, *args)
