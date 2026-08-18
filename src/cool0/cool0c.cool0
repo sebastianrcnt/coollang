@@ -5015,7 +5015,7 @@ fn e_no_field_ty(c: &mut Ctx, line: u32, col: u32, t: u32, s: u32) {
     }
 }
 
-fn e_no_field_name(c: &mut Ctx, line: u32, col: u32, bs: u32, bl: u32, s: u32) {
+fn e_no_field_name(c: &mut Ctx, line: u32, col: u32, bs: u32, s: u32) {
     if err_open(c, line, col) {
         put_q_name(c, bs);
         put_str(c, " has no field ");
@@ -5068,7 +5068,6 @@ fn check_field_place(c: &mut Ctx, e: u32) -> u32 {
     let col: u32 = c.^.nodes[e].col;
     let base: u32 = c.^.nodes[e].a;
     let name: u32 = c.^.nodes[e].b;
-    let namelen: u32 = c.^.nodes[e].c;
     let bt: u32 = check_place(c, base);
     if failed(c) { return TY_I32; }
     let bmut: u32 = c.^.place_mut;
@@ -5082,7 +5081,7 @@ fn check_field_place(c: &mut Ctx, e: u32) -> u32 {
     let f: u32 = field_named(c, fhead, name);
     if f == 0 {
         let sns: u32 = c.^.structs[si].name;
-        e_no_field_name(c, line, col, sns, name, namelen);
+        e_no_field_name(c, line, col, sns, name);
         return TY_I32;
     }
     let ft: u32 = c.^.fields[f].ty;

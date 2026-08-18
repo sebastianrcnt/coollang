@@ -187,6 +187,161 @@
     (i32.load (i32.add (call $tok (local.get $c) (local.get $i)) (local.get $f))))
 
   ;; ======================================================================
+  ;; Interned names (gh #5 A)
+  ;; ======================================================================
+  ;;
+  ;; Ctx: nmem 132 (len 136), nmem_n 140, ntab 144 (len 148), ntab_n 152,
+  ;; nhash 156 (len 160).  NameEnt is 8 bytes: off 0, len 4.
+
+  (func $nmem_at (param $c i32) (param $i i32) (result i32)
+    (if (i32.ge_u (local.get $i) (call $cg (local.get $c) (i32.const 136)))
+        (then (unreachable)))
+    (i32.load8_u (i32.add (call $cg (local.get $c) (i32.const 132)) (local.get $i))))
+
+  (func $nmem_set (param $c i32) (param $i i32) (param $v i32)
+    (if (i32.ge_u (local.get $i) (call $cg (local.get $c) (i32.const 136)))
+        (then (unreachable)))
+    (i32.store8 (i32.add (call $cg (local.get $c) (i32.const 132)) (local.get $i))
+                (local.get $v)))
+
+  (func $ntab_at (param $c i32) (param $i i32) (param $f i32) (result i32)
+    (if (i32.ge_u (local.get $i) (call $cg (local.get $c) (i32.const 148)))
+        (then (unreachable)))
+    (i32.load (i32.add (i32.add (call $cg (local.get $c) (i32.const 144))
+                                (i32.mul (local.get $i) (i32.const 8)))
+                       (local.get $f))))
+
+  (func $ntab_set (param $c i32) (param $i i32) (param $f i32) (param $v i32)
+    (if (i32.ge_u (local.get $i) (call $cg (local.get $c) (i32.const 148)))
+        (then (unreachable)))
+    (i32.store (i32.add (i32.add (call $cg (local.get $c) (i32.const 144))
+                                 (i32.mul (local.get $i) (i32.const 8)))
+                        (local.get $f))
+               (local.get $v)))
+
+  (func $nhash_at (param $c i32) (param $i i32) (result i32)
+    (if (i32.ge_u (local.get $i) (call $cg (local.get $c) (i32.const 160)))
+        (then (unreachable)))
+    (i32.load (i32.add (call $cg (local.get $c) (i32.const 156))
+                       (i32.mul (local.get $i) (i32.const 4)))))
+
+  (func $nhash_set (param $c i32) (param $i i32) (param $v i32)
+    (if (i32.ge_u (local.get $i) (call $cg (local.get $c) (i32.const 160)))
+        (then (unreachable)))
+    (i32.store (i32.add (call $cg (local.get $c) (i32.const 156))
+                        (i32.mul (local.get $i) (i32.const 4)))
+               (local.get $v)))
+
+  ;; FNV-1a. The slice parameter is two words, (ptr, len) (implementation.md S3).
+  (func $name_hash (param $s_ptr i32) (param $s_len i32) (result i32)
+    (local $h i32) (local $i i32)
+    (local.set $h (i32.const 2166136261))
+    (local.set $i (i32.const 0))
+    (block $brk (loop $cont
+      (br_if $brk (i32.eqz (i32.lt_u (local.get $i) (local.get $s_len))))
+      (block $cnt
+        (local.set $h (i32.xor (local.get $h)
+                               (i32.load8_u (i32.add (local.get $s_ptr) (local.get $i)))))
+        (local.set $h (i32.mul (local.get $h) (i32.const 16777619))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $cont)))
+    (local.get $h))
+
+  (func $name_is (param $c i32) (param $id i32) (param $s_ptr i32) (param $s_len i32)
+        (result i32)
+    (local $off i32) (local $i i32)
+    (if (i32.ne (call $ntab_at (local.get $c) (local.get $id) (i32.const 4))
+                (local.get $s_len))
+        (then (return (i32.const 0))))
+    (local.set $off (call $ntab_at (local.get $c) (local.get $id) (i32.const 0)))
+    (local.set $i (i32.const 0))
+    (block $brk (loop $cont
+      (br_if $brk (i32.eqz (i32.lt_u (local.get $i) (local.get $s_len))))
+      (block $cnt
+        (if (i32.ne (call $nmem_at (local.get $c)
+                          (i32.add (local.get $off) (local.get $i)))
+                    (i32.load8_u (i32.add (local.get $s_ptr) (local.get $i))))
+            (then (return (i32.const 0)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $cont)))
+    (i32.const 1))
+
+  ;; Open addressing, power-of-two table, 0 means empty. Name id 0 is "none",
+  ;; so a real name never collides with an empty slot.
+  (func $intern (param $c i32) (param $s_ptr i32) (param $s_len i32) (result i32)
+    (local $mask i32) (local $i i32) (local $id i32)
+    (local $n i32) (local $off i32) (local $k i32)
+    (local.set $mask (i32.sub (call $cg (local.get $c) (i32.const 160)) (i32.const 1)))
+    (local.set $i (i32.and (call $name_hash (local.get $s_ptr) (local.get $s_len))
+                           (local.get $mask)))
+    (block $brk (loop $cont
+      (block $cnt
+        (local.set $id (call $nhash_at (local.get $c) (local.get $i)))
+        (if (i32.eqz (local.get $id))
+            (then
+              (local.set $n (call $cg (local.get $c) (i32.const 152)))
+              (local.set $off (call $cg (local.get $c) (i32.const 140)))
+              (local.set $k (i32.const 0))
+              (block $bcopy (loop $ccopy
+                (br_if $bcopy (i32.eqz (i32.lt_u (local.get $k) (local.get $s_len))))
+                (block $ncopy
+                  (call $nmem_set (local.get $c)
+                        (i32.add (local.get $off) (local.get $k))
+                        (i32.load8_u (i32.add (local.get $s_ptr) (local.get $k)))))
+                (local.set $k (i32.add (local.get $k) (i32.const 1)))
+                (br $ccopy)))
+              (call $cs (local.get $c) (i32.const 140)
+                    (i32.add (local.get $off) (local.get $s_len)))
+              (call $ntab_set (local.get $c) (local.get $n) (i32.const 0) (local.get $off))
+              (call $ntab_set (local.get $c) (local.get $n) (i32.const 4) (local.get $s_len))
+              (call $cs (local.get $c) (i32.const 152)
+                    (i32.add (local.get $n) (i32.const 1)))
+              (call $nhash_set (local.get $c) (local.get $i) (local.get $n))
+              (return (local.get $n))))
+        (if (call $name_is (local.get $c) (local.get $id)
+                  (local.get $s_ptr) (local.get $s_len))
+            (then (return (local.get $id))))
+        (local.set $i (i32.and (i32.add (local.get $i) (i32.const 1)) (local.get $mask))))
+      (br $cont)))
+    (unreachable))
+
+  (func $put_name (param $c i32) (param $id i32)
+    (local $off i32) (local $l i32) (local $i i32)
+    (local.set $off (call $ntab_at (local.get $c) (local.get $id) (i32.const 0)))
+    (local.set $l (call $ntab_at (local.get $c) (local.get $id) (i32.const 4)))
+    (local.set $i (i32.const 0))
+    (block $brk (loop $cont
+      (br_if $brk (i32.eqz (i32.lt_u (local.get $i) (local.get $l))))
+      (block $cnt
+        (call $put_ch (local.get $c)
+              (call $nmem_at (local.get $c) (i32.add (local.get $off) (local.get $i)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $cont))))
+
+  (func $put_q_name (param $c i32) (param $id i32)
+    (call $put_ch (local.get $c) (i32.const 96))
+    (call $put_name (local.get $c) (local.get $id))
+    (call $put_ch (local.get $c) (i32.const 96)))
+
+  ;; An interned name straight into a section payload. The bytes are the source
+  ;; bytes -- interning copies, it does not canonicalise.
+  (func $name_len (param $c i32) (param $id i32) (result i32)
+    (call $ntab_at (local.get $c) (local.get $id) (i32.const 4)))
+
+  (func $w_name (param $c i32) (param $sel i32) (param $id i32)
+    (local $off i32) (local $l i32) (local $i i32)
+    (local.set $off (call $ntab_at (local.get $c) (local.get $id) (i32.const 0)))
+    (local.set $l (call $ntab_at (local.get $c) (local.get $id) (i32.const 4)))
+    (local.set $i (i32.const 0))
+    (block $brk (loop $cont
+      (br_if $brk (i32.eqz (i32.lt_u (local.get $i) (local.get $l))))
+      (block $cnt
+        (call $w_ch (local.get $c) (local.get $sel)
+              (call $nmem_at (local.get $c) (i32.add (local.get $off) (local.get $i)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $cont))))
+
+  ;; ======================================================================
   ;; Lexer
   ;; ======================================================================
 
@@ -2289,49 +2444,30 @@
 
   ;; --- lookups ------------------------------------------------------------
 
-  (func $find_named (param $c i32) (param $arena i32) (param $count i32)
-        (param $size i32) (param $s i32) (param $l i32) (result i32)
-    (local $n i32) (local $p i32)
-    (local.set $n (call $cg (local.get $c) (local.get $count)))
-    (local.set $p (i32.const 1))
-    (block $brk (loop $cont
-      (br_if $brk (i32.eqz (i32.lt_u (local.get $p) (local.get $n))))
-      (block $cnt
-        (if (call $src_eq2 (local.get $c)
-                  (call $rg (local.get $c) (local.get $arena) (local.get $p)
-                            (local.get $size) (i32.const 0))
-                  (call $rg (local.get $c) (local.get $arena) (local.get $p)
-                            (local.get $size) (i32.const 4))
-                  (local.get $s) (local.get $l))
-            (then (return (local.get $p)))))
-      (local.set $p (i32.add (local.get $p) (i32.const 1)))
-      (br $cont)))
-    (i32.const 0))
+  (func $find_struct (param $c i32) (param $s i32) (result i32)
+    (call $scan_named (local.get $c) (i32.const 244) (i32.const 252)
+                      (i32.const 20) (local.get $s)))
 
-  (func $find_struct (param $c i32) (param $s i32) (param $l i32) (result i32)
-    (call $find_named (local.get $c) (i32.const 84) (i32.const 92) (i32.const 24)
-                      (local.get $s) (local.get $l)))
+  (func $find_enum (param $c i32) (param $s i32) (result i32)
+    (call $scan_named (local.get $c) (i32.const 268) (i32.const 276)
+                      (i32.const 28) (local.get $s)))
 
-  (func $find_enum (param $c i32) (param $s i32) (param $l i32) (result i32)
-    (call $find_named (local.get $c) (i32.const 108) (i32.const 116) (i32.const 28)
-                      (local.get $s) (local.get $l)))
+  (func $find_const (param $c i32) (param $s i32) (result i32)
+    (call $scan_named (local.get $c) (i32.const 280) (i32.const 288)
+                      (i32.const 24) (local.get $s)))
 
-  (func $find_const (param $c i32) (param $s i32) (param $l i32) (result i32)
-    (call $find_named (local.get $c) (i32.const 120) (i32.const 128) (i32.const 28)
-                      (local.get $s) (local.get $l)))
+  (func $find_fn (param $c i32) (param $s i32) (result i32)
+    (call $scan_named (local.get $c) (i32.const 304) (i32.const 312)
+                      (i32.const 48) (local.get $s)))
 
-  (func $find_fn (param $c i32) (param $s i32) (param $l i32) (result i32)
-    (call $find_named (local.get $c) (i32.const 144) (i32.const 152) (i32.const 52)
-                      (local.get $s) (local.get $l)))
-
-  (func $find_type_name (param $c i32) (param $s i32) (param $l i32) (result i32)
-    (i32.ne (call $find_named (local.get $c) (i32.const 192) (i32.const 200)
-                              (i32.const 12) (local.get $s) (local.get $l))
+  (func $find_type_name (param $c i32) (param $s i32) (result i32)
+    (i32.ne (call $scan_named (local.get $c) (i32.const 352) (i32.const 360)
+                              (i32.const 8) (local.get $s))
             (i32.const 0)))
 
-  (func $find_taken (param $c i32) (param $s i32) (param $l i32) (result i32)
-    (i32.ne (call $find_named (local.get $c) (i32.const 180) (i32.const 188)
-                              (i32.const 12) (local.get $s) (local.get $l))
+  (func $find_taken (param $c i32) (param $s i32) (result i32)
+    (i32.ne (call $scan_named (local.get $c) (i32.const 340) (i32.const 348)
+                              (i32.const 8) (local.get $s))
             (i32.const 0)))
 
   ;; The aggregate info behind a named type
@@ -2579,24 +2715,9 @@
               (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
               (call $err_end (local.get $c)))))
 
-  (func $field_named (param $c i32) (param $head i32) (param $s i32) (param $l i32)
-        (result i32)
-    (local $p i32)
-    (local.set $p (local.get $head))
-    (block $brk (loop $cont
-      (br_if $brk (i32.eqz (i32.ne (local.get $p) (i32.const 0))))
-      (block $cnt
-        (if (call $src_eq2 (local.get $c)
-                  (call $rg (local.get $c) (i32.const 232) (local.get $p) (i32.const 16)
-                            (i32.const 0))
-                  (call $rg (local.get $c) (i32.const 232) (local.get $p) (i32.const 16)
-                            (i32.const 4))
-                  (local.get $s) (local.get $l))
-            (then (return (local.get $p))))
-        (local.set $p (call $rg (local.get $c) (i32.const 232) (local.get $p)
-                                (i32.const 16) (i32.const 12))))
-      (br $cont)))
-    (i32.const 0))
+  (func $field_named (param $c i32) (param $head i32) (param $s i32) (result i32)
+    (call $walk_named (local.get $c) (i32.const 232) (i32.const 16)
+                      (i32.const 12) (local.get $head) (local.get $s)))
 
   (func $new_field (param $c i32) (param $ns i32) (param $nl i32) (param $t i32)
         (param $off i32) (result i32)
@@ -2676,24 +2797,9 @@
               (local.get $align))
     (call $nset (local.get $c) (local.get $d) (i32.const 40) (local.get $si)))
 
-  (func $variant_named (param $c i32) (param $head i32) (param $s i32) (param $l i32)
-        (result i32)
-    (local $p i32)
-    (local.set $p (local.get $head))
-    (block $brk (loop $cont
-      (br_if $brk (i32.eqz (i32.ne (local.get $p) (i32.const 0))))
-      (block $cnt
-        (if (call $src_eq2 (local.get $c)
-                  (call $rg (local.get $c) (i32.const 256) (local.get $p) (i32.const 20)
-                            (i32.const 0))
-                  (call $rg (local.get $c) (i32.const 256) (local.get $p) (i32.const 20)
-                            (i32.const 4))
-                  (local.get $s) (local.get $l))
-            (then (return (local.get $p))))
-        (local.set $p (call $rg (local.get $c) (i32.const 256) (local.get $p)
-                                (i32.const 20) (i32.const 16))))
-      (br $cont)))
-    (i32.const 0))
+  (func $variant_named (param $c i32) (param $head i32) (param $s i32) (result i32)
+    (call $walk_named (local.get $c) (i32.const 256) (i32.const 20)
+                      (i32.const 16) (local.get $head) (local.get $s)))
 
   (func $declare_enum (param $c i32) (param $d i32)
     (local $ns i32) (local $nl i32) (local $ei i32) (local $r i32)
@@ -3338,24 +3444,9 @@
               (call $put_str (local.get $c) (i32.const 0x1000055C) (i32.const 9))
               (call $err_end (local.get $c)))))
 
-  (func $param_named (param $c i32) (param $head i32) (param $s i32) (param $l i32)
-        (result i32)
-    (local $p i32)
-    (local.set $p (local.get $head))
-    (block $brk (loop $cont
-      (br_if $brk (i32.eqz (i32.ne (local.get $p) (i32.const 0))))
-      (block $cnt
-        (if (call $src_eq2 (local.get $c)
-                  (call $rg (local.get $c) (i32.const 292) (local.get $p) (i32.const 12)
-                            (i32.const 0))
-                  (call $rg (local.get $c) (i32.const 292) (local.get $p) (i32.const 12)
-                            (i32.const 4))
-                  (local.get $s) (local.get $l))
-            (then (return (local.get $p))))
-        (local.set $p (call $rg (local.get $c) (i32.const 292) (local.get $p)
-                                (i32.const 12) (i32.const 8))))
-      (br $cont)))
-    (i32.const 0))
+  (func $param_named (param $c i32) (param $head i32) (param $s i32) (result i32)
+    (call $walk_named (local.get $c) (i32.const 292) (i32.const 12)
+                      (i32.const 8) (local.get $head) (local.get $s)))
 
   (func $declare_fn (param $c i32) (param $d i32) (param $index i32)
     (local $ns i32) (local $nl i32) (local $fi i32) (local $r i32)
@@ -3486,7 +3577,8 @@
     (i32.load (i32.add (call $cg (local.get $c) (i32.const 384))
                        (i32.mul (local.get $i) (i32.const 4)))))
 
-  (func $lookup (param $c i32) (param $s i32) (param $l i32) (result i32)
+  ;; Innermost first: the scope stack is walked from the top (language.md S6).
+  (func $lookup (param $c i32) (param $s i32) (result i32)
     (local $i i32) (local $loc i32)
     (local.set $i (call $cg (local.get $c) (i32.const 392)))
     (block $brk (loop $cont
@@ -3494,21 +3586,19 @@
       (block $cnt
         (local.set $i (i32.sub (local.get $i) (i32.const 1)))
         (local.set $loc (call $scope_at (local.get $c) (local.get $i)))
-        (if (call $src_eq2 (local.get $c)
-                  (call $rg (local.get $c) (i32.const 316) (local.get $loc)
-                            (i32.const 32) (i32.const 0))
-                  (call $rg (local.get $c) (i32.const 316) (local.get $loc)
-                            (i32.const 32) (i32.const 4))
-                  (local.get $s) (local.get $l))
+        (if (i32.eq (call $rg (local.get $c) (i32.const 316) (local.get $loc)
+                              (i32.const 32) (i32.const 0))
+                    (local.get $s))
             (then (return (local.get $loc)))))
       (br $cont)))
     (i32.const 0))
 
-  (func $lookup_in_scope (param $c i32) (param $s i32) (param $l i32) (result i32)
+  ;; Only the innermost scope -- this is what shadowing is checked against.
+  (func $lookup_in_scope (param $c i32) (param $s i32) (result i32)
     (local $base i32) (local $i i32) (local $loc i32)
     (local.set $base (i32.load (i32.add (call $cg (local.get $c) (i32.const 396))
                                         (i32.mul (i32.sub (call $cg (local.get $c)
-                                                                (i32.const 232))
+                                                                (i32.const 404))
                                                           (i32.const 1))
                                                  (i32.const 4)))))
     (local.set $i (call $cg (local.get $c) (i32.const 392)))
@@ -3517,12 +3607,9 @@
       (block $cnt
         (local.set $i (i32.sub (local.get $i) (i32.const 1)))
         (local.set $loc (call $scope_at (local.get $c) (local.get $i)))
-        (if (call $src_eq2 (local.get $c)
-                  (call $rg (local.get $c) (i32.const 316) (local.get $loc)
-                            (i32.const 32) (i32.const 0))
-                  (call $rg (local.get $c) (i32.const 316) (local.get $loc)
-                            (i32.const 32) (i32.const 4))
-                  (local.get $s) (local.get $l))
+        (if (i32.eq (call $rg (local.get $c) (i32.const 316) (local.get $loc)
+                              (i32.const 32) (i32.const 0))
+                    (local.get $s))
             (then (return (local.get $loc)))))
       (br $cont)))
     (i32.const 0))
@@ -4056,42 +4143,14 @@
               (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
               (call $err_end (local.get $c)))))
 
-  (func $find_variant (param $c i32) (param $ei i32) (param $s i32) (param $l i32)
-        (result i32)
-    (local $v i32)
-    (local.set $v (call $rg (local.get $c) (i32.const 268) (local.get $ei) (i32.const 28)
-                            (i32.const 4)))
-    (block $brk (loop $cont
-      (br_if $brk (i32.eqz (i32.ne (local.get $v) (i32.const 0))))
-      (block $cnt
-        (if (call $src_eq2 (local.get $c)
-                  (call $rg (local.get $c) (i32.const 256) (local.get $v) (i32.const 20)
-                            (i32.const 0))
-                  (call $rg (local.get $c) (i32.const 256) (local.get $v) (i32.const 20)
-                            (i32.const 4))
-                  (local.get $s) (local.get $l))
-            (then (return (local.get $v))))
-        (local.set $v (call $rg (local.get $c) (i32.const 256) (local.get $v)
-                                (i32.const 20) (i32.const 16))))
-      (br $cont)))
-    (i32.const 0))
+  (func $find_variant (param $c i32) (param $ei i32) (param $s i32) (result i32)
+    (call $walk_named (local.get $c) (i32.const 256) (i32.const 20) (i32.const 16)
+                      (call $rg (local.get $c) (i32.const 268) (local.get $ei)
+                                (i32.const 28) (i32.const 4))
+                      (local.get $s)))
 
-  (func $arm_for_variant (param $c i32) (param $head i32) (param $s i32) (param $l i32)
-        (result i32)
-    (local $a i32)
-    (local.set $a (local.get $head))
-    (block $brk (loop $cont
-      (br_if $brk (i32.eqz (i32.ne (local.get $a) (i32.const 0))))
-      (block $cnt
-        (if (i32.eq (call $nd (local.get $c) (local.get $a) (i32.const 28)) (i32.const 0))
-            (then (if (call $src_eq2 (local.get $c)
-                             (call $nd (local.get $c) (local.get $a) (i32.const 12))
-                             (call $nd (local.get $c) (local.get $a) (i32.const 16))
-                             (local.get $s) (local.get $l))
-                      (then (return (local.get $a))))))
-        (local.set $a (call $nd (local.get $c) (local.get $a) (i32.const 32))))
-      (br $cont)))
-    (i32.const 0))
+  (func $arm_for_variant (param $c i32) (param $head i32) (param $s i32) (result i32)
+    (call $arm_covers (local.get $c) (local.get $head) (local.get $s)))
 
   (func $list_len (param $c i32) (param $head i32) (result i32)
     (local $n i32) (local $p i32)
@@ -7140,6 +7199,76 @@
     (global.set $sp (i32.add (global.get $sp) (i32.const 368)))
     (if (i32.ne (call $cg (local.get $c) (i32.const 488)) (i32.const 0))
         (then (return (i32.const 1))))
+    (i32.const 0))
+
+  ;; --- lookup plumbing ----------------------------------------------------
+  ;;
+  ;; Every `find_*` in cool0c.cool0 is the same loop over a different arena now
+  ;; that a name is one interned word. Two shapes: a dense scan from 1, and a
+  ;; walk down a `next` chain.
+
+  (func $scan_named (param $c i32) (param $arena i32) (param $count i32)
+        (param $size i32) (param $n i32) (result i32)
+    (local $p i32) (local $end i32)
+    (local.set $p (i32.const 1))
+    (local.set $end (call $cg (local.get $c) (local.get $count)))
+    (block $brk (loop $cont
+      (br_if $brk (i32.eqz (i32.lt_u (local.get $p) (local.get $end))))
+      (block $cnt
+        (if (i32.eq (call $rg (local.get $c) (local.get $arena) (local.get $p)
+                              (local.get $size) (i32.const 0))
+                    (local.get $n))
+            (then (return (local.get $p)))))
+      (local.set $p (i32.add (local.get $p) (i32.const 1)))
+      (br $cont)))
+    (i32.const 0))
+
+  (func $walk_named (param $c i32) (param $arena i32) (param $size i32)
+        (param $next i32) (param $head i32) (param $n i32) (result i32)
+    (local $p i32)
+    (local.set $p (local.get $head))
+    (block $brk (loop $cont
+      (br_if $brk (i32.eqz (local.get $p)))
+      (block $cnt
+        (if (i32.eq (call $rg (local.get $c) (local.get $arena) (local.get $p)
+                              (local.get $size) (i32.const 0))
+                    (local.get $n))
+            (then (return (local.get $p))))
+        (local.set $p (call $rg (local.get $c) (local.get $arena) (local.get $p)
+                                (local.get $size) (local.get $next))))
+      (br $cont)))
+    (i32.const 0))
+
+  (func $find_scalar (param $c i32) (param $s i32) (result i32)
+    (i32.ne (call $scan_named (local.get $c) (i32.const 364) (i32.const 372)
+                              (i32.const 8) (local.get $s))
+            (i32.const 0)))
+
+  ;; Which arm names this variant, counting the tail of `A | B` too. Counting
+  ;; covered *variants* rather than arms is what makes `A | B` work.
+  (func $arm_covers (param $c i32) (param $head i32) (param $s i32) (result i32)
+    (local $a i32) (local $alt i32)
+    (local.set $a (local.get $head))
+    (block $brk (loop $cont
+      (br_if $brk (i32.eqz (local.get $a)))
+      (block $cnt
+        (if (i32.eqz (call $nd (local.get $c) (local.get $a) (i32.const 28)))
+            (then
+              (if (i32.eq (call $nd (local.get $c) (local.get $a) (i32.const 12))
+                          (local.get $s))
+                  (then (return (local.get $a))))
+              (local.set $alt (call $nd (local.get $c) (local.get $a) (i32.const 44)))
+              (block $bal (loop $cal
+                (br_if $bal (i32.eqz (local.get $alt)))
+                (block $nal
+                  (if (i32.eq (call $nd (local.get $c) (local.get $alt) (i32.const 12))
+                              (local.get $s))
+                      (then (return (local.get $a))))
+                  (local.set $alt (call $nd (local.get $c) (local.get $alt)
+                                        (i32.const 32))))
+                (br $cal)))))
+        (local.set $a (call $nd (local.get $c) (local.get $a) (i32.const 32))))
+      (br $cont)))
     (i32.const 0))
 
   ;; string literals, first appearance order, exactly as cool0c.cool0 lays out its own

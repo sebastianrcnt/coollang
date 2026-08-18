@@ -75,6 +75,42 @@ def test_the_oracle_compiles_each_gap_program(src, why):
     wasmtime.Module(ENGINE, out)
 
 
+# --- cool0c 와도 견준다 (WAT 없이) ------------------------------------------
+#
+# 위의 오라클 시험은 "명세대로 거절하는가" 만 본다. **두 구현이 같은 바이트를
+# 내는가** 는 아래 세 구현 비교가 보는데, 그것이 WAT 게이트 뒤에 있다.
+#
+# 그 사이로 진짜 버그가 하나 빠져나갔다. `e_no_field_name` 이 안 쓰는 매개변수를
+# 달고 있어서 호출부가 인자를 한 칸 밀어 넣었고, cool0c 는
+#
+#     `S` has no field ``          (오라클은 `zz` 라고 한다)
+#
+# 를 내고 있었다. 픽스처는 있었고, 오라클은 옳았고, 아무 시험도 안 빨개졌다.
+#
+# cool0c 는 오라클로 만들 수 있다. WAT 이 필요한 것은 A 와 B 지 B 하나가 아니다.
+
+
+@pytest.fixture(scope="module")
+def cc_wasm():
+    """오라클이 만든 cool0c. 전사가 뒤처져 있어도 돈다."""
+    status, wasm = reference_compile(COOL0C.read_bytes())
+    assert status == STATUS_OK, wasm.decode("ascii", "replace")
+    return wasm
+
+
+@pytest.mark.parametrize(
+    "why,src,diag", GAP_DIAGNOSTICS, ids=[w for w, _, _ in GAP_DIAGNOSTICS]
+)
+def test_cool0c_gives_each_gap_the_same_diagnostic_as_the_oracle(cc_wasm, why, src, diag):
+    assert run_compiler(cc_wasm, src) == (1, diag)
+
+
+@pytest.mark.parametrize("src,why", GAP_PROGRAMS, ids=[w for _, w in GAP_PROGRAMS])
+def test_cool0c_emits_the_same_bytes_as_the_oracle_for_each_gap_program(cc_wasm, src, why):
+    b = src.encode("ascii")
+    assert run_compiler(cc_wasm, b) == reference_compile(b)
+
+
 # --- 한 번도 나온 적 없던 진단들 ---------------------------------------------
 
 
