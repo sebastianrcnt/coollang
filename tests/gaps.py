@@ -15,6 +15,8 @@ from fixtures import load_invalid, load_valid
 
 # fixtures/cool0/invalid/ 에서 이 모듈이 맡는 이름들 (원래 gaps.py 의 GAPS)
 GAP_NAMES = [
+    "const-mixed-int-widths", "const-compare-mixed-int-widths",
+    "const-shift-amount-not-u32", "const-right-shift-amount-not-u32",
     "underscore-after-hex-prefix", "underscore-after-binary-prefix",
     "two-underscores-after-hex-prefix", "non-digit-after-hex-prefix",
     "integer-literal-far-out-of-range",

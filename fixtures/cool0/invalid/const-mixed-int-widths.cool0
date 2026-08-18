@@ -1,0 +1,4 @@
+// expect: error 1:27: `+`: `i32` and `u32` do not match
+// A constant is not a weaker position than an expression -- the same shape
+// outside a const gives the same diagnostic (gh #3).
+const A: i32 = (1 as i32) + (2 as u32);

@@ -1411,6 +1411,11 @@ class Checker:
             if op in ("<<", ">>"):
                 if not is_int(lt) or not is_int(rt):
                     raise _err(e.pos, f"`{op}` requires integer operands")
+                # the shift amount is `u32` here for the same reason it is
+                # everywhere else (language.md §5) -- a constant is not a
+                # weaker position than an expression
+                if rt is not INTLIT and rt is not U32:
+                    raise _err(e.rhs.pos, f"expected `u32`, found `{ty_str(rt)}`")
                 t = lt if lt is not INTLIT else (int_want or I32)
                 sh = rv & 31
                 if op == "<<":
@@ -1422,6 +1427,11 @@ class Checker:
                 if op in ("==", "!=") and lt is BOOL and rt is BOOL:
                     return int((lv == rv) if op == "==" else (lv != rv)), BOOL
                 raise _err(e.pos, f"`{op}` requires integer operands")
+            # cool0 has no implicit i32/u32 conversion, in a constant either
+            # (language.md §3). An unsettled literal takes the other side's
+            # type; two settled ones have to already agree.
+            if lt is not INTLIT and rt is not INTLIT and lt is not rt:
+                raise _err(e.pos, f"`{op}`: `{ty_str(lt)}` and `{ty_str(rt)}` do not match")
             t = lt if lt is not INTLIT else rt
             if t is INTLIT:
                 t = (None if cmp else int_want) or I32

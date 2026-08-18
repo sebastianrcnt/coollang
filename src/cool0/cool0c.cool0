@@ -2740,6 +2740,15 @@ fn const_expr(c: &mut Ctx, e: u32, want: u32) -> u32 {
                 c.^.cety = TY_I32;
                 return 0;
             }
+            // the shift amount is `u32` here for the same reason it is everywhere
+            // else (language.md S5) -- a constant is not a weaker position
+            if ty_kind(c, rt) != TYK_INTLIT && ty_kind(c, rt) != TYK_U32 {
+                let rl: u32 = c.^.nodes[ec].line;
+                let rc: u32 = c.^.nodes[ec].col;
+                e_expected_ty(c, rl, rc, TY_U32, rt);
+                c.^.cety = TY_I32;
+                return 0;
+            }
             let mut t: u32 = lt;
             if ty_kind(c, lt) == TYK_INTLIT {
                 if iwant != 0 { t = iwant; } else { t = TY_I32; }
@@ -2762,6 +2771,14 @@ fn const_expr(c: &mut Ctx, e: u32, want: u32) -> u32 {
                 return 0;
             }
             e_op_int(c, line, col, op);
+            c.^.cety = TY_I32;
+            return 0;
+        }
+        // cool0 has no implicit i32/u32 conversion, in a constant either
+        // (language.md S3). An unsettled literal takes the other side's type;
+        // two settled ones have to already agree.
+        if ty_kind(c, lt) != TYK_INTLIT && ty_kind(c, rt) != TYK_INTLIT && lt != rt {
+            e_type_mismatch2(c, line, col, op, lt, rt);
             c.^.cety = TY_I32;
             return 0;
         }
