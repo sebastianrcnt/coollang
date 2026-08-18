@@ -1788,7 +1788,7 @@ class Checker:
         if isinstance(e, Bool):
             return BOOL
         if isinstance(e, Str):
-            e.addr = self.intern(e.value)
+            e.addr = self.intern(e.value, e.pos)
             return Slice(U8, False)
         if isinstance(e, StructLit):
             raise _err(e.pos, "struct literal is only allowed as an initializer")
@@ -2108,10 +2108,17 @@ class Checker:
 
     # --- 문자열 상수 -------------------------------------------------------
 
-    def intern(self, data: bytes) -> int:
+    def intern(self, data: bytes, pos=(1, 1)) -> int:
+        """문자열 상수를 rodata 에 놓고 주소를 준다.
+
+        rodata 는 위로 자라고 그 위에는 섀도 스택 바닥이 있다 (implementation.md §7).
+        닿으면 컴파일된 프로그램의 리터럴이 자기 프레임과 겹치므로, 여기서 막는다.
+        """
         if data in self.strings:
             return self.strings[data]
         addr = self.rodata_next
+        if addr + len(data) > SHADOW_FLOOR:
+            raise _err(pos, "string literals do not fit below the shadow stack")
         self.strings[data] = addr
         self.rodata_next = addr + len(data)
         return addr
@@ -2910,7 +2917,97 @@ def local_stub(loc: Local, pos) -> Ident:
 
 
 # ============================================================================
-# 8. 진입점
+# 8. 부트스트랩 대상의 메모리 한계 (implementation.md §7)
+# ============================================================================
+#
+# 자기 호스팅 컴파일러는 32 MiB 안에서 산다. 아레나는 소스 뒤에서 위로 자라고
+# 함수 본문 스크래치 S1 은 0x0080_0000 에 고정돼 있으므로, 힙이 거기 닿으면 두
+# 영역이 겹친다.
+#
+# 그 한계는 언어의 것이 아니라 **대상의 것**이다. 그래도 여기서 같이 지킨다 --
+# 안 그러면 큰 소스에서 두 구현이 갈리고, 그것이 implementation.md §8 이 금지하는
+# 바로 그 상황이다. 산술은 cool0c.cool0 의 compile() 과 한 줄씩 같다.
+
+BOOTSTRAP_SCRATCH = 0x0080_0000  # S1. 힙은 여기 닿을 수 없다
+
+
+def _count_arena_nodes(decls) -> dict:
+    """cool0c 의 count_nodes 가 세는 것과 같은 것을 센다."""
+    from dataclasses import fields as dc_fields, is_dataclass
+
+    n = dict.fromkeys(
+        "tys fields structs variants enums consts params fns lets binds strs".split(), 0
+    )
+    seen = set()
+
+    def walk(x):
+        if isinstance(x, (list, tuple)):
+            for y in x:
+                walk(y)
+            return
+        if not is_dataclass(x) or id(x) in seen:
+            return
+        seen.add(id(x))
+        if isinstance(x, TyNode):
+            n["tys"] += 1
+        elif isinstance(x, StructDecl):
+            n["structs"] += 1
+            n["fields"] += len(x.fields)
+        elif isinstance(x, EnumDecl):
+            n["enums"] += 1
+            n["variants"] += len(x.variants)
+        elif isinstance(x, ConstDecl):
+            n["consts"] += 1
+        elif isinstance(x, FnDecl):
+            n["fns"] += 1
+            n["params"] += len(x.params)
+        elif isinstance(x, Let):
+            n["lets"] += 1
+        elif isinstance(x, Arm):
+            n["binds"] += len(x.binds)
+        elif isinstance(x, Str):
+            n["strs"] += 1
+        for f in dc_fields(x):
+            walk(getattr(x, f.name))
+
+    walk(decls)
+    return n
+
+
+def check_bootstrap_memory(src_len: int, ntok: Optional[int], decls) -> None:
+    """cool0c 의 범프 순서를 그대로 따라가 힙 끝을 구하고 S1 과 견준다.
+
+    `ntok` 이 None 이면 토큰 아레나까지만 본다 -- 렉싱 전에 한 번, 파싱 뒤에 한 번,
+    자기 호스팅 컴파일러가 검사하는 바로 그 두 지점이다.
+    """
+    heap = align_up(SRC_ADDR + src_len, 4) + 4
+    heap += (src_len + 1) * 28  # 토큰
+    if ntok is not None:
+        k = _count_arena_nodes(decls)
+        n_local = k["params"] + k["lets"] + k["binds"] + 2
+        n_name = k["structs"] + k["enums"] + k["consts"] + k["fns"] + 2
+        heap += (ntok + 2) * 52  # 노드
+        heap += (k["tys"] + 7 + 8) * 12  # 타입
+        heap += (k["fields"] + k["tys"] + 2) * 20
+        heap += (k["structs"] + 2) * 24
+        heap += (k["variants"] + 2) * 24
+        heap += (k["enums"] + 2) * 28
+        heap += (k["consts"] + 2) * 28
+        heap += (k["params"] + 2) * 16
+        heap += (k["fns"] + 2) * 52
+        heap += n_local * 36
+        heap += (k["strs"] + 2) * 16
+        heap += n_name * 12 * 2
+        heap += (n_local + 2) * 4  # 스코프
+        heap += (MAX_DEPTH + MAX_DEPTH + 8) * 4  # 표시
+        heap += 512 * 4 * 2  # free, ctrl
+        heap += ((k["fns"] + 2) * 3) * 4  # 시그니처
+    if heap > BOOTSTRAP_SCRATCH:
+        raise CompileError(1, 1, "program is too large for the compiler's memory")
+
+
+# ============================================================================
+# 9. 진입점
 # ============================================================================
 
 
@@ -2926,8 +3023,10 @@ def compile(src: bytes) -> tuple[int, bytes]:
     saved = sys.getrecursionlimit()
     sys.setrecursionlimit(max(saved, 8000))
     try:
+        check_bootstrap_memory(len(src), None, None)
         toks = lex(src)
         decls = Parser(toks).parse_program()
+        check_bootstrap_memory(len(src), len(toks), decls)
         ck = Checker(decls).run()
         return STATUS_OK, Emitter(ck).emit_module()
     except CompileError as e:

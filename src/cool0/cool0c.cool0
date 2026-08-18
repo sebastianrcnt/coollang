@@ -2223,7 +2223,9 @@ fn bytes_eq(p1: u32, l1: u32, p2: u32, l2: u32) -> bool {
     return true;
 }
 
-fn intern_string(c: &mut Ctx, ptr: u32, len: u32) -> u32 {
+// rodata grows up and the shadow-stack floor is above it (implementation.md S7).
+// If they meet, the compiled program's literals overlap its own frames.
+fn intern_string(c: &mut Ctx, ptr: u32, len: u32, line: u32, col: u32) -> u32 {
     for let mut p: u32 = 1; p < c.^.nstr; p += 1 {
         let sp: u32 = c.^.strs[p].ptr;
         let sl: u32 = c.^.strs[p].len;
@@ -2231,6 +2233,10 @@ fn intern_string(c: &mut Ctx, ptr: u32, len: u32) -> u32 {
     }
     let n: u32 = c.^.nstr;
     let addr: u32 = c.^.rodata;
+    if addr + len > SHADOW_FLOOR {
+        err_msg(c, line, col, "string literals do not fit below the shadow stack");
+        return addr;
+    }
     c.^.strs[n] = StrI{ ptr: ptr, len: len, addr: addr, next: 0 };
     c.^.nstr = n + 1;
     c.^.rodata = addr + len;
@@ -4355,7 +4361,7 @@ fn check_expr_inner(c: &mut Ctx, e: u32, want: u32) -> u32 {
     if k == E_CHAR { return TY_U32; }
     if k == E_BOOL { return TY_BOOL; }
     if k == E_STR {
-        let addr: u32 = intern_string(c, ea, eb);
+        let addr: u32 = intern_string(c, ea, eb, line, col);
         c.^.nodes[e].aux = addr;
         return ty_intern(c, TYK_SLICE, TY_U8, 0);
     }
@@ -5726,6 +5732,16 @@ fn init_types(c: &mut Ctx) {
     c.^.nty = TY_FIRST;
 }
 
+// The arenas grow up from the source and S1 is fixed. If the heap ever reaches
+// it, two compiler-owned regions alias. The limit belongs to the target, not to
+// the language, but cool0.py enforces the same one so the two never diverge
+// (implementation.md S7).
+fn e_too_large(c: &mut Ctx) {
+    err_msg(c, 1, 1, "program is too large for the compiler's memory");
+}
+
+fn heap_fits(c: &Ctx) -> bool { return c.^.heap <= S1; }
+
 // ===========================================================================
 // Entry point (implementation.md S7)
 // ===========================================================================
@@ -5806,7 +5822,10 @@ fn compile(src_len_in: u32) -> i32 {
             out: OUT,
         };
 
-        lex(&mut c);
+        // before lexing: the token arena alone can reach S1
+        if !heap_fits(&c) { e_too_large(&mut c); }
+
+        if c.err == 0 { lex(&mut c); }
 
         // The node arena is sized from the token count, not the source length --
         // there is at most one node per token and tokens are far fewer than
@@ -5816,7 +5835,8 @@ fn compile(src_len_in: u32) -> i32 {
             c.nodes = slice_mut(c.heap as *Node, nmax);
             let nodes_at: u32 = c.heap;
             c.heap = c.heap + nmax * 52;
-            parse_program(&mut c);
+            if !heap_fits(&c) { e_too_large(&mut c); }
+            if c.err == 0 { parse_program(&mut c); }
             stw(G_NODES, nodes_at);
             stw(G_DECLS, c.decls);
         }
@@ -5890,8 +5910,9 @@ fn compile(src_len_in: u32) -> i32 {
             c.sigs = slice_mut(c.heap as *u32, n_sig);
             c.heap = c.heap + n_sig * 4;
 
+            if !heap_fits(&c) { e_too_large(&mut c); }
             init_types(&mut c);
-            check_program(&mut c);
+            if c.err == 0 { check_program(&mut c); }
             if c.err == 0 { emit_module(&mut c); }
         }
 

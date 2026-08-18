@@ -539,11 +539,11 @@
             (then (call $is_ident_cont (call $src_at (local.get $c) (local.get $j))))
             (else (i32.const 0)))
         (then (call $err_msg (local.get $c) (local.get $sl) (local.get $sc)
-                             (i32.const 0x10000BA) (i32.const 32))
+                             (i32.const 0x100009D) (i32.const 32))
               (return)))
     (if (i32.eq (local.get $ndigits) (i32.const 0))
         (then (call $err_msg (local.get $c) (local.get $sl) (local.get $sc)
-                             (i32.const 0x100009D) (i32.const 29))
+                             (i32.const 0x10000BD) (i32.const 29))
               (return)))
     (if (local.get $over)
         (then (call $err_msg (local.get $c) (local.get $sl) (local.get $sc)
@@ -2433,7 +2433,10 @@
       (br $cont)))
     (i32.const 1))
 
-  (func $intern_string (param $c i32) (param $ptr i32) (param $len i32) (result i32)
+  ;; rodata grows up and the shadow-stack floor is above it (implementation.md S7).
+  ;; If they meet, the compiled program's literals overlap its own frames.
+  (func $intern_string (param $c i32) (param $ptr i32) (param $len i32)
+        (param $line i32) (param $col i32) (result i32)
     (local $n i32) (local $p i32) (local $addr i32) (local $r i32)
     (local.set $n (call $cg (local.get $c) (i32.const 176)))
     (local.set $p (i32.const 1))
@@ -2450,6 +2453,10 @@
       (local.set $p (i32.add (local.get $p) (i32.const 1)))
       (br $cont)))
     (local.set $addr (call $cg (local.get $c) (i32.const 204)))
+    (if (i32.gt_u (i32.add (local.get $addr) (local.get $len)) (i32.const 0x1800000))
+        (then (call $err_msg (local.get $c) (local.get $line) (local.get $col)
+                             (i32.const 0x1000333) (i32.const 49))
+              (return (local.get $addr))))
     (local.set $r (call $rec (local.get $c) (i32.const 168) (local.get $n) (i32.const 16)))
     (i32.store (local.get $r) (local.get $ptr))
     (i32.store (i32.add (local.get $r) (i32.const 4)) (local.get $len))
@@ -2466,7 +2473,7 @@
   (func $e_dup_toplevel (param $c i32) (param $line i32) (param $col i32)
         (param $s i32) (param $l i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x1000333) (i32.const 25))
+        (then (call $put_str (local.get $c) (i32.const 0x1000364) (i32.const 25))
               (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
               (call $err_end (local.get $c)))))
 
@@ -2474,7 +2481,7 @@
         (param $s i32) (param $l i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
         (then (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
-              (call $put_str (local.get $c) (i32.const 0x100034C) (i32.const 24))
+              (call $put_str (local.get $c) (i32.const 0x100037D) (i32.const 24))
               (call $err_end (local.get $c)))))
 
   (func $claim (param $c i32) (param $d i32)
@@ -2526,14 +2533,14 @@
         (param $kind i32) (param $t i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
         (then (if (i32.eq (local.get $what) (i32.const 0))
-                  (then (call $put_str (local.get $c) (i32.const 0x1000364)
+                  (then (call $put_str (local.get $c) (i32.const 0x1000395)
                                        (i32.const 12)))
-                  (else (call $put_str (local.get $c) (i32.const 0x1000370)
+                  (else (call $put_str (local.get $c) (i32.const 0x10003A1)
                                        (i32.const 12))))
               (if (i32.eq (local.get $kind) (i32.const 0))
-                  (then (call $put_str (local.get $c) (i32.const 0x100037C)
+                  (then (call $put_str (local.get $c) (i32.const 0x10003AD)
                                        (i32.const 28)))
-                  (else (call $put_str (local.get $c) (i32.const 0x1000398)
+                  (else (call $put_str (local.get $c) (i32.const 0x10003C9)
                                        (i32.const 25))))
               (call $put_q_ty (local.get $c) (local.get $t))
               (call $err_end (local.get $c)))))
@@ -2552,14 +2559,14 @@
   (func $e_dup_field (param $c i32) (param $line i32) (param $col i32)
         (param $s i32) (param $l i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x10003B1) (i32.const 16))
+        (then (call $put_str (local.get $c) (i32.const 0x10003E2) (i32.const 16))
               (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
               (call $err_end (local.get $c)))))
 
   (func $e_dup_variant (param $c i32) (param $line i32) (param $col i32)
         (param $s i32) (param $l i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x10003C1) (i32.const 18))
+        (then (call $put_str (local.get $c) (i32.const 0x10003F2) (i32.const 18))
               (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
               (call $err_end (local.get $c)))))
 
@@ -2792,7 +2799,7 @@
 
   (func $e_const_ty (param $c i32) (param $line i32) (param $col i32) (param $t i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x10003D3) (i32.const 45))
+        (then (call $put_str (local.get $c) (i32.const 0x1000404) (i32.const 45))
               (call $put_q_ty (local.get $c) (local.get $t))
               (call $err_end (local.get $c)))))
 
@@ -2831,9 +2838,9 @@
   (func $e_const_cycle (param $c i32) (param $line i32) (param $col i32)
         (param $s i32) (param $l i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x1000400) (i32.const 6))
+        (then (call $put_str (local.get $c) (i32.const 0x1000431) (i32.const 6))
               (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
-              (call $put_str (local.get $c) (i32.const 0x1000406) (i32.const 18))
+              (call $put_str (local.get $c) (i32.const 0x1000437) (i32.const 18))
               (call $err_end (local.get $c)))))
 
   (func $force_const (param $c i32) (param $ci i32) (param $line i32) (param $col i32)
@@ -2897,34 +2904,34 @@
         (param $s i32) (param $l i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
         (then (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
-              (call $put_str (local.get $c) (i32.const 0x1000418) (i32.const 18))
+              (call $put_str (local.get $c) (i32.const 0x1000449) (i32.const 18))
               (call $err_end (local.get $c)))))
 
   (func $e_cast_from (param $c i32) (param $line i32) (param $col i32) (param $t i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x100042A) (i32.const 17))
+        (then (call $put_str (local.get $c) (i32.const 0x100045B) (i32.const 17))
               (call $put_q_ty (local.get $c) (local.get $t))
               (call $err_end (local.get $c)))))
 
   (func $e_cast_to (param $c i32) (param $line i32) (param $col i32) (param $t i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x100043B) (i32.const 15))
+        (then (call $put_str (local.get $c) (i32.const 0x100046C) (i32.const 15))
               (call $put_q_ty (local.get $c) (local.get $t))
               (call $err_end (local.get $c)))))
 
   (func $e_negate (param $c i32) (param $line i32) (param $col i32) (param $t i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x100044A) (i32.const 14))
+        (then (call $put_str (local.get $c) (i32.const 0x100047B) (i32.const 14))
               (call $put_q_ty (local.get $c) (local.get $t))
               (call $err_end (local.get $c)))))
 
   (func $e_not_bool (param $c i32) (param $line i32) (param $col i32) (param $t i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x1000458) (i32.const 13))
+        (then (call $put_str (local.get $c) (i32.const 0x1000489) (i32.const 13))
               (call $put_ch (local.get $c) (i32.const 96))
               (call $put_str (local.get $c) (i32.const 0x100009C) (i32.const 1))
               (call $put_ch (local.get $c) (i32.const 96))
-              (call $put_str (local.get $c) (i32.const 0x1000465) (i32.const 4))
+              (call $put_str (local.get $c) (i32.const 0x1000496) (i32.const 4))
               (call $put_q_ty (local.get $c) (local.get $t))
               (call $err_end (local.get $c)))))
 
@@ -2936,28 +2943,28 @@
   (func $e_op_bool (param $c i32) (param $line i32) (param $col i32) (param $op i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
         (then (call $put_q_punct (local.get $c) (local.get $op))
-              (call $put_str (local.get $c) (i32.const 0x1000469) (i32.const 23))
+              (call $put_str (local.get $c) (i32.const 0x100049A) (i32.const 23))
               (call $err_end (local.get $c)))))
 
   (func $e_op_int (param $c i32) (param $line i32) (param $col i32) (param $op i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
         (then (call $put_q_punct (local.get $c) (local.get $op))
-              (call $put_str (local.get $c) (i32.const 0x1000480) (i32.const 26))
+              (call $put_str (local.get $c) (i32.const 0x10004B1) (i32.const 26))
               (call $err_end (local.get $c)))))
 
   (func $e_const_divzero (param $c i32) (param $line i32) (param $col i32)
     (call $err_msg (local.get $c) (local.get $line) (local.get $col)
-                   (i32.const 0x100049A) (i32.const 39)))
+                   (i32.const 0x10004CB) (i32.const 39)))
 
   (func $e_op_not_const (param $c i32) (param $line i32) (param $col i32) (param $op i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
         (then (call $put_q_punct (local.get $c) (local.get $op))
-              (call $put_str (local.get $c) (i32.const 0x10004C1) (i32.const 40))
+              (call $put_str (local.get $c) (i32.const 0x10004F2) (i32.const 40))
               (call $err_end (local.get $c)))))
 
   (func $e_not_const_expr (param $c i32) (param $line i32) (param $col i32)
     (call $err_msg (local.get $c) (local.get $line) (local.get $col)
-                   (i32.const 0x10004E9) (i32.const 25)))
+                   (i32.const 0x100051A) (i32.const 25)))
 
   ;; wasm traps on INT_MIN / -1; cool0.py computes it in bignum and wraps
   (func $sdiv (param $a i32) (param $b i32) (result i32)
@@ -3293,15 +3300,15 @@
   (func $e_dup_param (param $c i32) (param $line i32) (param $col i32)
         (param $s i32) (param $l i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x1000502) (i32.const 20))
+        (then (call $put_str (local.get $c) (i32.const 0x1000533) (i32.const 20))
               (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
               (call $err_end (local.get $c)))))
 
   (func $e_agg_by_value (param $c i32) (param $line i32) (param $col i32) (param $t i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x1000516) (i32.const 22))
+        (then (call $put_str (local.get $c) (i32.const 0x1000547) (i32.const 22))
               (call $put_q_ty (local.get $c) (local.get $t))
-              (call $put_str (local.get $c) (i32.const 0x100052C) (i32.const 9))
+              (call $put_str (local.get $c) (i32.const 0x100055D) (i32.const 9))
               (call $err_end (local.get $c)))))
 
   (func $e_u8_storage (param $c i32) (param $line i32) (param $col i32)
@@ -3309,7 +3316,7 @@
         (then (call $put_ch (local.get $c) (i32.const 96))
               (call $put_str (local.get $c) (i32.const 0x1000269) (i32.const 2))
               (call $put_ch (local.get $c) (i32.const 96))
-              (call $put_str (local.get $c) (i32.const 0x1000535) (i32.const 22))
+              (call $put_str (local.get $c) (i32.const 0x1000566) (i32.const 22))
               (call $put_ch (local.get $c) (i32.const 96))
               (call $put_str (local.get $c) (i32.const 0x1000262) (i32.const 3))
               (call $put_ch (local.get $c) (i32.const 96))
@@ -3317,9 +3324,9 @@
 
   (func $e_ret_agg (param $c i32) (param $line i32) (param $col i32) (param $t i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x100054B) (i32.const 24))
+        (then (call $put_str (local.get $c) (i32.const 0x100057C) (i32.const 24))
               (call $put_q_ty (local.get $c) (local.get $t))
-              (call $put_str (local.get $c) (i32.const 0x100052C) (i32.const 9))
+              (call $put_str (local.get $c) (i32.const 0x100055D) (i32.const 9))
               (call $err_end (local.get $c)))))
 
   (func $param_named (param $c i32) (param $head i32) (param $s i32) (param $l i32)
@@ -3431,11 +3438,11 @@
           (local.set $rk (call $ty_kind (local.get $c) (local.get $ret)))
           (if (i32.eq (local.get $rk) (i32.const 6))
               (then (call $err_msg (local.get $c) (local.get $rl) (local.get $rc)
-                                   (i32.const 0x1000563) (i32.const 52))
+                                   (i32.const 0x1000594) (i32.const 52))
                     (return)))
           (if (i32.eq (local.get $rk) (i32.const 7))
               (then (call $err_msg (local.get $c) (local.get $rl) (local.get $rc)
-                                   (i32.const 0x1000597) (i32.const 22))
+                                   (i32.const 0x10005C8) (i32.const 22))
                     (return)))
           (if (i32.eq (local.get $rk) (i32.const 3))
               (then (call $e_u8_storage (local.get $c) (local.get $rl) (local.get $rc))
@@ -3511,14 +3518,14 @@
         (param $s i32) (param $l i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
         (then (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
-              (call $put_str (local.get $c) (i32.const 0x10005AD) (i32.const 34))
+              (call $put_str (local.get $c) (i32.const 0x10005DE) (i32.const 34))
               (call $err_end (local.get $c)))))
 
   (func $e_shadow (param $c i32) (param $line i32) (param $col i32)
         (param $s i32) (param $l i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
         (then (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
-              (call $put_str (local.get $c) (i32.const 0x10005CF) (i32.const 25))
+              (call $put_str (local.get $c) (i32.const 0x1000600) (i32.const 25))
               (call $err_end (local.get $c)))))
 
   (func $declare_local (param $c i32) (param $s i32) (param $l i32) (param $t i32)
@@ -3698,9 +3705,9 @@
   (func $e_missing_return (param $c i32) (param $line i32) (param $col i32)
         (param $s i32) (param $l i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x10005E8) (i32.const 9))
+        (then (call $put_str (local.get $c) (i32.const 0x1000619) (i32.const 9))
               (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
-              (call $put_str (local.get $c) (i32.const 0x10005F1) (i32.const 34))
+              (call $put_str (local.get $c) (i32.const 0x1000622) (i32.const 34))
               (call $err_end (local.get $c)))))
 
   (func $check_fn (param $c i32) (param $fi i32)
@@ -3772,13 +3779,13 @@
 
   (func $e_immutable_place (param $c i32) (param $line i32) (param $col i32)
     (call $err_msg (local.get $c) (local.get $line) (local.get $col)
-                   (i32.const 0x1000613) (i32.const 35)))
+                   (i32.const 0x1000644) (i32.const 35)))
 
   (func $e_op_needs_int (param $c i32) (param $line i32) (param $col i32)
         (param $op i32) (param $t i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
         (then (call $put_q_punct (local.get $c) (local.get $op))
-              (call $put_str (local.get $c) (i32.const 0x1000636) (i32.const 28))
+              (call $put_str (local.get $c) (i32.const 0x1000667) (i32.const 28))
               (call $put_q_ty (local.get $c) (local.get $t))
               (call $err_end (local.get $c)))))
 
@@ -3786,7 +3793,7 @@
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
         (then (call $put_str (local.get $c) (i32.const 0x100020B) (i32.const 9))
               (call $put_q_ty (local.get $c) (local.get $t))
-              (call $put_str (local.get $c) (i32.const 0x1000652) (i32.const 16))
+              (call $put_str (local.get $c) (i32.const 0x1000683) (i32.const 16))
               (call $err_end (local.get $c)))))
 
   (func $e_u8_local (param $c i32) (param $line i32) (param $col i32)
@@ -3794,7 +3801,7 @@
         (then (call $put_ch (local.get $c) (i32.const 96))
               (call $put_str (local.get $c) (i32.const 0x1000269) (i32.const 2))
               (call $put_ch (local.get $c) (i32.const 96))
-              (call $put_str (local.get $c) (i32.const 0x1000662) (i32.const 40))
+              (call $put_str (local.get $c) (i32.const 0x1000693) (i32.const 40))
               (call $err_end (local.get $c)))))
 
   (func $check_local_ty (param $c i32) (param $t i32) (param $line i32) (param $col i32)
@@ -3805,11 +3812,11 @@
               (return)))
     (if (i32.eq (local.get $k) (i32.const 7))
         (then (call $err_msg (local.get $c) (local.get $line) (local.get $col)
-                             (i32.const 0x100068A) (i32.const 35))
+                             (i32.const 0x10006BB) (i32.const 35))
               (return)))
     (if (i32.eq (local.get $k) (i32.const 4))
         (then (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-                  (then (call $put_str (local.get $c) (i32.const 0x10006AD)
+                  (then (call $put_str (local.get $c) (i32.const 0x10006DE)
                                        (i32.const 23))
                         (call $put_ch (local.get $c) (i32.const 96))
                         (call $put_str (local.get $c) (i32.const 0x1000315)
@@ -3952,7 +3959,7 @@
                                   (else (call $put_str (local.get $c) (i32.const 0x1000025)
                                                        (i32.const 8))))
                               (call $put_ch (local.get $c) (i32.const 96))
-                              (call $put_str (local.get $c) (i32.const 0x10006C4)
+                              (call $put_str (local.get $c) (i32.const 0x10006F5)
                                              (i32.const 18))
                               (call $err_end (local.get $c))))))
           (return)))
@@ -3970,7 +3977,7 @@
                     (return)))
           (if (i32.eq (call $ty_kind (local.get $c) (local.get $ret)) (i32.const 4))
               (then (call $err_msg (local.get $c) (local.get $line) (local.get $col)
-                                   (i32.const 0x10006D6) (i32.const 27))
+                                   (i32.const 0x1000707) (i32.const 27))
                     (return)))
           (drop (call $coerce (local.get $c) (local.get $sa) (local.get $ret)))
           (return)))
@@ -3997,7 +4004,7 @@
         (then (call $put_ch (local.get $c) (i32.const 96))
               (call $put_str (local.get $c) (i32.const 0x1000033) (i32.const 5))
               (call $put_ch (local.get $c) (i32.const 96))
-              (call $put_str (local.get $c) (i32.const 0x10006F1) (i32.const 25))
+              (call $put_str (local.get $c) (i32.const 0x1000722) (i32.const 25))
               (call $put_q_ty (local.get $c) (local.get $t))
               (call $err_end (local.get $c)))))
 
@@ -4005,32 +4012,32 @@
         (param $ens i32) (param $enl i32) (param $vs i32) (param $vl i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
         (then (call $put_q_src (local.get $c) (local.get $ens) (local.get $enl))
-              (call $put_str (local.get $c) (i32.const 0x100070A) (i32.const 16))
+              (call $put_str (local.get $c) (i32.const 0x100073B) (i32.const 16))
               (call $put_q_src (local.get $c) (local.get $vs) (local.get $vl))
               (call $err_end (local.get $c)))))
 
   (func $e_dup_arm (param $c i32) (param $line i32) (param $col i32)
         (param $s i32) (param $l i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x100071A) (i32.const 18))
+        (then (call $put_str (local.get $c) (i32.const 0x100074B) (i32.const 18))
               (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
               (call $err_end (local.get $c)))))
 
   (func $e_bind_arity (param $c i32) (param $line i32) (param $col i32)
         (param $s i32) (param $l i32) (param $want i32) (param $got i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x100072C) (i32.const 8))
+        (then (call $put_str (local.get $c) (i32.const 0x100075D) (i32.const 8))
               (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
-              (call $put_str (local.get $c) (i32.const 0x1000734) (i32.const 7))
+              (call $put_str (local.get $c) (i32.const 0x1000765) (i32.const 7))
               (call $put_num (local.get $c) (local.get $want))
-              (call $put_str (local.get $c) (i32.const 0x100073B) (i32.const 19))
+              (call $put_str (local.get $c) (i32.const 0x100076C) (i32.const 19))
               (call $put_num (local.get $c) (local.get $got))
               (call $err_end (local.get $c)))))
 
   (func $e_nonexhaustive (param $c i32) (param $line i32) (param $col i32)
         (param $s i32) (param $l i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x100074E) (i32.const 30))
+        (then (call $put_str (local.get $c) (i32.const 0x100077F) (i32.const 30))
               (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
               (call $err_end (local.get $c)))))
 
@@ -4128,7 +4135,7 @@
                                   (call $put_str (local.get $c) (i32.const 0x10002EA)
                                                  (i32.const 1))
                                   (call $put_ch (local.get $c) (i32.const 96))
-                                  (call $put_str (local.get $c) (i32.const 0x100076C)
+                                  (call $put_str (local.get $c) (i32.const 0x100079D)
                                                  (i32.const 21))
                                   (call $err_end (local.get $c))))
                         (return)))
@@ -4245,7 +4252,7 @@
 
   (func $e_copy_agg (param $c i32) (param $line i32) (param $col i32) (param $t i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x1000781) (i32.const 22))
+        (then (call $put_str (local.get $c) (i32.const 0x10007B2) (i32.const 22))
               (call $put_q_ty (local.get $c) (local.get $t))
               (call $err_end (local.get $c)))))
 
@@ -4281,7 +4288,7 @@
   (func $e_unknown_struct (param $c i32) (param $line i32) (param $col i32)
         (param $s i32) (param $l i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x1000797) (i32.const 15))
+        (then (call $put_str (local.get $c) (i32.const 0x10007C8) (i32.const 15))
               (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
               (call $err_end (local.get $c)))))
 
@@ -4289,15 +4296,15 @@
         (param $s i32) (param $l i32) (param $n i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
         (then (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
-              (call $put_str (local.get $c) (i32.const 0x10007A6) (i32.const 5))
+              (call $put_str (local.get $c) (i32.const 0x10007D7) (i32.const 5))
               (call $put_num (local.get $c) (local.get $n))
-              (call $put_str (local.get $c) (i32.const 0x10007AB) (i32.const 9))
+              (call $put_str (local.get $c) (i32.const 0x10007DC) (i32.const 9))
               (call $err_end (local.get $c)))))
 
   (func $e_field_order (param $c i32) (param $line i32) (param $col i32)
         (param $ws i32) (param $wl i32) (param $gs i32) (param $gl i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x10007B4) (i32.const 15))
+        (then (call $put_str (local.get $c) (i32.const 0x10007E5) (i32.const 15))
               (call $put_q_src (local.get $c) (local.get $ws) (local.get $wl))
               (call $put_str (local.get $c) (i32.const 0x1000214) (i32.const 8))
               (call $put_q_src (local.get $c) (local.get $gs) (local.get $gl))
@@ -4386,11 +4393,11 @@
   (func $e_variant_arity (param $c i32) (param $line i32) (param $col i32)
         (param $s i32) (param $l i32) (param $n i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x100072C) (i32.const 8))
+        (then (call $put_str (local.get $c) (i32.const 0x100075D) (i32.const 8))
               (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
-              (call $put_str (local.get $c) (i32.const 0x1000734) (i32.const 7))
+              (call $put_str (local.get $c) (i32.const 0x1000765) (i32.const 7))
               (call $put_num (local.get $c) (local.get $n))
-              (call $put_str (local.get $c) (i32.const 0x10007C3) (i32.const 9))
+              (call $put_str (local.get $c) (i32.const 0x10007F4) (i32.const 9))
               (call $err_end (local.get $c)))))
 
   (func $check_enum_lit (param $c i32) (param $e i32) (param $want i32) (result i32)
@@ -4549,7 +4556,7 @@
   (func $e_unknown_name (param $c i32) (param $line i32) (param $col i32)
         (param $s i32) (param $l i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-        (then (call $put_str (local.get $c) (i32.const 0x10007CC) (i32.const 13))
+        (then (call $put_str (local.get $c) (i32.const 0x10007FD) (i32.const 13))
               (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
               (call $err_end (local.get $c)))))
 
@@ -4557,11 +4564,11 @@
         (param $op i32) (param $lt i32) (param $rt i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
         (then (call $put_q_punct (local.get $c) (local.get $op))
-              (call $put_str (local.get $c) (i32.const 0x10007D9) (i32.const 2))
+              (call $put_str (local.get $c) (i32.const 0x100080A) (i32.const 2))
               (call $put_q_ty (local.get $c) (local.get $lt))
-              (call $put_str (local.get $c) (i32.const 0x10007DB) (i32.const 5))
+              (call $put_str (local.get $c) (i32.const 0x100080C) (i32.const 5))
               (call $put_q_ty (local.get $c) (local.get $rt))
-              (call $put_str (local.get $c) (i32.const 0x10007E0) (i32.const 13))
+              (call $put_str (local.get $c) (i32.const 0x1000811) (i32.const 13))
               (call $err_end (local.get $c)))))
 
   (func $check_binop_types (param $c i32) (param $line i32) (param $col i32)
@@ -4578,7 +4585,7 @@
                     (return)))
           (if (i32.ne (call $ty_kind (local.get $c) (local.get $rt)) (i32.const 1))
               (then (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-                        (then (call $put_str (local.get $c) (i32.const 0x10007ED)
+                        (then (call $put_str (local.get $c) (i32.const 0x100081E)
                                              (i32.const 21))
                               (call $put_ch (local.get $c) (i32.const 96))
                               (call $put_str (local.get $c) (i32.const 0x1000262)
@@ -4606,7 +4613,7 @@
                             (else (i32.const 0))))
                   (else (i32.const 0)))
               (then (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-                        (then (call $put_str (local.get $c) (i32.const 0x1000802)
+                        (then (call $put_str (local.get $c) (i32.const 0x1000833)
                                              (i32.const 15))
                               (call $put_q_ty (local.get $c) (local.get $lt))
                               (call $err_end (local.get $c))))))
@@ -4619,7 +4626,7 @@
                             (else (i32.const 0))))
                   (else (i32.const 0)))
               (then (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-                        (then (call $put_str (local.get $c) (i32.const 0x1000811)
+                        (then (call $put_str (local.get $c) (i32.const 0x1000842)
                                              (i32.const 13))
                               (call $put_q_ty (local.get $c) (local.get $lt))
                               (call $err_end (local.get $c))))))
@@ -4629,11 +4636,11 @@
             (else (i32.const 0)))
         (then (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
                   (then (call $put_q_punct (local.get $c) (local.get $op))
-                        (call $put_str (local.get $c) (i32.const 0x100081E) (i32.const 10))
+                        (call $put_str (local.get $c) (i32.const 0x100084F) (i32.const 10))
                         (call $put_ch (local.get $c) (i32.const 96))
                         (call $put_str (local.get $c) (i32.const 0x100025F) (i32.const 3))
                         (call $put_ch (local.get $c) (i32.const 96))
-                        (call $put_str (local.get $c) (i32.const 0x1000828) (i32.const 4))
+                        (call $put_str (local.get $c) (i32.const 0x1000859) (i32.const 4))
                         (call $put_ch (local.get $c) (i32.const 96))
                         (call $put_str (local.get $c) (i32.const 0x1000262) (i32.const 3))
                         (call $put_ch (local.get $c) (i32.const 96))
@@ -4724,9 +4731,9 @@
         (param $s i32) (param $l i32) (param $want i32) (param $got i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
         (then (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
-              (call $put_str (local.get $c) (i32.const 0x1000734) (i32.const 7))
+              (call $put_str (local.get $c) (i32.const 0x1000765) (i32.const 7))
               (call $put_num (local.get $c) (local.get $want))
-              (call $put_str (local.get $c) (i32.const 0x100082C) (i32.const 20))
+              (call $put_str (local.get $c) (i32.const 0x100085D) (i32.const 20))
               (call $put_num (local.get $c) (local.get $got))
               (call $err_end (local.get $c)))))
 
@@ -4820,9 +4827,9 @@
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
         (then (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
               (if (i32.eq (local.get $twice) (i32.const 0))
-                  (then (call $put_str (local.get $c) (i32.const 0x1000840)
+                  (then (call $put_str (local.get $c) (i32.const 0x1000871)
                                        (i32.const 60)))
-                  (else (call $put_str (local.get $c) (i32.const 0x100087C)
+                  (else (call $put_str (local.get $c) (i32.const 0x10008AD)
                                        (i32.const 35))))
               (call $err_end (local.get $c)))))
 
@@ -4891,11 +4898,11 @@
     (local.set $ocol (call $nd (local.get $c) (local.get $opnd) (i32.const 8)))
     (if (i32.eq (call $nd (local.get $c) (local.get $opnd) (i32.const 0)) (i32.const 14))
         (then (call $err_msg (local.get $c) (local.get $oline) (local.get $ocol)
-                             (i32.const 0x100089F) (i32.const 48))
+                             (i32.const 0x10008D0) (i32.const 48))
               (return)))
     (if (call $is_enum_lit (local.get $c) (local.get $opnd))
         (then (call $err_msg (local.get $c) (local.get $oline) (local.get $ocol)
-                             (i32.const 0x10008CF) (i32.const 46))
+                             (i32.const 0x1000900) (i32.const 46))
               (return)))
     (local.set $ty (call $check_place (local.get $c) (local.get $opnd)))
     (if (call $failed (local.get $c)) (then (return)))
@@ -4906,7 +4913,7 @@
         (then (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
                   (then (call $put_str (local.get $c) (i32.const 0x100020B) (i32.const 9))
                         (call $put_q_ty (local.get $c) (local.get $want))
-                        (call $put_str (local.get $c) (i32.const 0x10008FD)
+                        (call $put_str (local.get $c) (i32.const 0x100092E)
                                        (i32.const 16))
                         (call $err_end (local.get $c))))
               (return)))
@@ -4914,7 +4921,7 @@
             (then (i32.eq (local.get $mutable) (i32.const 0)))
             (else (i32.const 0)))
         (then (call $err_msg (local.get $c) (local.get $line) (local.get $col)
-                             (i32.const 0x100090D) (i32.const 42))
+                             (i32.const 0x100093E) (i32.const 42))
               (return)))
     (local.set $got (call $ty_intern (local.get $c) (i32.const 7) (local.get $ty)
                                      (local.get $is_mut)))
@@ -4937,14 +4944,14 @@
     (local.set $callee (call $nd (local.get $c) (local.get $e) (i32.const 12)))
     (if (i32.ne (call $nd (local.get $c) (local.get $callee) (i32.const 0)) (i32.const 5))
         (then (call $err_msg (local.get $c) (local.get $line) (local.get $col)
-                             (i32.const 0x1000937) (i32.const 30))
+                             (i32.const 0x1000968) (i32.const 30))
               (return (i32.const 1))))
     (local.set $cs2 (call $nd (local.get $c) (local.get $callee) (i32.const 12)))
     (local.set $cl (call $nd (local.get $c) (local.get $callee) (i32.const 16)))
     (local.set $fi (call $find_fn (local.get $c) (local.get $cs2) (local.get $cl)))
     (if (i32.eq (local.get $fi) (i32.const 0))
         (then (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-                  (then (call $put_str (local.get $c) (i32.const 0x1000955)
+                  (then (call $put_str (local.get $c) (i32.const 0x1000986)
                                        (i32.const 17))
                         (call $put_q_src (local.get $c) (local.get $cs2) (local.get $cl))
                         (call $err_end (local.get $c))))
@@ -5017,7 +5024,7 @@
         (param $s i32) (param $l i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
         (then (call $put_q_ty (local.get $c) (local.get $t))
-              (call $put_str (local.get $c) (i32.const 0x1000966) (i32.const 14))
+              (call $put_str (local.get $c) (i32.const 0x1000997) (i32.const 14))
               (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
               (call $err_end (local.get $c)))))
 
@@ -5025,7 +5032,7 @@
         (param $bs i32) (param $bl i32) (param $s i32) (param $l i32)
     (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
         (then (call $put_q_src (local.get $c) (local.get $bs) (local.get $bl))
-              (call $put_str (local.get $c) (i32.const 0x1000966) (i32.const 14))
+              (call $put_str (local.get $c) (i32.const 0x1000997) (i32.const 14))
               (call $put_q_src (local.get $c) (local.get $s) (local.get $l))
               (call $err_end (local.get $c)))))
 
@@ -5054,7 +5061,7 @@
                                               (local.get $col))
                               (then (call $put_q_src (local.get $c) (local.get $ea)
                                           (local.get $eb))
-                                    (call $put_str (local.get $c) (i32.const 0x1000974)
+                                    (call $put_str (local.get $c) (i32.const 0x10009A5)
                                                    (i32.const 27))
                                     (call $err_end (local.get $c))))
                           (return (i32.const 1))))
@@ -5063,7 +5070,7 @@
                                               (local.get $col))
                               (then (call $put_q_src (local.get $c) (local.get $ea)
                                           (local.get $eb))
-                                    (call $put_str (local.get $c) (i32.const 0x100098F)
+                                    (call $put_str (local.get $c) (i32.const 0x10009C0)
                                                    (i32.const 23))
                                     (call $err_end (local.get $c))))
                           (return (i32.const 1))))
@@ -5126,7 +5133,7 @@
           (if (call $failed (local.get $c)) (then (return (i32.const 1))))
           (if (i32.ne (call $ty_kind (local.get $c) (local.get $bt)) (i32.const 6))
               (then (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-                        (then (call $put_str (local.get $c) (i32.const 0x10009A6)
+                        (then (call $put_str (local.get $c) (i32.const 0x10009D7)
                                              (i32.const 13))
                               (call $put_q_ty (local.get $c) (local.get $bt))
                               (call $err_end (local.get $c))))
@@ -5163,7 +5170,7 @@
               (then
                 (if (i32.eq (call $cg (local.get $c) (i32.const 244)) (i32.const 0))
                     (then (call $err_msg (local.get $c) (local.get $line) (local.get $col)
-                                         (i32.const 0x10009B3) (i32.const 41))
+                                         (i32.const 0x10009E4) (i32.const 41))
                           (return (i32.const 1))))
                 (local.set $rt (call $root_local (local.get $c) (local.get $ea)))
                 (call $nset (local.get $c) (local.get $e) (i32.const 36)
@@ -5172,13 +5179,13 @@
                 (call $cs (local.get $c) (i32.const 252) (local.get $rt))
                 (return (local.get $inner))))
           (if (call $err_open (local.get $c) (local.get $line) (local.get $col))
-              (then (call $put_str (local.get $c) (i32.const 0x10009DC) (i32.const 19))
+              (then (call $put_str (local.get $c) (i32.const 0x1000A0D) (i32.const 19))
                     (call $put_q_ty (local.get $c) (local.get $bt))
                     (call $err_end (local.get $c))))
           (return (i32.const 1))))
 
     (call $err_msg (local.get $c) (local.get $line) (local.get $col)
-                   (i32.const 0x10009EF) (i32.const 27))
+                   (i32.const 0x1000A20) (i32.const 27))
     (i32.const 1))
 
   ;; A slice has exactly two built-in fields, `len` and `ptr` (language.md S3).
@@ -5191,10 +5198,10 @@
     (local.set $nl (call $nd (local.get $c) (local.get $e) (i32.const 20)))
     (local.set $which (i32.const 0))
     (if (call $src_eq (local.get $c) (local.get $ns) (local.get $nl)
-                      (i32.const 0x1000A0A) (i32.const 3))
+                      (i32.const 0x1000A3B) (i32.const 3))
         (then (local.set $which (i32.const 1)))
         (else (if (call $src_eq (local.get $c) (local.get $ns) (local.get $nl)
-                                (i32.const 0x1000A0D) (i32.const 3))
+                                (i32.const 0x1000A3E) (i32.const 3))
                   (then (local.set $which (i32.const 2)))
                   (else (return (i32.const 0))))))
     (local.set $base (call $nd (local.get $c) (local.get $e) (i32.const 12)))
@@ -5244,13 +5251,14 @@
     (if (i32.eq (local.get $k) (i32.const 4)) (then (return (i32.const 3))))
     (if (i32.eq (local.get $k) (i32.const 3))
         (then (local.set $addr (call $intern_string (local.get $c) (local.get $ea)
-                                     (local.get $eb)))
+                                     (local.get $eb) (local.get $line)
+                                     (local.get $col)))
               (call $nset (local.get $c) (local.get $e) (i32.const 40) (local.get $addr))
               (return (call $ty_intern (local.get $c) (i32.const 6) (i32.const 4)
                             (i32.const 0)))))
     (if (i32.eq (local.get $k) (i32.const 14))
         (then (call $err_msg (local.get $c) (local.get $line) (local.get $col)
-                             (i32.const 0x100089F) (i32.const 48))
+                             (i32.const 0x10008D0) (i32.const 48))
               (return (i32.const 1))))
     (if (i32.eq (local.get $k) (i32.const 16))
         (then
@@ -5264,7 +5272,7 @@
                                   (else (call $put_str (local.get $c) (i32.const 0x1000049)
                                                        (i32.const 5))))
                               (call $put_ch (local.get $c) (i32.const 96))
-                              (call $put_str (local.get $c) (i32.const 0x100081E)
+                              (call $put_str (local.get $c) (i32.const 0x100084F)
                                              (i32.const 10))
                               (call $put_ch (local.get $c) (i32.const 96))
                               (call $put_str (local.get $c) (i32.const 0x1000038)
@@ -5279,7 +5287,7 @@
                 (local.set $pl (call $nd (local.get $c) (local.get $eb) (i32.const 4)))
                 (local.set $pc (call $nd (local.get $c) (local.get $eb) (i32.const 8)))
                 (if (call $err_open (local.get $c) (local.get $pl) (local.get $pc))
-                    (then (call $put_str (local.get $c) (i32.const 0x1000A10)
+                    (then (call $put_str (local.get $c) (i32.const 0x1000A41)
                                          (i32.const 30))
                           (call $put_q_ty (local.get $c) (local.get $pt))
                           (call $err_end (local.get $c))))
@@ -5298,7 +5306,7 @@
                 (local.set $pl (call $nd (local.get $c) (local.get $ea) (i32.const 4)))
                 (local.set $pc (call $nd (local.get $c) (local.get $ea) (i32.const 8)))
                 (if (call $err_open (local.get $c) (local.get $pl) (local.get $pc))
-                    (then (call $put_str (local.get $c) (i32.const 0x1000A10)
+                    (then (call $put_str (local.get $c) (i32.const 0x1000A41)
                                          (i32.const 30))
                           (call $put_q_ty (local.get $c) (local.get $pt))
                           (call $err_end (local.get $c))))
@@ -5334,7 +5342,7 @@
           (if (i32.ne (call $find_fn (local.get $c) (local.get $ea) (local.get $eb))
                       (i32.const 0))
               (then (call $err_msg (local.get $c) (local.get $line) (local.get $col)
-                                   (i32.const 0x1000A2E) (i32.const 24))
+                                   (i32.const 0x1000A5F) (i32.const 24))
                     (return (i32.const 1))))
           (call $e_unknown_name (local.get $c) (local.get $line) (local.get $col)
                                 (local.get $ea) (local.get $eb))
@@ -5354,7 +5362,7 @@
           (return (local.get $t))))
     (if (i32.eq (local.get $k) (i32.const 8))
         (then (call $err_msg (local.get $c) (local.get $line) (local.get $col)
-                             (i32.const 0x1000A46) (i32.const 43))
+                             (i32.const 0x1000A77) (i32.const 43))
               (return (i32.const 1))))
     (if (i32.eq (local.get $k) (i32.const 9))
         (then
@@ -5389,14 +5397,14 @@
     (if (i32.eq (local.get $k) (i32.const 10))
         (then (if (call $is_enum_lit (local.get $c) (local.get $e))
                   (then (call $err_msg (local.get $c) (local.get $line) (local.get $col)
-                                       (i32.const 0x10008CF) (i32.const 46))
+                                       (i32.const 0x1000900) (i32.const 46))
                         (return (i32.const 1))))
               (return (call $check_call (local.get $c) (local.get $e)))))
     (if (i32.eq (local.get $k) (i32.const 12))
         (then
           (if (call $is_enum_lit (local.get $c) (local.get $e))
               (then (call $err_msg (local.get $c) (local.get $line) (local.get $col)
-                                   (i32.const 0x10008CF) (i32.const 46))
+                                   (i32.const 0x1000900) (i32.const 46))
                     (return (i32.const 1))))
           (local.set $which (call $slice_field (local.get $c) (local.get $e)))
           (if (i32.ne (local.get $which) (i32.const 0))
@@ -6997,6 +7005,16 @@
             (br $dcont)))
           (call $end_section (local.get $c) (i32.const 11)))))
 
+  ;; The arenas grow up from the source and S1 is fixed. If the heap ever
+  ;; reaches it, two compiler-owned regions alias. cool0.py enforces the same
+  ;; limit so the two never diverge (implementation.md S7).
+  (func $e_too_large (param $c i32)
+    (call $err_msg (local.get $c) (i32.const 1) (i32.const 1)
+                   (i32.const 0x1000AA2) (i32.const 46)))
+
+  (func $heap_fits (param $c i32) (result i32)
+    (i32.le_u (call $cg (local.get $c) (i32.const 312)) (i32.const 0x800000)))
+
   ;; ======================================================================
   ;; Entry point (implementation.md S7)
   ;;
@@ -7051,7 +7069,11 @@
     (call $cs (local.get $c) (i32.const 316) (i32.const 0))
     (call $cs (local.get $c) (i32.const 320) (i32.const 0x1010000))
 
-    (call $lex (local.get $c))
+    ;; before lexing: the token arena alone can reach S1
+    (if (i32.eqz (call $heap_fits (local.get $c)))
+        (then (call $e_too_large (local.get $c))))
+    (if (i32.eq (call $cg (local.get $c) (i32.const 316)) (i32.const 0))
+        (then (call $lex (local.get $c))))
 
     ;; The node arena is sized from the token count, not the source length.
     (if (i32.eq (call $cg (local.get $c) (i32.const 316)) (i32.const 0))
@@ -7065,7 +7087,10 @@
           (call $cs (local.get $c) (i32.const 312)
                     (i32.add (local.get $nodes_at)
                              (i32.mul (local.get $nmax) (i32.const 52))))
-          (call $parse_program (local.get $c))
+          (if (i32.eqz (call $heap_fits (local.get $c)))
+              (then (call $e_too_large (local.get $c))))
+          (if (i32.eq (call $cg (local.get $c) (i32.const 316)) (i32.const 0))
+              (then (call $parse_program (local.get $c))))
           (i32.store (i32.const 0x44) (local.get $nodes_at))
           (i32.store (i32.const 0x40) (call $cg (local.get $c) (i32.const 56)))))
 
@@ -7075,8 +7100,11 @@
     (if (i32.eq (call $cg (local.get $c) (i32.const 316)) (i32.const 0))
         (then
           (call $count_nodes (local.get $c))
+          (if (i32.eqz (call $heap_fits (local.get $c)))
+              (then (call $e_too_large (local.get $c))))
           (call $init_types (local.get $c))
-          (call $check_program (local.get $c))
+          (if (i32.eq (call $cg (local.get $c) (i32.const 316)) (i32.const 0))
+              (then (call $check_program (local.get $c))))
           (if (i32.eq (call $cg (local.get $c) (i32.const 316)) (i32.const 0))
               (then (call $emit_module (local.get $c))))))
 
@@ -7096,35 +7124,36 @@
   ;; string literals, first appearance order, exactly as cool0c.cool0 lays out its own
   (data (i32.const 0x1000000)
     "fnstructenumconstletmutifelseforbreakcontinuereturnmatchunsafeastruefalsesliceslice_muto"
-    "ffset<<=>>=->=>==!=<=>=&&||<<>>+=-=*=/=%=&=|=^=(){}[],;:.=<>+-*/%&|^!integer literal has"
-    " no digitsinvalid digit in integer literalinteger literal out of rangeunterminated chara"
+    "ffset<<=>>=->=>==!=<=>=&&||<<>>+=-=*=/=%=&=|=^=(){}[],;:.=<>+-*/%&|^!invalid digit in in"
+    "teger literalinteger literal has no digitsinteger literal out of rangeunterminated chara"
     "cter literalempty character literalunknown escape sequenceinvalid character in character"
     " literalunterminated string literalinvalid character in string literalnon-ascii byte in "
     "sourceunexpected characterend of fileinteger literalcharacter literalstring literalexpec"
     "ted , found expected identifierexpression nests too deeplytype nests too deeplyi32u32boo"
     "lu8expected typecomparison operators cannot be chainedexpected expressionblock nests too"
     " deeplyexpression statement must be a call_expected `fn`, `struct`, `enum` or `const`voi"
-    "d[]mut []&mut unknown type duplicate top-level name  is a built-in type namestruct field"
-    "enum payload cannot have aggregate type  cannot have borrow type duplicate field duplica"
-    "te variant const must have type i32, u32 or bool, found const  depends on itself is not "
-    "a constantcannot cast from cannot cast to cannot negate cannot apply  to  requires bool "
-    "operands requires integer operandsdivision by zero in constant expression is not allowed"
-    " in a constant expressionnot a constant expressionduplicate parameter cannot pass aggreg"
-    "ate  by value is storage-only; use cannot return aggregate cannot return a slice (wasm 1"
-    ".0 has a single result)cannot return a borrow is already declared in this scope shadows "
-    "a top-level namefunction  must return a value on every pathcannot assign to an immutable"
-    " place requires an integer, found , found no value is storage-only; there are no u8 loca"
-    "lsa borrow cannot be bound to a locallocal cannot have type  outside of a loopfunction h"
-    "as no return type requires an enum, found  has no variant duplicate arm for variant  tak"
-    "es  binding(s), found non-exhaustive match: missing  must be the last armcannot copy agg"
-    "regate unknown struct  has  field(s)expected field  value(s)unknown name :  and  do not "
-    "matchshift amount must be cannot compare cannot order  requires  or  argument(s), found "
-    " is borrowed mutably and also used in the same argument list is borrowed mutably more th"
-    "an oncestruct literal is only allowed as an initializerenum literal is only allowed as a"
-    "n initializer, found a borrowcannot borrow an immutable place as `&mut`callee must be a "
-    "function nameunknown function  has no field  is a constant, not a place is a type, not a"
-    " placecannot index raw pointer dereference requires `unsafe`cannot dereference expected "
-    "a place expressionlenptrexpected a raw pointer, found functions are not valuesa borrow m"
-    "ay only appear as a call argument"
+    "d[]mut []&mut unknown type string literals do not fit below the shadow stackduplicate to"
+    "p-level name  is a built-in type namestruct fieldenum payload cannot have aggregate type"
+    "  cannot have borrow type duplicate field duplicate variant const must have type i32, u3"
+    "2 or bool, found const  depends on itself is not a constantcannot cast from cannot cast "
+    "to cannot negate cannot apply  to  requires bool operands requires integer operandsdivis"
+    "ion by zero in constant expression is not allowed in a constant expressionnot a constant"
+    " expressionduplicate parameter cannot pass aggregate  by value is storage-only; use cann"
+    "ot return aggregate cannot return a slice (wasm 1.0 has a single result)cannot return a "
+    "borrow is already declared in this scope shadows a top-level namefunction  must return a"
+    " value on every pathcannot assign to an immutable place requires an integer, found , fou"
+    "nd no value is storage-only; there are no u8 localsa borrow cannot be bound to a locallo"
+    "cal cannot have type  outside of a loopfunction has no return type requires an enum, fou"
+    "nd  has no variant duplicate arm for variant  takes  binding(s), found non-exhaustive ma"
+    "tch: missing  must be the last armcannot copy aggregate unknown struct  has  field(s)exp"
+    "ected field  value(s)unknown name :  and  do not matchshift amount must be cannot compar"
+    "e cannot order  requires  or  argument(s), found  is borrowed mutably and also used in t"
+    "he same argument list is borrowed mutably more than oncestruct literal is only allowed a"
+    "s an initializerenum literal is only allowed as an initializer, found a borrowcannot bor"
+    "row an immutable place as `&mut`callee must be a function nameunknown function  has no f"
+    "ield  is a constant, not a place is a type, not a placecannot index raw pointer derefere"
+    "nce requires `unsafe`cannot dereference expected a place expressionlenptrexpected a raw "
+    "pointer, found functions are not valuesa borrow may only appear as a call argumentprogra"
+    "m is too large for the compiler's memory"
   )
 )
