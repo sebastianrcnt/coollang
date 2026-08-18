@@ -31,8 +31,16 @@ needs_wat = pytest.mark.skipif(not COOL0C_WAT.exists(), reason="cool0c.wat 이 �
 
 
 def token_arena_end(n: int) -> int:
-    """소스 n 바이트일 때 토큰 아레나가 끝나는 주소. cool0c 의 compile() 과 같다."""
-    return align_up(SRC_ADDR + n, 4) + 4 + (n + 1) * 32
+    """소스 n 바이트일 때 토큰 아레나가 끝나는 주소. cool0c 의 compile_n() 과 같다.
+
+    폭을 손으로 적어 두었더니 Token 이 32 에서 36 바이트가 될 때 조용히 어긋났다.
+    이제 상수에서 가져온다.
+    """
+    from cool0.cool0 import SIZEOF_TOKEN
+
+    srctok_at = align_up(SRC_ADDR + n, 4) + 4
+    heap0 = srctok_at + 2 * 4          # 버퍼 하나 -> (nsrc + 1) 칸 (gh #5 B)
+    return heap0 + (n + 1) * SIZEOF_TOKEN
 
 
 def first_collision() -> int:

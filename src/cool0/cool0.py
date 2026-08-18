@@ -3153,6 +3153,21 @@ BOOTSTRAP_SCRATCH = 0x0E00_0000  # S1. 힙은 여기 닿을 수 없다
 
 SRCTAB = 0x0080  # (ptr, len) 쌍이 놓이는 곳 (gh #5 B)
 
+# cool0c.cool0 의 SIZEOF_TOKEN / SIZEOF_NODE 와 같아야 한다
+# cool0c 이 미리 인턴하는 이름들: i32 u32 bool u8 _ len ptr
+WELLKNOWN_COUNT = 7
+WELLKNOWN_BYTES = 19
+
+SIZEOF_TOKEN = 36
+SIZEOF_NODE = 56
+
+
+def pow2_at_least(v: int) -> int:
+    p = 8
+    while p < v:
+        p *= 2
+    return p
+
 
 
 def _count_arena_nodes(decls) -> dict:
@@ -3198,19 +3213,77 @@ def _count_arena_nodes(decls) -> dict:
     return n
 
 
-def check_bootstrap_memory(src_len: int, ntok: Optional[int], decls) -> None:
-    """cool0c 의 범프 순서를 그대로 따라가 힙 끝을 구하고 S1 과 견준다.
+def _str_body_bytes(toks) -> int:
+    """문자열 리터럴 본문이 차지하는 힙 (implementation.md §7).
+
+    렉서가 해석한 바이트열을 그 자리에서 범프 힙에 복사하고 4 바이트로 올린다.
+    """
+    return sum(align_up(len(x.value), 4) for x in toks if x.kind == "str")
+
+
+def _name_arena_size(toks) -> tuple[int, int]:
+    """인턴 아레나 크기 (gh #5 A). cool0c 은 식별자 토큰에서 정확히 구한다."""
+    nb = sum(len(x.text) for x in toks if x.kind == "ident")
+    nid = sum(1 for x in toks if x.kind == "ident")
+    return nb + WELLKNOWN_BYTES, nid + WELLKNOWN_COUNT + 1
+
+
+def _arena_bound(toks) -> int:
+    """동시에 살아 있는 노드 상한 (gh #5 C): 선언부 + 가장 큰 본문 하나."""
+    depth = is_fn = start = total = largest = 0
+    for i, x in enumerate(toks):
+        if depth == 0 and x.kind == "kw" and x.text == "fn":
+            is_fn = 1
+        if x.kind == "punct":
+            if x.text == "{":
+                if depth == 0 and is_fn:
+                    start = i
+                depth += 1
+            elif x.text == "}":
+                if depth:
+                    depth -= 1
+                if depth == 0 and is_fn:
+                    n = i - start + 1
+                    total += n
+                    largest = max(largest, n)
+                    is_fn = 0
+    return len(toks) - total + largest + 2
+
+
+def bootstrap_heap_end(
+    src_len: int,
+    ntok: Optional[int],
+    decls,
+    name_bytes: int = 0,
+    name_count: int = 0,
+    nmax: int = 0,
+    nsrc: int = 1,
+    str_body_bytes: int = 0,
+) -> int:
+    """cool0c 의 범프 순서를 그대로 따라가 힙 끝을 구한다.
 
     `ntok` 이 None 이면 토큰 아레나까지만 본다 -- 렉싱 전에 한 번, 파싱 뒤에 한 번,
     자기 호스팅 컴파일러가 검사하는 바로 그 두 지점이다.
+
+    여기 있는 숫자는 전부 cool0c.cool0 의 compile_n() 에 짝이 있다. 하나라도
+    어긋나면 두 구현이 **큰 소스에서만** 갈리고, 그것이 §8 이 금지하는 상황이다.
     """
-    heap = align_up(SRC_ADDR + src_len, 4) + 4
-    heap += (src_len + 1) * 32  # 토큰
+    top = SRC_ADDR + src_len
+    srctok_at = align_up(top, 4) + 4
+    heap = srctok_at + (nsrc + 1) * 4          # 버퍼별 토큰 경계 (gh #5 B)
+    heap += (src_len + 1) * SIZEOF_TOKEN       # 토큰
+    # 문자열 리터럴의 **본문**도 같은 범프 힙에서, 렉싱 도중에 잡힌다
+    # (Ctx 의 `heap` 주석). 이 항이 여태 빠져 있었다.
+    heap += str_body_bytes
     if ntok is not None:
+        heap = align_up(heap + name_bytes, 4)  # 이름 바이트 (gh #5 A)
+        heap += name_count * 8                 # 이름 표
+        heap += pow2_at_least(name_count * 2) * 4   # 이름 해시
+        heap += nmax * SIZEOF_NODE             # 노드 (gh #5 C: 선언부 + 가장 큰 본문)
+
         k = _count_arena_nodes(decls)
         n_local = k["params"] + k["lets"] + k["binds"] + 2
         n_name = k["structs"] + k["enums"] + k["consts"] + k["fns"] + 2
-        heap += (ntok + 2) * 56  # 노드
         heap += (k["tys"] + 7 + 8) * 12  # 타입
         heap += (k["fields"] + k["tys"] + 2) * 20
         heap += (k["structs"] + 2) * 24
@@ -3221,12 +3294,17 @@ def check_bootstrap_memory(src_len: int, ntok: Optional[int], decls) -> None:
         heap += (k["fns"] + 2) * 52
         heap += n_local * 36
         heap += (k["strs"] + 2) * 16
-        heap += n_name * 12 * 2
+        heap += n_name * 12 * 3          # taken, tynames, scalars
         heap += (n_local + 2) * 4  # 스코프
         heap += (MAX_DEPTH + MAX_DEPTH + 8) * 4  # 표시
         heap += 512 * 4 * 2  # free, ctrl
         heap += ((k["fns"] + 2) * 3) * 4  # 시그니처
-    if heap > BOOTSTRAP_SCRATCH:
+    return heap
+
+
+def check_bootstrap_memory(*args, **kw) -> None:
+    """같은 산술로 힙 끝을 구하고 S1 과 견준다."""
+    if bootstrap_heap_end(*args, **kw) > BOOTSTRAP_SCRATCH:
         raise CompileError(1, 1, "program is too large for the compiler's memory")
 
 
@@ -3262,7 +3340,11 @@ def compile(src: bytes) -> tuple[int, bytes]:
         check_bootstrap_memory(len(src), None, None)
         toks = lex(src)
         decls = Parser(toks).parse_program()
-        check_bootstrap_memory(len(src), len(toks), decls)
+        check_bootstrap_memory(
+            len(src), len(toks), decls,
+            *_name_arena_size(toks), _arena_bound(toks),
+            str_body_bytes=_str_body_bytes(toks),
+        )
         ck = Checker(decls).run()
         return STATUS_OK, Emitter(ck).emit_module()
     except CompileError as e:

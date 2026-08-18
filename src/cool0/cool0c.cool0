@@ -44,6 +44,7 @@ const G_DECLS: u32 = 0x0040;
 const G_NODES: u32 = 0x0044;
 const G_NMEM: u32 = 0x0048;   // interned name bytes (gh #5 A)
 const G_NTAB: u32 = 0x004C;   // interned name table
+const G_HEAP: u32 = 0x0050;   // where the bump heap ended
 
 // regions
 const S1: u32 = 0x0E00_0000;   // scratch for one function body
@@ -2220,31 +2221,27 @@ fn slot_count(c: &Ctx, t: u32) -> u32 {
 
 // ty_str() in cool0.py
 fn put_ty(c: &mut Ctx, t: u32) {
-    let k: u32 = ty_kind(c, t);
-    let arg: u32 = ty_arg(c, t);
-    let flag: u32 = ty_flag(c, t);
-    if k == TYK_I32 { put_str(c, "i32"); return; }
-    if k == TYK_U32 { put_str(c, "u32"); return; }
-    if k == TYK_BOOL { put_str(c, "bool"); return; }
-    if k == TYK_U8 { put_str(c, "u8"); return; }
-    if k == TYK_VOID { put_str(c, "void"); return; }
-    if k == TYK_INTLIT { put_str(c, "integer literal"); return; }
-    if k == TYK_SLICE {
-        if flag != 0 { put_str(c, "[]mut "); } else { put_str(c, "[]"); }
-        put_ty(c, arg);
-        return;
+    match c.^.types[t] {
+        I32 => { put_str(c, "i32"); }
+        U32 => { put_str(c, "u32"); }
+        Bool => { put_str(c, "bool"); }
+        U8 => { put_str(c, "u8"); }
+        Void => { put_str(c, "void"); }
+        IntLit => { put_str(c, "integer literal"); }
+        Slice(e, m) => {
+            if m != 0 { put_str(c, "[]mut "); } else { put_str(c, "[]"); }
+            put_ty(c, e);
+        }
+        Ref(i, m) => {
+            if m != 0 { put_str(c, "&mut "); } else { put_str(c, "&"); }
+            put_ty(c, i);
+        }
+        Ptr(i) => {
+            put_str(c, "*");
+            put_ty(c, i);
+        }
+        Named(nm) => { put_name(c, nm); }
     }
-    if k == TYK_REF {
-        if flag != 0 { put_str(c, "&mut "); } else { put_str(c, "&"); }
-        put_ty(c, arg);
-        return;
-    }
-    if k == TYK_PTR {
-        put_str(c, "*");
-        put_ty(c, arg);
-        return;
-    }
-    put_name(c, arg);
 }
 
 fn put_q_ty(c: &mut Ctx, t: u32) { put_ch(c, 96); put_ty(c, t); put_ch(c, 96); }
@@ -2407,15 +2404,17 @@ fn find_taken(c: &Ctx, s: u32) -> bool {
 
 // The aggregate info behind a named type
 fn agg_struct(c: &Ctx, t: u32) -> u32 {
-    let s: u32 = ty_arg(c, t);
-    let l: u32 = ty_flag(c, t);
-    return find_struct(c, s);
+    match c.^.types[t] {
+        Named(nm) => { return find_struct(c, nm); }
+        _ => { return 0; }
+    }
 }
 
 fn agg_enum(c: &Ctx, t: u32) -> u32 {
-    let s: u32 = ty_arg(c, t);
-    let l: u32 = ty_flag(c, t);
-    return find_enum(c, s);
+    match c.^.types[t] {
+        Named(nm) => { return find_enum(c, nm); }
+        _ => { return 0; }
+    }
 }
 
 fn size_of(c: &Ctx, t: u32) -> u32 {
@@ -4248,11 +4247,21 @@ fn retype(c: &mut Ctx, e: u32, t: u32) {
 // write permission and nothing else (language.md S3). No value changes, so
 // this costs no instructions.
 fn weakens_to(c: &Ctx, got: u32, want: u32) -> bool {
-    let gk: u32 = ty_kind(c, got);
-    if gk != ty_kind(c, want) { return false; }
-    if gk != TYK_REF && gk != TYK_SLICE { return false; }
-    if ty_flag(c, got) == 0 || ty_flag(c, want) != 0 { return false; }
-    return ty_arg(c, got) == ty_arg(c, want);
+    match c.^.types[got] {
+        Ref(gi, gm) => {
+            match c.^.types[want] {
+                Ref(wi, wm) => { return gm != 0 && wm == 0 && gi == wi; }
+                _ => { return false; }
+            }
+        }
+        Slice(ge, gm) => {
+            match c.^.types[want] {
+                Slice(we, wm) => { return gm != 0 && wm == 0 && ge == we; }
+                _ => { return false; }
+            }
+        }
+        _ => { return false; }
+    }
 }
 
 // Can `got` be used where `want` is expected, as-is (equal, or a mutability
@@ -4737,45 +4746,53 @@ fn check_place(c: &mut Ctx, e: u32) -> u32 {
         }
         coerce(c, eb, TY_U32);
         if failed(c) { return TY_I32; }
-        let elem: u32 = ty_arg(c, bt);
-        let flag: u32 = ty_flag(c, bt);
-        let rt: u32 = root_local(c, ea);
-        c.^.nodes[e].d = size_of(c, elem);
-        c.^.nodes[e].ty = read_ty(c, elem);
-        c.^.place_mut = flag;
-        c.^.place_root = rt;
-        return elem;
+        match c.^.types[bt] {
+            Slice(elem, flag) => {
+                let rt: u32 = root_local(c, ea);
+                c.^.nodes[e].d = size_of(c, elem);
+                c.^.nodes[e].ty = read_ty(c, elem);
+                c.^.place_mut = flag;
+                c.^.place_root = rt;
+                return elem;
+            }
+            _ => { return TY_I32; }
+        }
     }
 
     if k == NodeKind.E_DEREF {
         let bt: u32 = check_expr(c, ea, 0);
         if failed(c) { return TY_I32; }
-        let bk: u32 = ty_kind(c, bt);
-        let inner: u32 = ty_arg(c, bt);
-        if bk == TYK_REF {
-            let rt: u32 = root_local(c, ea);
-            c.^.nodes[e].ty = read_ty(c, inner);
-            c.^.place_mut = ty_flag(c, bt);
-            c.^.place_root = rt;
-            return inner;
-        }
-        if bk == TYK_PTR {
-            if c.^.unsafed == 0 {
-                err_msg(c, line, col, "raw pointer dereference requires `unsafe`");
+        // The inner type used to be read with ty_arg() *before* the kind was
+        // known, which worked only because Ref and Ptr happen to keep it in
+        // the same slot. The pattern binds it and the kind together instead.
+        match c.^.types[bt] {
+            Ref(inner, m) => {
+                let rt: u32 = root_local(c, ea);
+                c.^.nodes[e].ty = read_ty(c, inner);
+                c.^.place_mut = m;
+                c.^.place_root = rt;
+                return inner;
+            }
+            Ptr(inner) => {
+                if c.^.unsafed == 0 {
+                    err_msg(c, line, col, "raw pointer dereference requires `unsafe`");
+                    return TY_I32;
+                }
+                let rt: u32 = root_local(c, ea);
+                c.^.nodes[e].ty = read_ty(c, inner);
+                c.^.place_mut = 1;
+                c.^.place_root = rt;
+                return inner;
+            }
+            _ => {
+                if err_open(c, line, col) {
+                    put_str(c, "cannot dereference ");
+                    put_q_ty(c, bt);
+                    err_end(c);
+                }
                 return TY_I32;
             }
-            let rt: u32 = root_local(c, ea);
-            c.^.nodes[e].ty = read_ty(c, inner);
-            c.^.place_mut = 1;
-            c.^.place_root = rt;
-            return inner;
         }
-        if err_open(c, line, col) {
-            put_str(c, "cannot dereference ");
-            put_q_ty(c, bt);
-            err_end(c);
-        }
-        return TY_I32;
     }
 
     err_msg(c, line, col, "expected a place expression");
@@ -6626,6 +6643,7 @@ fn compile_n(nsrc: u32) -> i32 {
         let toks_at: u32 = heap0;
         let nmem_at: u32 = c.nmem.ptr as u32;
         let ntab_at: u32 = c.ntab.ptr as u32;
+        stw(G_HEAP, c.heap);
         stw(G_NMEM, nmem_at);
         stw(G_NTAB, ntab_at);
         stw(G_TOKS, toks_at);
