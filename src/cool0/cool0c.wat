@@ -540,7 +540,7 @@
         (then (return (i32.const 40))))
     (if (call $src_has (local.get $c) (local.get $i) (i32.const 0x1000009C) (i32.const 1))
         (then (return (i32.const 41))))
-    (i32.const -1))
+    (i32.const 42))
 
   (func $punct_len (export "punct_len") (param $id i32) (result i32)
     (if (i32.le_u (local.get $id) (i32.const 1)) (then (return (i32.const 3))))

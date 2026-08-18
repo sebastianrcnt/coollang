@@ -94,11 +94,20 @@ def test_both_implementations_agree_at_the_boundary(d):
 
 
 @needs_current_wat
-def test_both_agree_on_a_dense_source_that_crosses_the_limit():
-    """공백이 아니라 진짜 코드로 넘긴다 -- 토큰과 노드가 훨씬 빨리 자란다."""
+def test_both_agree_on_a_dense_source_of_many_declarations():
+    """공백이 아니라 진짜 코드로 선언 2000 개. 두 구현이 같은 바이트를 낸다.
+
+    아레나 재사용(gh #5 C) 전에는 토큰도 노드도 프로그램 전체를 한꺼번에 담아야
+    했다. 지금은 선언 하나치 토큰과 가장 큰 본문 하나면 된다.
+
+    2000 인 이유는 시간이다. cool0c 는 본문마다 소스를 처음부터 되감아 바이트를
+    하나씩 세며 그 자리까지 간다 (`source_seek`) -- 선언 수의 제곱이다. 오라클은
+    같은 일을 선형으로 한다. 여기서 20000 개를 쓰면 오라클은 3 초, cool0c 는
+    수 분이 걸린다.
+    """
     unit = b"fn f%d(n: u32) -> u32 { let a: u32 = n + %d; return a * 3; }\n"
-    body = b"".join(unit % (i, i) for i in range(20000))
-    assert reference_compile(body)[0] != STATUS_OK, "이 크기는 거절돼야 한다"
+    body = b"".join(unit % (i, i) for i in range(2000))
+    assert reference_compile(body)[0] == STATUS_OK
     assert run_compiler(_wat(), body) == reference_compile(body)
 
 

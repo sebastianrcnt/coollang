@@ -194,8 +194,22 @@ def test_the_wat_data_segment_is_the_source_literals():
             blob += t.value
 
     wat = COOL0C_WAT.read_text("ascii")
-    body = wat[wat.index("(data (i32.const 0x1000000)"):]
-    body = body[: body.index(chr(10) + "  )")]
+    body = wat[wat.index("(data (i32.const 0x10000000)"):]
+    # 세그먼트의 닫는 괄호까지. 괄호는 문자열 안에도 나오므로 따옴표를 건너뛴다
+    depth, i = 0, 0
+    while i < len(body):
+        if body[i] == chr(34):
+            i += 1
+            while body[i] != chr(34):
+                i += 2 if body[i] == BS else 1
+        elif body[i] == "(":
+            depth += 1
+        elif body[i] == ")":
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    body = body[:i]
 
     # wat 의 문자열 조각을 손으로 훑는다. 정규식으로 쓰면 백슬래시가 층마다 먹힌다
     out = bytearray()
