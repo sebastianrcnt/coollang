@@ -110,6 +110,7 @@ class ProgramGen:
 
     def __init__(self, rng: random.Random):
         self.rng = rng
+        self.seq = 0  # 생성한 이름이 겹치지 않게
 
     def choice(self, xs):
         return self.rng.choice(xs)
@@ -145,11 +146,52 @@ class ProgramGen:
             + self.expr(ty, vars, depth - 1) + ")"
         )
 
+    def raw(self) -> str:
+        """생 포인터 내장 식 셋을 쓰는 자족적인 블록 (language.md §5).
+
+        바깥 변수를 건드리지 않는다 -- 이름은 자기 안에서만 살고 아무것도 돌려주지
+        않으므로, 생성기의 타입 장부에 슬라이스나 포인터가 끼어들지 않는다.
+        """
+        r = self.rng
+        k = self.seq
+        self.seq += 1
+        n = r.randrange(1, 5)
+        i = r.randrange(0, n)
+        skip = r.randrange(0, 3)
+        back = self.choice(["", "0 - 1"])
+        lines = [
+            f"let p{k}: *u32 = 0x3000 as *u32;",
+            f"let s{k}: []mut u32 = slice_mut(offset(p{k}, {skip}), {n});",
+            f"s{k}[{i}] = {r.randrange(0, 1 << 16)};",
+            # s.ptr 로 되돌아가 다시 자른다 -- 이게 없으면 slice() 는 편도다
+            f"let t{k}: []u32 = slice(s{k}.ptr, s{k}.len);",
+            f"let v{k}: u32 = t{k}[{i}] + t{k}.len;",
+        ]
+        if back:
+            lines.append(f"let b{k}: u32 = offset(s{k}.ptr, {back}) as u32;")
+        return "unsafe { " + " ".join(lines) + " }"
+
+    def literal_ptr(self) -> str:
+        """`.ptr` 은 unsafe 를 요구하지 않는다 -- 주소를 만드는 것뿐이다 (§8)."""
+        k = self.seq
+        self.seq += 1
+        return (f"let q{k}: []u8 = \"abc\"; "
+                f"let n{k}: u32 = q{k}.len + q{k}.ptr as u32;")
+
     def block(self, vars: dict, depth: int, in_loop: bool, mut: set) -> list[str]:
         r = self.rng
         out = []
         for _ in range(r.randrange(0, 4)):
-            kind = self.choice(["let", "assign", "if", "for", "call"] + (["break"] if in_loop else []))
+            kind = self.choice(
+                ["let", "assign", "if", "for", "call", "raw", "literal_ptr"]
+                + (["break"] if in_loop else [])
+            )
+            if kind == "raw":
+                out.append(self.raw())
+                continue
+            if kind == "literal_ptr":
+                out.append(self.literal_ptr())
+                continue
             if kind == "let":
                 ty = self.choice(["i32", "u32", "bool"])
                 name = "v%d" % len(vars)
