@@ -37,6 +37,8 @@ const G_NTOK: u32 = 0x002C;
 const G_TOKS: u32 = 0x0030;
 const G_DECLS: u32 = 0x0040;
 const G_NODES: u32 = 0x0044;
+const G_NMEM: u32 = 0x0048;   // interned name bytes (gh #5 A)
+const G_NTAB: u32 = 0x004C;   // interned name table
 
 // regions
 const S1: u32 = 0x0E00_0000;   // scratch for one function body
@@ -74,6 +76,25 @@ struct Ctx {
     // tokens
     toks: []mut Token,
     ntok: u32,
+
+    // interned names (gh #5 A). A name is an index into `ntab`; index 0 means
+    // "none". The bytes live in `nmem`, copied out of the source, so a name
+    // outlives the buffer it was written in.
+    nmem: []mut u8,
+    nmem_n: u32,
+    ntab: []mut NameEnt,
+    ntab_n: u32,
+    nhash: []mut u32,   // open addressing, power-of-two size, 0 = empty
+
+    // names the compiler itself has to recognise. Interned up front so
+    // they exist whether or not the source happens to mention them.
+    id_i32: u32,
+    id_u32: u32,
+    id_bool: u32,
+    id_u8: u32,
+    id_under: u32,
+    id_len: u32,
+    id_ptr: u32,
 
     // AST arena and parser cursor. Node index 0 means "none".
     nodes: []mut Node,
@@ -1052,32 +1073,30 @@ fn parse_ty_inner(c: &mut Ctx) -> u32 {
         return n;
     }
     if cur_kind(c) == TK_IDENT {
-        let s: u32 = c.^.toks[c.^.ti].start;
-        let l: u32 = c.^.toks[c.^.ti].len;
+        let s: u32 = c.^.toks[c.^.ti].value;
         bump(c);
-        if src_eq(c, s, l, "i32") {
+        if s == c.^.id_i32 {
             let n: u32 = node(c, T_PRIM, line, col);
             c.^.nodes[n].a = 0;
             return n;
         }
-        if src_eq(c, s, l, "u32") {
+        if s == c.^.id_u32 {
             let n: u32 = node(c, T_PRIM, line, col);
             c.^.nodes[n].a = 1;
             return n;
         }
-        if src_eq(c, s, l, "bool") {
+        if s == c.^.id_bool {
             let n: u32 = node(c, T_PRIM, line, col);
             c.^.nodes[n].a = 2;
             return n;
         }
-        if src_eq(c, s, l, "u8") {
+        if s == c.^.id_u8 {
             let n: u32 = node(c, T_PRIM, line, col);
             c.^.nodes[n].a = 3;
             return n;
         }
         let n: u32 = node(c, T_NAMED, line, col);
         c.^.nodes[n].a = s;
-        c.^.nodes[n].b = l;
         return n;
     }
     e_expected_str(c, "expected type");
@@ -1270,10 +1289,8 @@ fn parse_postfix(c: &mut Ctx, asl: bool) -> u32 {
                 if it == NONE { return e; }
                 let n: u32 = node(c, E_FIELD, line, col);
                 c.^.nodes[n].a = e;
-                let s: u32 = c.^.toks[it].start;
-                let l: u32 = c.^.toks[it].len;
+                let s: u32 = c.^.toks[it].value;
                 c.^.nodes[n].b = s;
-                c.^.nodes[n].c = l;
                 let d: u32 = depth_of(c, e);
                 e = deep(c, n, d);
             }
@@ -1362,20 +1379,18 @@ fn parse_primary(c: &mut Ctx, asl: bool) -> u32 {
         return e;
     }
     if k == TK_IDENT {
-        let s: u32 = c.^.toks[c.^.ti].start;
-        let l: u32 = c.^.toks[c.^.ti].len;
+        let s: u32 = c.^.toks[c.^.ti].value;
         bump(c);
-        if asl && at_p(c, Punct.LBrace) { return parse_struct_lit(c, line, col, s, l); }
+        if asl && at_p(c, Punct.LBrace) { return parse_struct_lit(c, line, col, s); }
         let n: u32 = node(c, E_IDENT, line, col);
         c.^.nodes[n].a = s;
-        c.^.nodes[n].b = l;
         return n;
     }
     e_expected_str(c, "expected expression");
     return 0;
 }
 
-fn parse_struct_lit(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) -> u32 {
+fn parse_struct_lit(c: &mut Ctx, line: u32, col: u32, s: u32) -> u32 {
     expect_p(c, Punct.LBrace);
     let mut head: u32 = 0;
     let mut tail: u32 = 0;
@@ -1387,10 +1402,8 @@ fn parse_struct_lit(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) -> u32 {
         expect_p(c, Punct.Colon);
         let v: u32 = parse_expr(c, true);
         let f: u32 = node(c, E_LITFIELD, fline, fcol);
-        let fs: u32 = c.^.toks[it].start;
-        let fl: u32 = c.^.toks[it].len;
+        let fs: u32 = c.^.toks[it].value;
         c.^.nodes[f].a = fs;
-        c.^.nodes[f].b = fl;
         c.^.nodes[f].c = v;
         let dv: u32 = depth_of(c, v);
         c.^.nodes[f].depth = dv;
@@ -1401,7 +1414,6 @@ fn parse_struct_lit(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) -> u32 {
     expect_p(c, Punct.RBrace);
     let n: u32 = node(c, E_STRUCTLIT, line, col);
     c.^.nodes[n].a = s;
-    c.^.nodes[n].b = l;
     c.^.nodes[n].c = head;
     let dh: u32 = depth_list(c, head);
     return deep(c, n, dh);
@@ -1519,10 +1531,8 @@ fn parse_let(c: &mut Ctx) -> u32 {
     if eat_kw(c, K_MUT) { c.^.nodes[n].e = 1; }
     let it: u32 = expect_ident(c);
     if it == NONE { return n; }
-    let s: u32 = c.^.toks[it].start;
-    let l: u32 = c.^.toks[it].len;
+    let s: u32 = c.^.toks[it].value;
     c.^.nodes[n].a = s;
-    c.^.nodes[n].b = l;
     if eat_p(c, Punct.Colon) {
         let t: u32 = parse_ty(c);
         c.^.nodes[n].c = t;
@@ -1598,19 +1608,16 @@ fn parse_for(c: &mut Ctx) -> u32 {
 // `arm`'s name/alt/bind fields. The caller parses `=>` and the body -- a block
 // for a statement match, a value for an expression match (language.md S5, S6).
 fn parse_arm_pattern(c: &mut Ctx, arm: u32) {
-    let ts: u32 = c.^.toks[c.^.ti].start;
-    let tl: u32 = c.^.toks[c.^.ti].len;
-    if cur_kind(c) == TK_IDENT && src_eq(c, ts, tl, "_") {
+    let ts: u32 = c.^.toks[c.^.ti].value;
+    if cur_kind(c) == TK_IDENT && ts == c.^.id_under {
         bump(c);
         c.^.nodes[arm].e = 1;
         return;
     }
     let it: u32 = expect_ident(c);
     if it == NONE { return; }
-    let s: u32 = c.^.toks[it].start;
-    let l: u32 = c.^.toks[it].len;
+    let s: u32 = c.^.toks[it].value;
     c.^.nodes[arm].a = s;
-    c.^.nodes[arm].b = l;
     if !at_p(c, Punct.LParen) {
         // `A | B | C` -- only variants that carry no payload can be joined
         let mut ah: u32 = 0;
@@ -1621,10 +1628,8 @@ fn parse_arm_pattern(c: &mut Ctx, arm: u32) {
             let al: u32 = c.^.toks[ai].line;
             let ac: u32 = c.^.toks[ai].col;
             let alt: u32 = node(c, S_ALT, al, ac);
-            let as2: u32 = c.^.toks[ai].start;
-            let aln: u32 = c.^.toks[ai].len;
+            let as2: u32 = c.^.toks[ai].value;
             c.^.nodes[alt].a = as2;
-            c.^.nodes[alt].b = aln;
             if ah == 0 { ah = alt; } else { c.^.nodes[at2].next = alt; }
             at2 = alt;
         }
@@ -1639,10 +1644,8 @@ fn parse_arm_pattern(c: &mut Ctx, arm: u32) {
             let bi: u32 = expect_ident(c);
             if bi == NONE { break; }
             let b: u32 = node(c, S_BIND, bline, bcol);
-            let bs: u32 = c.^.toks[bi].start;
-            let bl: u32 = c.^.toks[bi].len;
+            let bs: u32 = c.^.toks[bi].value;
             c.^.nodes[b].a = bs;
-            c.^.nodes[b].b = bl;
             if bh == 0 { bh = b; } else { c.^.nodes[bt].next = b; }
             bt = b;
             if !eat_p(c, Punct.Comma) { break; }
@@ -1719,10 +1722,8 @@ fn parse_fn(c: &mut Ctx) -> u32 {
     let n: u32 = node(c, D_FN, line, col);
     let it: u32 = expect_ident(c);
     if it == NONE { return n; }
-    let s: u32 = c.^.toks[it].start;
-    let l: u32 = c.^.toks[it].len;
+    let s: u32 = c.^.toks[it].value;
     c.^.nodes[n].a = s;
-    c.^.nodes[n].b = l;
     expect_p(c, Punct.LParen);
     let mut head: u32 = 0;
     let mut tail: u32 = 0;
@@ -1733,10 +1734,8 @@ fn parse_fn(c: &mut Ctx) -> u32 {
         if pi == NONE { break; }
         expect_p(c, Punct.Colon);
         let p: u32 = node(c, D_PARAM, pline, pcol);
-        let ps: u32 = c.^.toks[pi].start;
-        let pl: u32 = c.^.toks[pi].len;
+        let ps: u32 = c.^.toks[pi].value;
         c.^.nodes[p].a = ps;
-        c.^.nodes[p].b = pl;
         let pt: u32 = parse_ty(c);
         c.^.nodes[p].c = pt;
         if head == 0 { head = p; } else { c.^.nodes[tail].next = p; }
@@ -1761,10 +1760,8 @@ fn parse_struct(c: &mut Ctx) -> u32 {
     let n: u32 = node(c, D_STRUCT, line, col);
     let it: u32 = expect_ident(c);
     if it == NONE { return n; }
-    let s: u32 = c.^.toks[it].start;
-    let l: u32 = c.^.toks[it].len;
+    let s: u32 = c.^.toks[it].value;
     c.^.nodes[n].a = s;
-    c.^.nodes[n].b = l;
     expect_p(c, Punct.LBrace);
     let mut head: u32 = 0;
     let mut tail: u32 = 0;
@@ -1775,10 +1772,8 @@ fn parse_struct(c: &mut Ctx) -> u32 {
         if fi == NONE { break; }
         expect_p(c, Punct.Colon);
         let f: u32 = node(c, D_FIELD, fline, fcol);
-        let fs: u32 = c.^.toks[fi].start;
-        let fl: u32 = c.^.toks[fi].len;
+        let fs: u32 = c.^.toks[fi].value;
         c.^.nodes[f].a = fs;
-        c.^.nodes[f].b = fl;
         let ft: u32 = parse_ty(c);
         c.^.nodes[f].c = ft;
         if head == 0 { head = f; } else { c.^.nodes[tail].next = f; }
@@ -1797,10 +1792,8 @@ fn parse_enum(c: &mut Ctx) -> u32 {
     let n: u32 = node(c, D_ENUM, line, col);
     let it: u32 = expect_ident(c);
     if it == NONE { return n; }
-    let s: u32 = c.^.toks[it].start;
-    let l: u32 = c.^.toks[it].len;
+    let s: u32 = c.^.toks[it].value;
     c.^.nodes[n].a = s;
-    c.^.nodes[n].b = l;
     expect_p(c, Punct.LBrace);
     let mut head: u32 = 0;
     let mut tail: u32 = 0;
@@ -1810,10 +1803,8 @@ fn parse_enum(c: &mut Ctx) -> u32 {
         let vi: u32 = expect_ident(c);
         if vi == NONE { break; }
         let v: u32 = node(c, D_VARIANT, vline, vcol);
-        let vs: u32 = c.^.toks[vi].start;
-        let vl: u32 = c.^.toks[vi].len;
+        let vs: u32 = c.^.toks[vi].value;
         c.^.nodes[v].a = vs;
-        c.^.nodes[v].b = vl;
         if eat_p(c, Punct.LParen) {
             let mut ph: u32 = 0;
             let mut pt: u32 = 0;
@@ -1843,10 +1834,8 @@ fn parse_const(c: &mut Ctx) -> u32 {
     let n: u32 = node(c, D_CONST, line, col);
     let it: u32 = expect_ident(c);
     if it == NONE { return n; }
-    let s: u32 = c.^.toks[it].start;
-    let l: u32 = c.^.toks[it].len;
+    let s: u32 = c.^.toks[it].value;
     c.^.nodes[n].a = s;
-    c.^.nodes[n].b = l;
     expect_p(c, Punct.Colon);
     let t: u32 = parse_ty(c);
     c.^.nodes[n].c = t;
@@ -1903,7 +1892,7 @@ enum Ty {
     Slice(u32, u32),  // element type, mut
     Ref(u32, u32),    // inner type, mut
     Ptr(u32),         // inner type
-    Named(u32, u32),  // name start, name len
+    Named(u32),       // interned name (gh #5 A)
 }
 
 // The primitives get fixed indices so they need no lookup.
@@ -1938,7 +1927,7 @@ fn ty_kind(c: &Ctx, t: u32) -> u32 {
         Slice(e, m) => { return TYK_SLICE; }
         Ref(i, m) => { return TYK_REF; }
         Ptr(i) => { return TYK_PTR; }
-        Named(s, l) => { return TYK_NAMED; }
+        Named(s) => { return TYK_NAMED; }
     }
 }
 
@@ -1947,7 +1936,7 @@ fn ty_arg(c: &Ctx, t: u32) -> u32 {
         Slice(e, m) => { return e; }
         Ref(i, m) => { return i; }
         Ptr(i) => { return i; }
-        Named(s, l) => { return s; }
+        Named(s) => { return s; }
         _ => { return 0; }
     }
 }
@@ -1956,7 +1945,6 @@ fn ty_flag(c: &Ctx, t: u32) -> u32 {
     match c.^.types[t] {
         Slice(e, m) => { return m; }
         Ref(i, m) => { return m; }
-        Named(s, l) => { return l; }
         _ => { return 0; }
     }
 }
@@ -1966,7 +1954,7 @@ fn ty_put(c: &mut Ctx, kind: u32, arg: u32, flag: u32) -> u32 {
     if kind == TYK_SLICE { c.^.types[n] = Ty.Slice(arg, flag); }
     else if kind == TYK_REF { c.^.types[n] = Ty.Ref(arg, flag); }
     else if kind == TYK_PTR { c.^.types[n] = Ty.Ptr(arg); }
-    else { c.^.types[n] = Ty.Named(arg, flag); }
+    else { c.^.types[n] = Ty.Named(arg); }
     c.^.nty = n + 1;
     return n;
 }
@@ -1981,26 +1969,108 @@ fn ty_intern(c: &mut Ctx, kind: u32, arg: u32, flag: u32) -> u32 {
     return ty_put(c, kind, arg, flag);
 }
 
-// two source slices, same bytes
-fn src_eq2(c: &Ctx, s1: u32, l1: u32, s2: u32, l2: u32) -> bool {
-    if l1 != l2 { return false; }
-    for let mut i: u32 = 0; i < l1; i += 1 {
-        if c.^.src[s1 + i] != c.^.src[s2 + i] { return false; }
+// ===========================================================================
+// Interned names (gh #5 A)
+// ===========================================================================
+//
+// A name used to be (start, len) into the source. That is fine while there is
+// exactly one source buffer and it lives as long as the compiler does. Both
+// multi-source input (gh #5 B) and per-function arena reuse (gh #5 C) need to
+// let go of a buffer, so names have to be owned by the compiler instead.
+//
+// Interning runs once, over the token array, after lexing and before parsing.
+// Not during lexing: only once the tokens exist are the exact byte count and
+// name count knowable, and knowing them lets these arenas be sized exactly
+// rather than bounded by the source length.
+
+struct NameEnt {
+    off: u32,   // into c.nmem
+    len: u32,
+}
+
+const FNV_OFFSET: u32 = 2166136261;
+const FNV_PRIME: u32 = 16777619;
+
+// "i32" "u32" "bool" "u8" "_" "len" "ptr"
+const WELLKNOWN_COUNT: u32 = 7;
+const WELLKNOWN_BYTES: u32 = 19;
+
+fn name_hash(s: []u8) -> u32 {
+    let mut h: u32 = FNV_OFFSET;
+    for let mut i: u32 = 0; i < s.len; i += 1 {
+        h = h ^ s[i];
+        h = h * FNV_PRIME;
+    }
+    return h;
+}
+
+fn name_is(c: &Ctx, id: u32, s: []u8) -> bool {
+    if c.^.ntab[id].len != s.len { return false; }
+    let off: u32 = c.^.ntab[id].off;
+    for let mut i: u32 = 0; i < s.len; i += 1 {
+        if c.^.nmem[off + i] != s[i] { return false; }
     }
     return true;
 }
 
-// Named types compare by text, not by where the name was written.
-fn ty_named(c: &mut Ctx, start: u32, len: u32) -> u32 {
-    let n: u32 = c.^.nty;
-    for let mut p: u32 = TY_FIRST; p < n; p += 1 {
-        if ty_kind(c, p) == TYK_NAMED {
-            let s: u32 = ty_arg(c, p);
-            let l: u32 = ty_flag(c, p);
-            if src_eq2(c, s, l, start, len) { return p; }
+fn intern(c: &mut Ctx, s: []u8) -> u32 {
+    let mask: u32 = c.^.nhash.len - 1;
+    let mut i: u32 = name_hash(s) & mask;
+    for {
+        let id: u32 = c.^.nhash[i];
+        if id == 0 {
+            let n: u32 = c.^.ntab_n;
+            let off: u32 = c.^.nmem_n;
+            for let mut k: u32 = 0; k < s.len; k += 1 {
+                let b: u32 = s[k];
+                c.^.nmem[off + k] = b;
+            }
+            c.^.nmem_n = off + s.len;
+            c.^.ntab[n] = NameEnt{ off: off, len: s.len };
+            c.^.ntab_n = n + 1;
+            c.^.nhash[i] = n;
+            return n;
+        }
+        if name_is(c, id, s) { return id; }
+        i = (i + 1) & mask;
+    }
+}
+
+fn put_name(c: &mut Ctx, id: u32) {
+    let off: u32 = c.^.ntab[id].off;
+    let l: u32 = c.^.ntab[id].len;
+    for let mut i: u32 = 0; i < l; i += 1 {
+        let b: u32 = c.^.nmem[off + i];
+        put_ch(c, b);
+    }
+}
+
+fn put_q_name(c: &mut Ctx, id: u32) { put_ch(c, 96); put_name(c, id); put_ch(c, 96); }
+
+// Every identifier token carries its name id in `value` from here on.
+fn intern_idents(c: &mut Ctx) {
+    // hoisted: `c` may not appear twice in one argument list (language.md S7)
+    let sp: *u8 = c.^.src.ptr;
+    for let mut i: u32 = 0; i < c.^.ntok; i += 1 {
+        if c.^.toks[i].kind == TK_IDENT {
+            let st: u32 = c.^.toks[i].start;
+            let ln: u32 = c.^.toks[i].len;
+            unsafe {
+                let txt: []u8 = slice(offset(sp, st), ln);
+                let id: u32 = intern(c, txt);
+                c.^.toks[i].value = id;
+            }
         }
     }
-    return ty_put(c, TYK_NAMED, start, len);
+}
+
+// Named types compare by interned name, not by where the name was written.
+fn ty_named(c: &mut Ctx, name: u32) -> u32 {
+    let n: u32 = c.^.nty;
+    for let mut p: u32 = TY_FIRST; p < n; p += 1 {
+        if ty_kind(c, p) == TYK_NAMED && ty_arg(c, p) == name { return p; }
+    }
+    return ty_put(c, TYK_NAMED, name, 0);
 }
 
 fn is_int_ty(c: &Ctx, t: u32) -> bool {
@@ -2015,14 +2085,14 @@ fn is_int_ty(c: &Ctx, t: u32) -> bool {
 // Does this type live only in memory? A scalar enum is a value, so it does not.
 fn is_aggregate(c: &Ctx, t: u32) -> bool {
     match c.^.types[t] {
-        Named(s, l) => { return !find_scalar(c, s, l); }
+        Named(s) => { return !find_scalar(c, s); }
         _ => { return false; }
     }
 }
 
 fn is_scalar_enum(c: &Ctx, t: u32) -> bool {
     match c.^.types[t] {
-        Named(s, l) => { return find_scalar(c, s, l); }
+        Named(s) => { return find_scalar(c, s); }
         _ => { return false; }
     }
 }
@@ -2068,12 +2138,11 @@ fn put_ty(c: &mut Ctx, t: u32) {
         put_ty(c, arg);
         return;
     }
-    put_src(c, arg, flag);
+    put_name(c, arg);
 }
 
 fn put_q_ty(c: &mut Ctx, t: u32) { put_ch(c, 96); put_ty(c, t); put_ch(c, 96); }
 
-fn put_q_src(c: &mut Ctx, s: u32, l: u32) { put_ch(c, 96); put_src(c, s, l); put_ch(c, 96); }
 
 // ===========================================================================
 // Declaration tables
@@ -2083,16 +2152,14 @@ fn put_q_src(c: &mut Ctx, s: u32, l: u32) { put_ch(c, 96); put_src(c, s, l); put
 // in each, so every arena starts filling at 1.
 
 struct FieldI {   // a struct field, or one payload slot of an enum variant
-    ns: u32,
-    nl: u32,
+    name: u32,
     ty: u32,
     off: u32,
     next: u32,
 }
 
 struct StructI {
-    ns: u32,
-    nl: u32,
+    name: u32,
     fields: u32,
     bytes: u32,
     align: u32,
@@ -2100,8 +2167,7 @@ struct StructI {
 }
 
 struct VariantI {
-    ns: u32,
-    nl: u32,
+    name: u32,
     tag: u32,
     payload: u32,
     nargs: u32,
@@ -2109,8 +2175,7 @@ struct VariantI {
 }
 
 struct EnumI {
-    ns: u32,
-    nl: u32,
+    name: u32,
     variants: u32,
     bytes: u32,
     align: u32,
@@ -2120,8 +2185,7 @@ struct EnumI {
 }
 
 struct ConstI {
-    ns: u32,
-    nl: u32,
+    name: u32,
     ty: u32,
     value: u32,
     state: u32,   // 0 pending, 1 busy, 2 done
@@ -2130,15 +2194,13 @@ struct ConstI {
 }
 
 struct ParamI {
-    ns: u32,
-    nl: u32,
+    name: u32,
     ty: u32,
     next: u32,
 }
 
 struct FnI {
-    ns: u32,
-    nl: u32,
+    name: u32,
     params: u32,
     nparams: u32,
     ret: u32,
@@ -2153,8 +2215,7 @@ struct FnI {
 }
 
 struct LocalI {
-    ns: u32,
-    nl: u32,
+    name: u32,
     ty: u32,
     is_mut: u32,
     is_param: u32,
@@ -2172,8 +2233,7 @@ struct StrI {
 }
 
 struct NameI {   // a claimed top-level name, or a type name
-    ns: u32,
-    nl: u32,
+    name: u32,
     next: u32,
 }
 
@@ -2181,67 +2241,60 @@ const RODATA: u32 = 0x1000_0000;
 
 // --- lookups ---------------------------------------------------------------
 
-fn find_struct(c: &Ctx, s: u32, l: u32) -> u32 {
+fn find_struct(c: &Ctx, s: u32) -> u32 {
     for let mut p: u32 = 1; p < c.^.nstruct; p += 1 {
-        let ns: u32 = c.^.structs[p].ns;
-        let nl: u32 = c.^.structs[p].nl;
-        if src_eq2(c, ns, nl, s, l) { return p; }
+        let ns: u32 = c.^.structs[p].name;
+        if ns == s { return p; }
     }
     return 0;
 }
 
-fn find_enum(c: &Ctx, s: u32, l: u32) -> u32 {
+fn find_enum(c: &Ctx, s: u32) -> u32 {
     for let mut p: u32 = 1; p < c.^.nenum; p += 1 {
-        let ns: u32 = c.^.enums[p].ns;
-        let nl: u32 = c.^.enums[p].nl;
-        if src_eq2(c, ns, nl, s, l) { return p; }
+        let ns: u32 = c.^.enums[p].name;
+        if ns == s { return p; }
     }
     return 0;
 }
 
-fn find_const(c: &Ctx, s: u32, l: u32) -> u32 {
+fn find_const(c: &Ctx, s: u32) -> u32 {
     for let mut p: u32 = 1; p < c.^.nconst; p += 1 {
-        let ns: u32 = c.^.consts[p].ns;
-        let nl: u32 = c.^.consts[p].nl;
-        if src_eq2(c, ns, nl, s, l) { return p; }
+        let ns: u32 = c.^.consts[p].name;
+        if ns == s { return p; }
     }
     return 0;
 }
 
-fn find_fn(c: &Ctx, s: u32, l: u32) -> u32 {
+fn find_fn(c: &Ctx, s: u32) -> u32 {
     for let mut p: u32 = 1; p < c.^.nfn; p += 1 {
-        let ns: u32 = c.^.fns[p].ns;
-        let nl: u32 = c.^.fns[p].nl;
-        if src_eq2(c, ns, nl, s, l) { return p; }
+        let ns: u32 = c.^.fns[p].name;
+        if ns == s { return p; }
     }
     return 0;
 }
 
-fn find_type_name(c: &Ctx, s: u32, l: u32) -> bool {
+fn find_type_name(c: &Ctx, s: u32) -> bool {
     for let mut p: u32 = 1; p < c.^.ntyname; p += 1 {
-        let ns: u32 = c.^.tynames[p].ns;
-        let nl: u32 = c.^.tynames[p].nl;
-        if src_eq2(c, ns, nl, s, l) { return true; }
+        let ns: u32 = c.^.tynames[p].name;
+        if ns == s { return true; }
     }
     return false;
 }
 
 // Scalar-ness is readable from the syntax alone, and a struct field or an enum
 // payload may name a scalar enum, so this has to answer before any layout runs.
-fn find_scalar(c: &Ctx, s: u32, l: u32) -> bool {
+fn find_scalar(c: &Ctx, s: u32) -> bool {
     for let mut p: u32 = 1; p < c.^.nscalar; p += 1 {
-        let ns: u32 = c.^.scalars[p].ns;
-        let nl: u32 = c.^.scalars[p].nl;
-        if src_eq2(c, ns, nl, s, l) { return true; }
+        let ns: u32 = c.^.scalars[p].name;
+        if ns == s { return true; }
     }
     return false;
 }
 
-fn find_taken(c: &Ctx, s: u32, l: u32) -> bool {
+fn find_taken(c: &Ctx, s: u32) -> bool {
     for let mut p: u32 = 1; p < c.^.ntaken; p += 1 {
-        let ns: u32 = c.^.taken[p].ns;
-        let nl: u32 = c.^.taken[p].nl;
-        if src_eq2(c, ns, nl, s, l) { return true; }
+        let ns: u32 = c.^.taken[p].name;
+        if ns == s { return true; }
     }
     return false;
 }
@@ -2250,13 +2303,13 @@ fn find_taken(c: &Ctx, s: u32, l: u32) -> bool {
 fn agg_struct(c: &Ctx, t: u32) -> u32 {
     let s: u32 = ty_arg(c, t);
     let l: u32 = ty_flag(c, t);
-    return find_struct(c, s, l);
+    return find_struct(c, s);
 }
 
 fn agg_enum(c: &Ctx, t: u32) -> u32 {
     let s: u32 = ty_arg(c, t);
     let l: u32 = ty_flag(c, t);
-    return find_enum(c, s, l);
+    return find_enum(c, s);
 }
 
 fn size_of(c: &Ctx, t: u32) -> u32 {
@@ -2264,11 +2317,11 @@ fn size_of(c: &Ctx, t: u32) -> u32 {
         Bool => { return 1; }
         U8 => { return 1; }
         Slice(e, m) => { return 8; }
-        Named(ns, nl) => {
-            if find_scalar(c, ns, nl) { return 4; }
-            let s: u32 = find_struct(c, ns, nl);
+        Named(ns) => {
+            if find_scalar(c, ns) { return 4; }
+            let s: u32 = find_struct(c, ns);
             if s != 0 { return c.^.structs[s].bytes; }
-            let e2: u32 = find_enum(c, ns, nl);
+            let e2: u32 = find_enum(c, ns);
             if e2 != 0 { return c.^.enums[e2].bytes; }
             return 0;
         }
@@ -2280,11 +2333,11 @@ fn align_of(c: &Ctx, t: u32) -> u32 {
     match c.^.types[t] {
         Bool => { return 1; }
         U8 => { return 1; }
-        Named(ns, nl) => {
-            if find_scalar(c, ns, nl) { return 4; }
-            let s: u32 = find_struct(c, ns, nl);
+        Named(ns) => {
+            if find_scalar(c, ns) { return 4; }
+            let s: u32 = find_struct(c, ns);
             if s != 0 { return c.^.structs[s].align; }
-            let e2: u32 = find_enum(c, ns, nl);
+            let e2: u32 = find_enum(c, ns);
             if e2 != 0 { return c.^.enums[e2].align; }
             return 1;
         }
@@ -2296,10 +2349,10 @@ fn align_up(x: u32, a: u32) -> u32 { return (x + a - 1) / a * a; }
 
 // --- resolving type syntax to types ----------------------------------------
 
-fn e_unknown_type(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+fn e_unknown_type(c: &mut Ctx, line: u32, col: u32, s: u32) {
     if err_open(c, line, col) {
         put_str(c, "unknown type ");
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         err_end(c);
     }
 }
@@ -2316,10 +2369,10 @@ fn resolve_ty(c: &mut Ctx, t: u32) -> u32 {
         return TY_U8;
     }
     if k == T_NAMED {
-        if find_type_name(c, a, b) { return ty_named(c, a, b); }
+        if find_type_name(c, a) { return ty_named(c, a); }
         let line: u32 = c.^.nodes[t].line;
         let col: u32 = c.^.nodes[t].col;
-        e_unknown_type(c, line, col, a, b);
+        e_unknown_type(c, line, col, a);
         return TY_I32;
     }
     if k == T_SLICE {
@@ -2368,17 +2421,17 @@ fn intern_string(c: &mut Ctx, ptr: u32, len: u32, line: u32, col: u32) -> u32 {
 // Declaration collection (language.md S4)
 // ===========================================================================
 
-fn e_dup_toplevel(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+fn e_dup_toplevel(c: &mut Ctx, line: u32, col: u32, s: u32) {
     if err_open(c, line, col) {
         put_str(c, "duplicate top-level name ");
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         err_end(c);
     }
 }
 
-fn e_builtin_name(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+fn e_builtin_name(c: &mut Ctx, line: u32, col: u32, s: u32) {
     if err_open(c, line, col) {
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         put_str(c, " is a built-in type name");
         err_end(c);
     }
@@ -2386,20 +2439,19 @@ fn e_builtin_name(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
 
 fn claim(c: &mut Ctx, d: u32) {
     let s: u32 = c.^.nodes[d].a;
-    let l: u32 = c.^.nodes[d].b;
     let line: u32 = c.^.nodes[d].line;
     let col: u32 = c.^.nodes[d].col;
-    if find_taken(c, s, l) {
-        e_dup_toplevel(c, line, col, s, l);
+    if find_taken(c, s) {
+        e_dup_toplevel(c, line, col, s);
         return;
     }
-    if src_eq(c, s, l, "i32") || src_eq(c, s, l, "u32") || src_eq(c, s, l, "bool")
-        || src_eq(c, s, l, "u8") {
-        e_builtin_name(c, line, col, s, l);
+    if s == c.^.id_i32 || s == c.^.id_u32 || s == c.^.id_bool
+        || s == c.^.id_u8 {
+        e_builtin_name(c, line, col, s);
         return;
     }
     let n: u32 = c.^.ntaken;
-    c.^.taken[n] = NameI{ ns: s, nl: l, next: 0 };
+    c.^.taken[n] = NameI{ name: s, next: 0 };
     c.^.ntaken = n + 1;
 }
 
@@ -2418,7 +2470,7 @@ fn add_scalar_name(c: &mut Ctx, d: u32) {
     let s: u32 = c.^.nodes[d].a;
     let l: u32 = c.^.nodes[d].b;
     let n: u32 = c.^.nscalar;
-    c.^.scalars[n] = NameI{ ns: s, nl: l, next: 0 };
+    c.^.scalars[n] = NameI{ name: s, next: 0 };
     c.^.nscalar = n + 1;
 }
 
@@ -2426,7 +2478,7 @@ fn add_type_name(c: &mut Ctx, d: u32) {
     let s: u32 = c.^.nodes[d].a;
     let l: u32 = c.^.nodes[d].b;
     let n: u32 = c.^.ntyname;
-    c.^.tynames[n] = NameI{ ns: s, nl: l, next: 0 };
+    c.^.tynames[n] = NameI{ name: s, next: 0 };
     c.^.ntyname = n + 1;
 }
 
@@ -2446,36 +2498,35 @@ fn check_field_ty(c: &mut Ctx, t: u32, line: u32, col: u32, what: u32) {
     if ty_kind(c, t) == TYK_REF { e_field_ty(c, line, col, what, 1, t); }
 }
 
-fn e_dup_field(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+fn e_dup_field(c: &mut Ctx, line: u32, col: u32, s: u32) {
     if err_open(c, line, col) {
         put_str(c, "duplicate field ");
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         err_end(c);
     }
 }
 
-fn e_dup_variant(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+fn e_dup_variant(c: &mut Ctx, line: u32, col: u32, s: u32) {
     if err_open(c, line, col) {
         put_str(c, "duplicate variant ");
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         err_end(c);
     }
 }
 
-fn field_named(c: &Ctx, head: u32, s: u32, l: u32) -> u32 {
+fn field_named(c: &Ctx, head: u32, s: u32) -> u32 {
     let mut p: u32 = head;
     for p != 0 {
-        let ns: u32 = c.^.fields[p].ns;
-        let nl: u32 = c.^.fields[p].nl;
-        if src_eq2(c, ns, nl, s, l) { return p; }
+        let ns: u32 = c.^.fields[p].name;
+        if ns == s { return p; }
         p = c.^.fields[p].next;
     }
     return 0;
 }
 
-fn new_field(c: &mut Ctx, ns: u32, nl: u32, t: u32, off: u32) -> u32 {
+fn new_field(c: &mut Ctx, name: u32, t: u32, off: u32) -> u32 {
     let n: u32 = c.^.nfield;
-    c.^.fields[n] = FieldI{ ns: ns, nl: nl, ty: t, off: off, next: 0 };
+    c.^.fields[n] = FieldI{ name: name, ty: t, off: off, next: 0 };
     c.^.nfield = n + 1;
     return n;
 }
@@ -2484,7 +2535,7 @@ fn declare_struct(c: &mut Ctx, d: u32) {
     let ns: u32 = c.^.nodes[d].a;
     let nl: u32 = c.^.nodes[d].b;
     let si: u32 = c.^.nstruct;
-    c.^.structs[si] = StructI{ ns: ns, nl: nl, fields: 0, bytes: 0, align: 1, next: 0 };
+    c.^.structs[si] = StructI{ name: ns, fields: 0, bytes: 0, align: 1, next: 0 };
     c.^.nstruct = si + 1;
     let mut head: u32 = 0;
     let mut tail: u32 = 0;
@@ -2496,8 +2547,8 @@ fn declare_struct(c: &mut Ctx, d: u32) {
         let fl: u32 = c.^.nodes[f].b;
         let fline: u32 = c.^.nodes[f].line;
         let fcol: u32 = c.^.nodes[f].col;
-        if field_named(c, head, fs, fl) != 0 {
-            e_dup_field(c, fline, fcol, fs, fl);
+        if field_named(c, head, fs) != 0 {
+            e_dup_field(c, fline, fcol, fs);
             return;
         }
         let tn: u32 = c.^.nodes[f].c;
@@ -2506,7 +2557,7 @@ fn declare_struct(c: &mut Ctx, d: u32) {
         if failed(c) { return; }
         let a: u32 = align_of(c, t);
         off = align_up(off, a);
-        let fi: u32 = new_field(c, fs, fl, t, off);
+        let fi: u32 = new_field(c, fs, t, off);
         if head == 0 { head = fi; } else { c.^.fields[tail].next = fi; }
         tail = fi;
         off = off + size_of(c, t);
@@ -2519,12 +2570,11 @@ fn declare_struct(c: &mut Ctx, d: u32) {
     c.^.nodes[d].aux = si;
 }
 
-fn variant_named(c: &Ctx, head: u32, s: u32, l: u32) -> u32 {
+fn variant_named(c: &Ctx, head: u32, s: u32) -> u32 {
     let mut p: u32 = head;
     for p != 0 {
-        let ns: u32 = c.^.variants[p].ns;
-        let nl: u32 = c.^.variants[p].nl;
-        if src_eq2(c, ns, nl, s, l) { return p; }
+        let ns: u32 = c.^.variants[p].name;
+        if ns == s { return p; }
         p = c.^.variants[p].next;
     }
     return 0;
@@ -2536,7 +2586,7 @@ fn declare_enum(c: &mut Ctx, d: u32) {
     let ei: u32 = c.^.nenum;
     let is_scalar: u32 = if_scalar(c, d);
     c.^.enums[ei] = EnumI{
-        ns: ns, nl: nl, variants: 0, bytes: 0, align: 4, nvar: 0,
+        name: ns, variants: 0, bytes: 0, align: 4, nvar: 0,
         scalar: is_scalar, next: 0,
     };
     c.^.nenum = ei + 1;
@@ -2550,13 +2600,13 @@ fn declare_enum(c: &mut Ctx, d: u32) {
         let vl: u32 = c.^.nodes[v].b;
         let vline: u32 = c.^.nodes[v].line;
         let vcol: u32 = c.^.nodes[v].col;
-        if variant_named(c, head, vs, vl) != 0 {
-            e_dup_variant(c, vline, vcol, vs, vl);
+        if variant_named(c, head, vs) != 0 {
+            e_dup_variant(c, vline, vcol, vs);
             return;
         }
         let vi: u32 = c.^.nvariant;
         c.^.variants[vi] = VariantI{
-            ns: vs, nl: vl, tag: tag, payload: 0, nargs: 0, next: 0,
+            name: vs, tag: tag, payload: 0, nargs: 0, next: 0,
         };
         c.^.nvariant = vi + 1;
         // the payload lays out like a struct, then sits at offset 4 (language.md S4)
@@ -2574,7 +2624,7 @@ fn declare_enum(c: &mut Ctx, d: u32) {
             if failed(c) { return; }
             let a: u32 = align_of(c, t);
             off = align_up(off, a);
-            let fi: u32 = new_field(c, 0, 0, t, off + 4);
+            let fi: u32 = new_field(c, 0, t, off + 4);
             if phead == 0 { phead = fi; } else { c.^.fields[ptail].next = fi; }
             ptail = fi;
             off = off + size_of(c, t);
@@ -2620,16 +2670,16 @@ fn declare_const(c: &mut Ctx, d: u32) {
     let nl: u32 = c.^.nodes[d].b;
     let ci: u32 = c.^.nconst;
     c.^.consts[ci] = ConstI{
-        ns: ns, nl: nl, ty: t, value: 0, state: 0, decl: d, next: 0,
+        name: ns, ty: t, value: 0, state: 0, decl: d, next: 0,
     };
     c.^.nconst = ci + 1;
     c.^.nodes[d].aux = ci;
 }
 
-fn e_const_cycle(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+fn e_const_cycle(c: &mut Ctx, line: u32, col: u32, s: u32) {
     if err_open(c, line, col) {
         put_str(c, "const ");
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         put_str(c, " depends on itself");
         err_end(c);
     }
@@ -2638,9 +2688,8 @@ fn e_const_cycle(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
 fn force_const(c: &mut Ctx, ci: u32, line: u32, col: u32) -> u32 {
     if c.^.consts[ci].state == 2 { return ci; }
     if c.^.consts[ci].state == 1 {
-        let ns: u32 = c.^.consts[ci].ns;
-        let nl: u32 = c.^.consts[ci].nl;
-        e_const_cycle(c, line, col, ns, nl);
+        let ns: u32 = c.^.consts[ci].name;
+        e_const_cycle(c, line, col, ns);
         return ci;
     }
     c.^.consts[ci].state = 1;
@@ -2683,9 +2732,9 @@ fn eval_const(c: &mut Ctx, e: u32, want: u32) -> u32 {
     return v;
 }
 
-fn e_not_const(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+fn e_not_const(c: &mut Ctx, line: u32, col: u32, s: u32) {
     if err_open(c, line, col) {
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         put_str(c, " is not a constant");
         err_end(c);
     }
@@ -2793,13 +2842,13 @@ fn const_expr(c: &mut Ctx, e: u32, want: u32) -> u32 {
     if k == E_CHAR { c.^.cety = TY_U32; return ea; }
     if k == E_BOOL { c.^.cety = TY_BOOL; return ea; }
     if k == E_IDENT {
-        let ci: u32 = find_const(c, ea, eb);
+        let ci: u32 = find_const(c, ea);
         if ci != 0 {
             force_const(c, ci, line, col);
             c.^.cety = c.^.consts[ci].ty;
             return c.^.consts[ci].value;
         }
-        e_not_const(c, line, col, ea, eb);
+        e_not_const(c, line, col, ea);
         c.^.cety = TY_I32;
         return 0;
     }
@@ -2986,10 +3035,10 @@ fn const_expr(c: &mut Ctx, e: u32, want: u32) -> u32 {
 // Function declarations (language.md S4)
 // ===========================================================================
 
-fn e_dup_param(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+fn e_dup_param(c: &mut Ctx, line: u32, col: u32, s: u32) {
     if err_open(c, line, col) {
         put_str(c, "duplicate parameter ");
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         err_end(c);
     }
 }
@@ -3025,12 +3074,11 @@ fn e_ret_agg(c: &mut Ctx, line: u32, col: u32, t: u32) {
     }
 }
 
-fn param_named(c: &Ctx, head: u32, s: u32, l: u32) -> u32 {
+fn param_named(c: &Ctx, head: u32, s: u32) -> u32 {
     let mut p: u32 = head;
     for p != 0 {
-        let ns: u32 = c.^.params[p].ns;
-        let nl: u32 = c.^.params[p].nl;
-        if src_eq2(c, ns, nl, s, l) { return p; }
+        let ns: u32 = c.^.params[p].name;
+        if ns == s { return p; }
         p = c.^.params[p].next;
     }
     return 0;
@@ -3041,7 +3089,7 @@ fn declare_fn(c: &mut Ctx, d: u32, index: u32) {
     let nl: u32 = c.^.nodes[d].b;
     let fi: u32 = c.^.nfn;
     c.^.fns[fi] = FnI{
-        ns: ns, nl: nl, params: 0, nparams: 0, ret: 0, index: index, decl: d,
+        name: ns, params: 0, nparams: 0, ret: 0, index: index, decl: d,
         locals: 0, ltail: 0, frame: 0, npslot: 0, nlslot: 0, next: 0,
     };
     c.^.nfn = fi + 1;
@@ -3054,8 +3102,8 @@ fn declare_fn(c: &mut Ctx, d: u32, index: u32) {
         let pl: u32 = c.^.nodes[p].b;
         let pline: u32 = c.^.nodes[p].line;
         let pcol: u32 = c.^.nodes[p].col;
-        if param_named(c, head, ps, pl) != 0 {
-            e_dup_param(c, pline, pcol, ps, pl);
+        if param_named(c, head, ps) != 0 {
+            e_dup_param(c, pline, pcol, ps);
             return;
         }
         let ptn: u32 = c.^.nodes[p].c;
@@ -3070,7 +3118,7 @@ fn declare_fn(c: &mut Ctx, d: u32, index: u32) {
             return;
         }
         let pi: u32 = c.^.nparam;
-        c.^.params[pi] = ParamI{ ns: ps, nl: pl, ty: t, next: 0 };
+        c.^.params[pi] = ParamI{ name: ps, ty: t, next: 0 };
         c.^.nparam = pi + 1;
         if head == 0 { head = pi; } else { c.^.params[tail].next = pi; }
         tail = pi;
@@ -3112,60 +3160,57 @@ fn pop_scope(c: &mut Ctx) {
     c.^.scope_n = c.^.marks[m];
 }
 
-fn lookup(c: &Ctx, s: u32, l: u32) -> u32 {
+fn lookup(c: &Ctx, s: u32) -> u32 {
     let mut i: u32 = c.^.scope_n;
     for i > 0 {
         i -= 1;
         let loc: u32 = c.^.scope[i];
-        let ns: u32 = c.^.locals[loc].ns;
-        let nl: u32 = c.^.locals[loc].nl;
-        if src_eq2(c, ns, nl, s, l) { return loc; }
+        let ns: u32 = c.^.locals[loc].name;
+        if ns == s { return loc; }
     }
     return 0;
 }
 
-fn lookup_in_scope(c: &Ctx, s: u32, l: u32) -> u32 {
+fn lookup_in_scope(c: &Ctx, s: u32) -> u32 {
     let base: u32 = c.^.marks[c.^.marks_n - 1];
     let mut i: u32 = c.^.scope_n;
     for i > base {
         i -= 1;
         let loc: u32 = c.^.scope[i];
-        let ns: u32 = c.^.locals[loc].ns;
-        let nl: u32 = c.^.locals[loc].nl;
-        if src_eq2(c, ns, nl, s, l) { return loc; }
+        let ns: u32 = c.^.locals[loc].name;
+        if ns == s { return loc; }
     }
     return 0;
 }
 
-fn e_dup_local(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+fn e_dup_local(c: &mut Ctx, line: u32, col: u32, s: u32) {
     if err_open(c, line, col) {
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         put_str(c, " is already declared in this scope");
         err_end(c);
     }
 }
 
-fn e_shadow(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+fn e_shadow(c: &mut Ctx, line: u32, col: u32, s: u32) {
     if err_open(c, line, col) {
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         put_str(c, " shadows a top-level name");
         err_end(c);
     }
 }
 
-fn declare_local(c: &mut Ctx, s: u32, l: u32, t: u32, mutable: u32, is_param: u32,
-                 line: u32, col: u32) -> u32 {
-    if lookup_in_scope(c, s, l) != 0 {
-        e_dup_local(c, line, col, s, l);
+fn declare_local(c: &mut Ctx, s: u32, t: u32, mutable: u32, is_param: u32, line: u32, col: u32) -> u32 {
+    if lookup_in_scope(c, s) != 0 {
+        e_dup_local(c, line, col, s);
         return 0;
     }
-    if find_taken(c, s, l) {
-        e_shadow(c, line, col, s, l);
+    if find_taken(c, s) {
+        e_shadow(c, line, col, s);
         return 0;
     }
     let loc: u32 = c.^.nlocal;
     c.^.locals[loc] = LocalI{
-        ns: s, nl: l, ty: t, is_mut: mutable, is_param: is_param,
+        name: s, ty: t, is_mut: mutable, is_param: is_param,
         addr: 0, slot: NONE, foff: NONE, next: 0,
     };
     c.^.nlocal = loc + 1;
@@ -3281,10 +3326,10 @@ fn diverges(c: &Ctx, head: u32) -> bool {
 // Checking a function body
 // ===========================================================================
 
-fn e_missing_return(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+fn e_missing_return(c: &mut Ctx, line: u32, col: u32, s: u32) {
     if err_open(c, line, col) {
         put_str(c, "function ");
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         put_str(c, " must return a value on every path");
         err_end(c);
     }
@@ -3306,7 +3351,7 @@ fn check_fn(c: &mut Ctx, fi: u32) {
         let pline: u32 = c.^.nodes[p].line;
         let pcol: u32 = c.^.nodes[p].col;
         let pt: u32 = c.^.params[pi].ty;
-        let loc: u32 = declare_local(c, ps, pl, pt, 0, 1, pline, pcol);
+        let loc: u32 = declare_local(c, ps, pt, 0, 1, pline, pcol);
         c.^.nodes[p].aux = loc;
         p = c.^.nodes[p].next;
         pi = c.^.params[pi].next;
@@ -3320,7 +3365,7 @@ fn check_fn(c: &mut Ctx, fi: u32) {
         let dc: u32 = c.^.nodes[d].col;
         let ns: u32 = c.^.nodes[d].a;
         let nl: u32 = c.^.nodes[d].b;
-        e_missing_return(c, dl, dc, ns, nl);
+        e_missing_return(c, dl, dc, ns);
         return;
     }
     pop_scope(c);
@@ -3434,7 +3479,7 @@ fn check_stmt(c: &mut Ctx, s: u32) {
             t = declared;
         }
         let se: u32 = c.^.nodes[s].e;
-        let loc: u32 = declare_local(c, sa, sb, t, se, 0, line, col);
+        let loc: u32 = declare_local(c, sa, t, se, 0, line, col);
         c.^.nodes[s].aux = loc;
         return;
     }
@@ -3541,29 +3586,27 @@ fn e_match_needs_enum(c: &mut Ctx, line: u32, col: u32, t: u32) {
     }
 }
 
-fn e_no_variant(c: &mut Ctx, line: u32, col: u32, ens: u32, enl: u32,
-                vs: u32, vl: u32) {
+fn e_no_variant(c: &mut Ctx, line: u32, col: u32, ens: u32, vs: u32) {
     if err_open(c, line, col) {
-        put_q_src(c, ens, enl);
+        put_q_name(c, ens);
         put_str(c, " has no variant ");
-        put_q_src(c, vs, vl);
+        put_q_name(c, vs);
         err_end(c);
     }
 }
 
-fn e_dup_arm(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+fn e_dup_arm(c: &mut Ctx, line: u32, col: u32, s: u32) {
     if err_open(c, line, col) {
         put_str(c, "duplicate arm for ");
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         err_end(c);
     }
 }
 
-fn e_bind_arity(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32,
-                want: u32, got: u32) {
+fn e_bind_arity(c: &mut Ctx, line: u32, col: u32, s: u32, want: u32, got: u32) {
     if err_open(c, line, col) {
         put_str(c, "variant ");
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         put_str(c, " takes ");
         put_num(c, want);
         put_str(c, " binding(s), found ");
@@ -3572,42 +3615,39 @@ fn e_bind_arity(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32,
     }
 }
 
-fn e_nonexhaustive(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+fn e_nonexhaustive(c: &mut Ctx, line: u32, col: u32, s: u32) {
     if err_open(c, line, col) {
         put_str(c, "non-exhaustive match: missing ");
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         err_end(c);
     }
 }
 
-fn find_variant(c: &Ctx, ei: u32, s: u32, l: u32) -> u32 {
+fn find_variant(c: &Ctx, ei: u32, s: u32) -> u32 {
     let mut v: u32 = c.^.enums[ei].variants;
     for v != 0 {
-        let ns: u32 = c.^.variants[v].ns;
-        let nl: u32 = c.^.variants[v].nl;
-        if src_eq2(c, ns, nl, s, l) { return v; }
+        let ns: u32 = c.^.variants[v].name;
+        if ns == s { return v; }
         v = c.^.variants[v].next;
     }
     return 0;
 }
 
-fn arm_for_variant(c: &Ctx, head: u32, s: u32, l: u32) -> u32 {
-    return arm_covers(c, head, s, l);
+fn arm_for_variant(c: &Ctx, head: u32, s: u32) -> u32 {
+    return arm_covers(c, head, s);
 }
 
 // Which arm names this variant, counting the tail of `A | B` too.
-fn arm_covers(c: &Ctx, head: u32, s: u32, l: u32) -> u32 {
+fn arm_covers(c: &Ctx, head: u32, s: u32) -> u32 {
     let mut a: u32 = head;
     for a != 0 {
         if c.^.nodes[a].e == 0 {
             let ns: u32 = c.^.nodes[a].a;
-            let nl: u32 = c.^.nodes[a].b;
-            if src_eq2(c, ns, nl, s, l) { return a; }
+            if ns == s { return a; }
             let mut alt: u32 = c.^.nodes[a].aux2;
             for alt != 0 {
                 let als: u32 = c.^.nodes[alt].a;
-                let all: u32 = c.^.nodes[alt].b;
-                if src_eq2(c, als, all, s, l) { return a; }
+                if als == s { return a; }
                 alt = c.^.nodes[alt].next;
             }
         }
@@ -3674,15 +3714,14 @@ fn check_match_common(c: &mut Ctx, s: u32) {
             a = c.^.nodes[a].next;
             continue;
         }
-        let v: u32 = find_variant(c, ei, ans, anl);
+        let v: u32 = find_variant(c, ei, ans);
         if v == 0 {
-            let ens: u32 = c.^.enums[ei].ns;
-            let enl: u32 = c.^.enums[ei].nl;
-            e_no_variant(c, al, ac, ens, enl, ans, anl);
+            let ens: u32 = c.^.enums[ei].name;
+            e_no_variant(c, al, ac, ens, ans);
             return;
         }
-        if arm_for_variant(c, head, ans, anl) != a {
-            e_dup_arm(c, al, ac, ans, anl);
+        if arm_for_variant(c, head, ans) != a {
+            e_dup_arm(c, al, ac, ans);
             return;
         }
         c.^.nodes[a].aux = v;
@@ -3690,15 +3729,14 @@ fn check_match_common(c: &mut Ctx, s: u32) {
         for alt != 0 && !failed(c) {
             let als: u32 = c.^.nodes[alt].a;
             let all: u32 = c.^.nodes[alt].b;
-            let av: u32 = find_variant(c, ei, als, all);
+            let av: u32 = find_variant(c, ei, als);
             if av == 0 {
-                let ens2: u32 = c.^.enums[ei].ns;
-                let enl2: u32 = c.^.enums[ei].nl;
-                e_no_variant(c, al, ac, ens2, enl2, als, all);
+                let ens2: u32 = c.^.enums[ei].name;
+                e_no_variant(c, al, ac, ens2, als);
                 return;
             }
-            if arm_covers(c, head, als, all) != a {
-                e_dup_arm(c, al, ac, als, all);
+            if arm_covers(c, head, als) != a {
+                e_dup_arm(c, al, ac, als);
                 return;
             }
             if c.^.variants[av].nargs != 0 {
@@ -3707,7 +3745,7 @@ fn check_match_common(c: &mut Ctx, s: u32) {
                     put_str(c, "|");
                     put_ch(c, 96);
                     put_str(c, " cannot join ");
-                    put_q_src(c, als, all);
+                    put_q_name(c, als);
                     put_str(c, ", which carries a payload");
                     err_end(c);
                 }
@@ -3723,7 +3761,7 @@ fn check_match_common(c: &mut Ctx, s: u32) {
                 put_str(c, "|");
                 put_ch(c, 96);
                 put_str(c, " cannot join ");
-                put_q_src(c, ans, anl);
+                put_q_name(c, ans);
                 put_str(c, ", which carries a payload");
                 err_end(c);
             }
@@ -3733,7 +3771,7 @@ fn check_match_common(c: &mut Ctx, s: u32) {
         let nb: u32 = list_len(c, binds);
         let nargs: u32 = c.^.variants[v].nargs;
         if nb != nargs {
-            e_bind_arity(c, al, ac, ans, anl, nargs, nb);
+            e_bind_arity(c, al, ac, ans, nargs, nb);
             return;
         }
         seen += 1;
@@ -3743,10 +3781,9 @@ fn check_match_common(c: &mut Ctx, s: u32) {
     if wild == 0 && seen != c.^.enums[ei].nvar {
         let mut v: u32 = c.^.enums[ei].variants;
         for v != 0 {
-            let vs: u32 = c.^.variants[v].ns;
-            let vl: u32 = c.^.variants[v].nl;
-            if arm_for_variant(c, head, vs, vl) == 0 {
-                e_nonexhaustive(c, line, col, vs, vl);
+            let vs: u32 = c.^.variants[v].name;
+            if arm_for_variant(c, head, vs) == 0 {
+                e_nonexhaustive(c, line, col, vs);
                 return;
             }
             v = c.^.variants[v].next;
@@ -3768,7 +3805,7 @@ fn bind_arm(c: &mut Ctx, a: u32) {
         let bcol: u32 = c.^.nodes[b].col;
         let ft: u32 = c.^.fields[f].ty;
         let bt: u32 = read_ty(c, ft);
-        let loc: u32 = declare_local(c, bs, bl, bt, 0, 0, bline, bcol);
+        let loc: u32 = declare_local(c, bs, bt, 0, 0, bline, bcol);
         c.^.nodes[b].aux = loc;
         b = c.^.nodes[b].next;
         f = c.^.fields[f].next;
@@ -3857,19 +3894,19 @@ fn scalar_enum_lit(c: &Ctx, e: u32) -> u32 {
     if c.^.nodes[base].kind != E_IDENT { return 0; }
     let bs: u32 = c.^.nodes[base].a;
     let bl: u32 = c.^.nodes[base].b;
-    let ei: u32 = find_enum(c, bs, bl);
+    let ei: u32 = find_enum(c, bs);
     if ei == 0 { return 0; }
     if c.^.enums[ei].scalar == 0 { return 0; }
     let vs: u32 = c.^.nodes[e].b;
     let vl: u32 = c.^.nodes[e].c;
-    return find_variant(c, ei, vs, vl);
+    return find_variant(c, ei, vs);
 }
 
 fn scalar_enum_lit_enum(c: &Ctx, e: u32) -> u32 {
     let base: u32 = c.^.nodes[e].a;
     let bs: u32 = c.^.nodes[base].a;
     let bl: u32 = c.^.nodes[base].b;
-    return find_enum(c, bs, bl);
+    return find_enum(c, bs);
 }
 
 fn is_enum_lit(c: &Ctx, e: u32) -> bool {
@@ -3880,7 +3917,7 @@ fn is_enum_lit(c: &Ctx, e: u32) -> bool {
     if c.^.nodes[base].kind != E_IDENT { return false; }
     let s: u32 = c.^.nodes[base].a;
     let l: u32 = c.^.nodes[base].b;
-    return find_enum(c, s, l) != 0;
+    return find_enum(c, s) != 0;
 }
 
 fn e_copy_agg(c: &mut Ctx, line: u32, col: u32, t: u32) {
@@ -3915,17 +3952,17 @@ fn check_init(c: &mut Ctx, e: u32, want: u32) -> u32 {
     return t;
 }
 
-fn e_unknown_struct(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+fn e_unknown_struct(c: &mut Ctx, line: u32, col: u32, s: u32) {
     if err_open(c, line, col) {
         put_str(c, "unknown struct ");
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         err_end(c);
     }
 }
 
-fn e_field_count(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32, n: u32) {
+fn e_field_count(c: &mut Ctx, line: u32, col: u32, s: u32, n: u32) {
     if err_open(c, line, col) {
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         put_str(c, " has ");
         put_num(c, n);
         put_str(c, " field(s)");
@@ -3933,13 +3970,12 @@ fn e_field_count(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32, n: u32) {
     }
 }
 
-fn e_field_order(c: &mut Ctx, line: u32, col: u32, ws: u32, wl: u32,
-                 gs: u32, gl: u32) {
+fn e_field_order(c: &mut Ctx, line: u32, col: u32, ws: u32, gs: u32) {
     if err_open(c, line, col) {
         put_str(c, "expected field ");
-        put_q_src(c, ws, wl);
+        put_q_name(c, ws);
         put_str(c, ", found ");
-        put_q_src(c, gs, gl);
+        put_q_name(c, gs);
         err_end(c);
     }
 }
@@ -3959,18 +3995,18 @@ fn check_struct_lit(c: &mut Ctx, e: u32, want: u32) -> u32 {
     let col: u32 = c.^.nodes[e].col;
     let ns: u32 = c.^.nodes[e].a;
     let nl: u32 = c.^.nodes[e].b;
-    let si: u32 = find_struct(c, ns, nl);
+    let si: u32 = find_struct(c, ns);
     if si == 0 {
-        e_unknown_struct(c, line, col, ns, nl);
+        e_unknown_struct(c, line, col, ns);
         return TY_I32;
     }
-    let self_ty: u32 = ty_named(c, ns, nl);
+    let self_ty: u32 = ty_named(c, ns);
     if want != 0 && want != self_ty {
         if err_open(c, line, col) {
             put_str(c, "expected ");
             put_q_ty(c, want);
             put_str(c, ", found ");
-            put_q_src(c, ns, nl);
+            put_q_name(c, ns);
             err_end(c);
         }
         return TY_I32;
@@ -3979,20 +4015,18 @@ fn check_struct_lit(c: &mut Ctx, e: u32, want: u32) -> u32 {
     let nf: u32 = fi_count(c, fhead);
     let lits: u32 = c.^.nodes[e].c;
     if list_len(c, lits) != nf {
-        e_field_count(c, line, col, ns, nl, nf);
+        e_field_count(c, line, col, ns, nf);
         return TY_I32;
     }
     let mut lf: u32 = lits;
     let mut f: u32 = fhead;
     for lf != 0 && !failed(c) {
         let ls: u32 = c.^.nodes[lf].a;
-        let ll: u32 = c.^.nodes[lf].b;
-        let fs: u32 = c.^.fields[f].ns;
-        let fl: u32 = c.^.fields[f].nl;
-        if !src_eq2(c, ls, ll, fs, fl) {
+        let fs: u32 = c.^.fields[f].name;
+        if ls != fs {
             let lline: u32 = c.^.nodes[lf].line;
             let lcol: u32 = c.^.nodes[lf].col;
-            e_field_order(c, lline, lcol, fs, fl, ls, ll);
+            e_field_order(c, lline, lcol, fs, ls);
             return TY_I32;
         }
         let ft: u32 = c.^.fields[f].ty;
@@ -4007,10 +4041,10 @@ fn check_struct_lit(c: &mut Ctx, e: u32, want: u32) -> u32 {
     return self_ty;
 }
 
-fn e_variant_arity(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32, n: u32) {
+fn e_variant_arity(c: &mut Ctx, line: u32, col: u32, s: u32, n: u32) {
     if err_open(c, line, col) {
         put_str(c, "variant ");
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         put_str(c, " takes ");
         put_num(c, n);
         put_str(c, " value(s)");
@@ -4030,32 +4064,30 @@ fn check_enum_lit(c: &mut Ctx, e: u32, want: u32) -> u32 {
     let base: u32 = c.^.nodes[fld].a;
     let bs: u32 = c.^.nodes[base].a;
     let bl: u32 = c.^.nodes[base].b;
-    let ei: u32 = find_enum(c, bs, bl);
+    let ei: u32 = find_enum(c, bs);
     let vs: u32 = c.^.nodes[fld].b;
     let vl: u32 = c.^.nodes[fld].c;
-    let v: u32 = find_variant(c, ei, vs, vl);
-    let ens: u32 = c.^.enums[ei].ns;
-    let enl: u32 = c.^.enums[ei].nl;
+    let v: u32 = find_variant(c, ei, vs);
+    let ens: u32 = c.^.enums[ei].name;
     if v == 0 {
         let fline: u32 = c.^.nodes[fld].line;
         let fcol: u32 = c.^.nodes[fld].col;
-        e_no_variant(c, fline, fcol, ens, enl, vs, vl);
+        e_no_variant(c, fline, fcol, ens, vs);
         return TY_I32;
     }
     let nargs: u32 = c.^.variants[v].nargs;
     if list_len(c, args) != nargs {
-        let vns: u32 = c.^.variants[v].ns;
-        let vnl: u32 = c.^.variants[v].nl;
-        e_variant_arity(c, line, col, vns, vnl, nargs);
+        let vns: u32 = c.^.variants[v].name;
+        e_variant_arity(c, line, col, vns, nargs);
         return TY_I32;
     }
-    let self_ty: u32 = ty_named(c, ens, enl);
+    let self_ty: u32 = ty_named(c, ens);
     if want != 0 && want != self_ty {
         if err_open(c, line, col) {
             put_str(c, "expected ");
             put_q_ty(c, want);
             put_str(c, ", found ");
-            put_q_src(c, ens, enl);
+            put_q_name(c, ens);
             err_end(c);
         }
         return TY_I32;
@@ -4151,10 +4183,10 @@ fn int_want(c: &Ctx, want: u32) -> u32 {
     return 0;
 }
 
-fn e_unknown_name(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32) {
+fn e_unknown_name(c: &mut Ctx, line: u32, col: u32, s: u32) {
     if err_open(c, line, col) {
         put_str(c, "unknown name ");
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         err_end(c);
     }
 }
@@ -4291,10 +4323,9 @@ fn check_binary(c: &mut Ctx, e: u32, want: u32) -> u32 {
     return lt;
 }
 
-fn e_arg_count(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32,
-               want: u32, got: u32) {
+fn e_arg_count(c: &mut Ctx, line: u32, col: u32, s: u32, want: u32, got: u32) {
     if err_open(c, line, col) {
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         put_str(c, " takes ");
         put_num(c, want);
         put_str(c, " argument(s), found ");
@@ -4350,9 +4381,9 @@ fn count_mentions(c: &Ctx, e: u32, loc: u32) -> u32 {
     return 0;
 }
 
-fn e_alias(c: &mut Ctx, line: u32, col: u32, s: u32, l: u32, twice: u32) {
+fn e_alias(c: &mut Ctx, line: u32, col: u32, s: u32, twice: u32) {
     if err_open(c, line, col) {
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         if twice == 0 {
             put_str(c, " is borrowed mutably and also used in the same argument list");
         } else {
@@ -4371,19 +4402,18 @@ fn check_aliasing(c: &mut Ctx, e: u32) {
     for a != 0 && !failed(c) {
         let root: u32 = c.^.nodes[a].d;
         if c.^.nodes[a].kind == E_BORROW && c.^.nodes[a].a != 0 && root != 0 {
-            let rns: u32 = c.^.locals[root].ns;
-            let rnl: u32 = c.^.locals[root].nl;
+            let rns: u32 = c.^.locals[root].name;
             let mut b: u32 = head;
             for b != 0 {
                 if b != a && count_mentions(c, b, root) > 0 {
-                    e_alias(c, line, col, rns, rnl, 0);
+                    e_alias(c, line, col, rns, 0);
                     return;
                 }
                 b = c.^.nodes[b].next;
             }
             let opnd: u32 = c.^.nodes[a].b;
             if count_mentions(c, opnd, root) > 1 {
-                e_alias(c, line, col, rns, rnl, 1);
+                e_alias(c, line, col, rns, 1);
                 return;
             }
         }
@@ -4443,11 +4473,11 @@ fn check_call(c: &mut Ctx, e: u32) -> u32 {
     }
     let cs: u32 = c.^.nodes[callee].a;
     let cl: u32 = c.^.nodes[callee].b;
-    let fi: u32 = find_fn(c, cs, cl);
+    let fi: u32 = find_fn(c, cs);
     if fi == 0 {
         if err_open(c, line, col) {
             put_str(c, "unknown function ");
-            put_q_src(c, cs, cl);
+            put_q_name(c, cs);
             err_end(c);
         }
         return TY_I32;
@@ -4456,9 +4486,8 @@ fn check_call(c: &mut Ctx, e: u32) -> u32 {
     let nargs: u32 = list_len(c, args);
     let nparams: u32 = c.^.fns[fi].nparams;
     if nargs != nparams {
-        let fns: u32 = c.^.fns[fi].ns;
-        let fnl: u32 = c.^.fns[fi].nl;
-        e_arg_count(c, line, col, fns, fnl, nparams, nargs);
+        let fns: u32 = c.^.fns[fi].name;
+        e_arg_count(c, line, col, fns, nparams, nargs);
         return TY_I32;
     }
     let mut a: u32 = args;
@@ -4501,21 +4530,20 @@ fn root_local(c: &Ctx, e: u32) -> u32 {
     return 0;
 }
 
-fn e_no_field_ty(c: &mut Ctx, line: u32, col: u32, t: u32, s: u32, l: u32) {
+fn e_no_field_ty(c: &mut Ctx, line: u32, col: u32, t: u32, s: u32) {
     if err_open(c, line, col) {
         put_q_ty(c, t);
         put_str(c, " has no field ");
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         err_end(c);
     }
 }
 
-fn e_no_field_name(c: &mut Ctx, line: u32, col: u32, bs: u32, bl: u32,
-                   s: u32, l: u32) {
+fn e_no_field_name(c: &mut Ctx, line: u32, col: u32, bs: u32, bl: u32, s: u32) {
     if err_open(c, line, col) {
-        put_q_src(c, bs, bl);
+        put_q_name(c, bs);
         put_str(c, " has no field ");
-        put_q_src(c, s, l);
+        put_q_name(c, s);
         err_end(c);
     }
 }
@@ -4530,25 +4558,25 @@ fn check_place(c: &mut Ctx, e: u32) -> u32 {
     let eb: u32 = c.^.nodes[e].b;
 
     if k == E_IDENT {
-        let loc: u32 = lookup(c, ea, eb);
+        let loc: u32 = lookup(c, ea);
         if loc == 0 {
-            if find_const(c, ea, eb) != 0 {
+            if find_const(c, ea) != 0 {
                 if err_open(c, line, col) {
-                    put_q_src(c, ea, eb);
+                    put_q_name(c, ea);
                     put_str(c, " is a constant, not a place");
                     err_end(c);
                 }
                 return TY_I32;
             }
-            if find_type_name(c, ea, eb) {
+            if find_type_name(c, ea) {
                 if err_open(c, line, col) {
-                    put_q_src(c, ea, eb);
+                    put_q_name(c, ea);
                     put_str(c, " is a type, not a place");
                     err_end(c);
                 }
                 return TY_I32;
             }
-            e_unknown_name(c, line, col, ea, eb);
+            e_unknown_name(c, line, col, ea);
             return TY_I32;
         }
         let lt: u32 = c.^.locals[loc].ty;
@@ -4567,20 +4595,19 @@ fn check_place(c: &mut Ctx, e: u32) -> u32 {
         let bmut: u32 = c.^.place_mut;
         let broot: u32 = c.^.place_root;
         if ty_kind(c, bt) != TYK_NAMED {
-            e_no_field_ty(c, line, col, bt, eb, ec);
+            e_no_field_ty(c, line, col, bt, eb);
             return TY_I32;
         }
         let si: u32 = agg_struct(c, bt);
         if si == 0 {
-            e_no_field_ty(c, line, col, bt, eb, ec);
+            e_no_field_ty(c, line, col, bt, eb);
             return TY_I32;
         }
         let fhead: u32 = c.^.structs[si].fields;
-        let f: u32 = field_named(c, fhead, eb, ec);
+        let f: u32 = field_named(c, fhead, eb);
         if f == 0 {
-            let sns: u32 = c.^.structs[si].ns;
-            let snl: u32 = c.^.structs[si].nl;
-            e_no_field_name(c, line, col, sns, snl, eb, ec);
+            let sns: u32 = c.^.structs[si].name;
+            e_no_field_name(c, line, col, sns, eb, ec);
             return TY_I32;
         }
         let ft: u32 = c.^.fields[f].ty;
@@ -4653,16 +4680,15 @@ fn check_place(c: &mut Ctx, e: u32) -> u32 {
 // Returns 0 for neither, 1 for len, 2 for ptr.
 fn slice_field(c: &mut Ctx, e: u32) -> u32 {
     let ns: u32 = c.^.nodes[e].b;
-    let nl: u32 = c.^.nodes[e].c;
     let mut which: u32 = 0;
-    if src_eq(c, ns, nl, "len") { which = 1; }
-    else if src_eq(c, ns, nl, "ptr") { which = 2; }
+    if ns == c.^.id_len { which = 1; }
+    else if ns == c.^.id_ptr { which = 2; }
     else { return 0; }
     let base: u32 = c.^.nodes[e].a;
     if c.^.nodes[base].kind == E_IDENT {
         let bs: u32 = c.^.nodes[base].a;
         let bl: u32 = c.^.nodes[base].b;
-        if find_enum(c, bs, bl) != 0 { return 0; }
+        if find_enum(c, bs) != 0 { return 0; }
     }
     // probe without committing: a failure here is not the program's diagnostic
     let saved_err: u32 = c.^.err;
@@ -4757,14 +4783,14 @@ fn check_expr_inner(c: &mut Ctx, e: u32, want: u32) -> u32 {
         return pt;
     }
     if k == E_IDENT {
-        let loc: u32 = lookup(c, ea, eb);
+        let loc: u32 = lookup(c, ea);
         if loc != 0 {
             let lt: u32 = c.^.locals[loc].ty;
             c.^.nodes[e].aux = loc;
             c.^.nodes[e].aux2 = 0;
             return read_ty(c, lt);
         }
-        let ci: u32 = find_const(c, ea, eb);
+        let ci: u32 = find_const(c, ea);
         if ci != 0 {
             force_const(c, ci, line, col);
             if failed(c) { return TY_I32; }
@@ -4772,11 +4798,11 @@ fn check_expr_inner(c: &mut Ctx, e: u32, want: u32) -> u32 {
             c.^.nodes[e].aux2 = 1;
             return c.^.consts[ci].ty;
         }
-        if find_fn(c, ea, eb) != 0 {
+        if find_fn(c, ea) != 0 {
             err_msg(c, line, col, "functions are not values");
             return TY_I32;
         }
-        e_unknown_name(c, line, col, ea, eb);
+        e_unknown_name(c, line, col, ea);
         return TY_I32;
     }
     if k == E_UNARY {
@@ -4827,11 +4853,10 @@ fn check_expr_inner(c: &mut Ctx, e: u32, want: u32) -> u32 {
         let sv: u32 = scalar_enum_lit(c, e);
         if sv != 0 {
             let sei: u32 = scalar_enum_lit_enum(c, e);
-            let ens3: u32 = c.^.enums[sei].ns;
-            let enl3: u32 = c.^.enums[sei].nl;
+            let ens3: u32 = c.^.enums[sei].name;
             c.^.nodes[e].aux = c.^.variants[sv].tag;
             c.^.nodes[e].aux2 = 2;   // 2 marks a scalar tag constant
-            return ty_named(c, ens3, enl3);
+            return ty_named(c, ens3);
         }
         if is_enum_lit(c, e) {
             err_msg(c, line, col, "enum literal is only allowed as an initializer");
@@ -5024,6 +5049,18 @@ fn w_s(c: &mut Ctx, sel: u32, v: u32) {
         }
         w_ch(c, sel, byte | 0x80);
     }
+}
+
+// An interned name, straight into a section payload. The bytes are the same
+// bytes the source had -- interning copies, it does not canonicalise -- so the
+// emitted module is unchanged by gh #5 A.
+fn name_len(c: &Ctx, id: u32) -> u32 { return c.^.ntab[id].len; }
+
+fn w_name(c: &mut Ctx, sel: u32, id: u32) {
+    let off: u32 = c.^.ntab[id].off;
+    let ln: u32 = c.^.ntab[id].len;
+    let base: u32 = c.^.nmem.ptr as u32;
+    w_copy(c, sel, base + off, ln);
 }
 
 fn w_copy(c: &mut Ctx, sel: u32, src: u32, n: u32) {
@@ -6025,11 +6062,11 @@ fn emit_module(c: &mut Ctx) {
     begin_section(c);
     s_u(c, nfns + 1);
     for let mut fi: u32 = 1; fi < c.^.nfn; fi += 1 {
-        let ns: u32 = c.^.fns[fi].ns;
-        let nl: u32 = c.^.fns[fi].nl;
+        let ns: u32 = c.^.fns[fi].name;
         let idx: u32 = c.^.fns[fi].index;
-        s_u(c, nl);
-        w_copy(c, W_SEC, SRC + ns, nl);
+        let ln: u32 = name_len(c, ns);
+        s_u(c, ln);
+        w_name(c, W_SEC, ns);
         s_ch(c, 0x00);
         s_u(c, idx);
     }
@@ -6131,6 +6168,12 @@ fn e_too_large(c: &mut Ctx) {
 
 fn heap_fits(c: &Ctx) -> bool { return c.^.heap <= S1; }
 
+fn pow2_at_least(v: u32) -> u32 {
+    let mut p: u32 = 8;
+    for p < v { p = p * 2; }
+    return p;
+}
+
 // ===========================================================================
 // Entry point (implementation.md S7)
 // ===========================================================================
@@ -6156,6 +6199,18 @@ fn compile(src_len_in: u32) -> i32 {
             col: 1,
             toks: slice_mut(heap0 as *Token, ntok_max),
             ntok: 0,
+            nmem: slice_mut(heap0 as *u8, 0),
+            nmem_n: 0,
+            ntab: slice_mut(heap0 as *NameEnt, 0),
+            ntab_n: 1,
+            nhash: slice_mut(heap0 as *u32, 0),
+            id_i32: 0,
+            id_u32: 0,
+            id_bool: 0,
+            id_u8: 0,
+            id_under: 0,
+            id_len: 0,
+            id_ptr: 0,
             nodes: slice_mut(heap0 as *Node, 0),
             nnode: 1,
             ti: 0,
@@ -6219,6 +6274,52 @@ fn compile(src_len_in: u32) -> i32 {
         if !heap_fits(&c) { e_too_large(&mut c); }
 
         if c.err == 0 { lex(&mut c); }
+
+        // Names, sized exactly off the tokens (gh #5 A). Doing this here rather
+        // than during lexing is what makes "exactly" possible: the byte count
+        // and the identifier count are both readable from the token array.
+        if c.err == 0 {
+            let mut nb: u32 = 0;
+            let mut nid: u32 = 0;
+            for let mut i: u32 = 0; i < c.ntok; i += 1 {
+                if c.toks[i].kind == TK_IDENT {
+                    nb = nb + c.toks[i].len;
+                    nid = nid + 1;
+                }
+            }
+            // the well-known names above need not appear in the source
+            nb = nb + WELLKNOWN_BYTES;
+            nid = nid + WELLKNOWN_COUNT;
+            c.nmem = slice_mut(c.heap as *u8, nb);
+            c.heap = align4(c.heap + nb);
+            let ntab_max: u32 = nid + 1;
+            c.ntab = slice_mut(c.heap as *NameEnt, ntab_max);
+            c.heap = c.heap + ntab_max * 8;
+            let nh: u32 = pow2_at_least(ntab_max + ntab_max);
+            c.nhash = slice_mut(c.heap as *u32, nh);
+            c.heap = c.heap + nh * 4;
+            if !heap_fits(&c) { e_too_large(&mut c); }
+            if c.err == 0 {
+                // wasm hands out zeroed memory, but an empty table is a
+                // correctness precondition here, not a happy accident.
+                for let mut i: u32 = 0; i < nh; i += 1 { c.nhash[i] = 0; }
+                let w1: u32 = intern(&mut c, "i32");
+                c.id_i32 = w1;
+                let w2: u32 = intern(&mut c, "u32");
+                c.id_u32 = w2;
+                let w3: u32 = intern(&mut c, "bool");
+                c.id_bool = w3;
+                let w4: u32 = intern(&mut c, "u8");
+                c.id_u8 = w4;
+                let w5: u32 = intern(&mut c, "_");
+                c.id_under = w5;
+                let w6: u32 = intern(&mut c, "len");
+                c.id_len = w6;
+                let w7: u32 = intern(&mut c, "ptr");
+                c.id_ptr = w7;
+                intern_idents(&mut c);
+            }
+        }
 
         // The node arena is sized from the token count, not the source length --
         // there is at most one node per token and tokens are far fewer than
@@ -6313,6 +6414,10 @@ fn compile(src_len_in: u32) -> i32 {
 
         // debug window for the workbench
         let toks_at: u32 = heap0;
+        let nmem_at: u32 = c.nmem.ptr as u32;
+        let ntab_at: u32 = c.ntab.ptr as u32;
+        stw(G_NMEM, nmem_at);
+        stw(G_NTAB, ntab_at);
         stw(G_TOKS, toks_at);
         stw(G_NTOK, c.ntok);
         stw(G_ERR, c.err);

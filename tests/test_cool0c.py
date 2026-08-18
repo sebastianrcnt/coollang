@@ -57,6 +57,12 @@ class Cool0c:
     def read(self, addr: int, n: int) -> bytes:
         return bytes(self.mem.read(self.store, addr, addr + n))
 
+    def interned(self, name_id: int) -> str:
+        """인턴된 이름 하나 (gh #5 A). 이름은 이제 소스가 아니라 컴파일러 것이다."""
+        ent = self.u32(G_NTAB) + name_id * 8
+        off, n = self.u32(ent), self.u32(ent + 4)
+        return self.read(self.u32(G_NMEM) + off, n).decode("ascii")
+
     def compile(self, src: bytes) -> tuple[int, bytes]:
         self.mem.write(self.store, src, SRC_ADDR)
         status = self.ex["compile"](self.store, len(src))
@@ -187,6 +193,8 @@ from cool0.cool0 import ExprStmt  # noqa: E402
 
 G_DECLS = 0x0040
 G_NODES = 0x0044
+G_NMEM = 0x0048
+G_NTAB = 0x004C
 
 NK = {
     1: "int", 2: "char", 3: "str", 4: "bool", 5: "ident", 6: "unary", 7: "binary",
@@ -219,7 +227,8 @@ class Dump:
         return self.cc.u32(self.base + n * NODE_SIZE + F[name])
 
     def name(self, n: int, sf="A", lf="B") -> str:
-        return self.cc.read(SRC_ADDR + self.f(n, sf), self.f(n, lf)).decode("ascii")
+        """이름은 소스가 아니라 인턴 표에 있다 (gh #5 A)."""
+        return self.cc.interned(self.f(n, sf))
 
     def lst(self, head: int, fn) -> list:
         out = []
@@ -273,7 +282,7 @@ class Dump:
         if k == "index":
             return f"(index {p} {d} {self.ex(self.f(n, 'A'))} {self.ex(self.f(n, 'B'))})"
         if k == "field":
-            nm = self.cc.read(SRC_ADDR + self.f(n, "B"), self.f(n, "C")).decode("ascii")
+            nm = self.cc.interned(self.f(n, "B"))
             return f"(field {p} {d} {self.ex(self.f(n, 'A'))} {nm})"
         if k == "deref":
             return f"(deref {p} {d} {self.ex(self.f(n, 'A'))})"
