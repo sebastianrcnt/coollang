@@ -195,3 +195,49 @@ def test_token_working_set_is_one_declaration_not_the_program():
     )
     assert _parse_declarations(one)[1] == _parse_declarations(many)[1]
     assert reference_compile(many)[0] == STATUS_OK
+
+
+# --- 새 한계: 선언 하나 (gh #5 C) ---------------------------------------------
+#
+# 스트리밍 뒤로 한계가 옮겨 갔다. 예전에는 "프로그램 전체가 아레나에 들어가는가"
+# 였고 지금은 **"선언 하나가 S1..S2 작업장에 들어가는가"** 다. 프로그램은 아무리
+# 길어도 되고, 함수 하나가 너무 크면 거절된다.
+#
+# 두 한계 다 한동안 아무 시험에도 안 걸려 있었다. 커버리지 게이트가 잡았다.
+#
+# 여기서는 **산술을 경계에서 직접** 먹인다. 진짜 소스로 넘기려면 선언 하나가
+# 466,033 토큰(약 1 MB)이어야 하고, 커버리지 추적 아래에서 그것을 렉싱하면
+# 시험 한 판이 분 단위가 된다. 산술이 곧 규칙이므로 규칙을 시험한다.
+
+
+def workspace_tokens() -> int:
+    from cool0.cool0 import SIZEOF_TOKEN, TOKEN_SCRATCH_END
+
+    return (TOKEN_SCRATCH_END - BOOTSTRAP_SCRATCH) // SIZEOF_TOKEN
+
+
+def test_a_declaration_that_fills_the_token_workspace_is_still_accepted():
+    from cool0.cool0 import check_token_workspace
+
+    check_token_workspace(workspace_tokens())
+
+
+def test_a_declaration_one_token_past_the_workspace_is_rejected():
+    from cool0.cool0 import CompileError, check_token_workspace
+
+    with pytest.raises(CompileError) as got:
+        check_token_workspace(workspace_tokens() + 1)
+    assert got.value.render() == TOO_LARGE
+
+
+def test_the_heap_check_still_rejects_when_the_arithmetic_says_so():
+    """범프 힙 검사는 이제 뒷받침이다 -- 산술을 직접 먹여 확인한다.
+
+    스트리밍 뒤로 이 경로를 실제 소스로 넘기려면 수백 MB 짜리 프로그램이 필요하다.
+    """
+    from cool0.cool0 import CompileError, check_bootstrap_memory
+
+    check_bootstrap_memory(10, 10, [], nmax=1)          # 넉넉하다
+    with pytest.raises(CompileError) as got:
+        check_bootstrap_memory(10, 10, [], nmax=BOOTSTRAP_SCRATCH)
+    assert got.value.render() == TOO_LARGE

@@ -3219,46 +3219,9 @@ def _count_arena_nodes(decls) -> dict:
     return n
 
 
-def _str_body_bytes(toks) -> int:
-    """문자열 리터럴 본문이 차지하는 힙 (implementation.md §7).
-
-    렉서가 해석한 바이트열을 그 자리에서 범프 힙에 복사하고 4 바이트로 올린다.
-    """
-    return sum(align_up(len(x.value), 4) for x in toks if x.kind == "str")
-
-
-def _name_arena_size(toks) -> tuple[int, int]:
-    """인턴 아레나 크기 (gh #5 A). cool0c 은 식별자 토큰에서 정확히 구한다."""
-    nb = sum(len(x.text) for x in toks if x.kind == "ident")
-    nid = sum(1 for x in toks if x.kind == "ident")
-    return nb + WELLKNOWN_BYTES, nid + WELLKNOWN_COUNT + 1
-
-
-def _arena_bound(toks) -> int:
-    """동시에 살아 있는 노드 상한 (gh #5 C): 선언부 + 가장 큰 본문 하나."""
-    depth = is_fn = start = total = largest = 0
-    for i, x in enumerate(toks):
-        if depth == 0 and x.kind == "kw" and x.text == "fn":
-            is_fn = 1
-        if x.kind == "punct":
-            if x.text == "{":
-                if depth == 0 and is_fn:
-                    start = i
-                depth += 1
-            elif x.text == "}":
-                if depth:
-                    depth -= 1
-                if depth == 0 and is_fn:
-                    n = i - start + 1
-                    total += n
-                    largest = max(largest, n)
-                    is_fn = 0
-    return len(toks) - total + largest + 2
-
-
 def bootstrap_heap_end(
     src_len: int,
-    ntok: Optional[int],
+    ntok: int,
     decls,
     name_bytes: int = 0,
     name_count: int = 0,
@@ -3268,45 +3231,51 @@ def bootstrap_heap_end(
 ) -> int:
     """cool0c 의 범프 순서를 그대로 따라가 힙 끝을 구한다.
 
-    `ntok` 이 None 이면 토큰 아레나까지만 본다 -- 렉싱 전에 한 번, 파싱 뒤에 한 번,
-    자기 호스팅 컴파일러가 검사하는 바로 그 두 지점이다.
-
     여기 있는 숫자는 전부 cool0c.cool0 의 compile_n() 에 짝이 있다. 하나라도
     어긋나면 두 구현이 **큰 소스에서만** 갈리고, 그것이 §8 이 금지하는 상황이다.
+
+    선언 토큰은 여기 없다. S1..S2 작업장을 되쓰므로 범프 힙을 지나가지 않는다
+    (gh #5 C). 그쪽 한계는 compile() 이 따로 본다.
     """
     top = SRC_ADDR + src_len
     heap = align_up(top, 4) + 4
-    # 선언 토큰은 S1..S2 작업장을 되쓰므로 정상 컴파일의 범프 힙에는 없다.
-    if ntok is None:
-        heap += (src_len + 1) * SIZEOF_TOKEN
-    # 문자열 리터럴의 **본문**도 같은 범프 힙에서, 렉싱 도중에 잡힌다
-    # (Ctx 의 `heap` 주석). 이 항이 여태 빠져 있었다.
+    # 문자열 리터럴의 **본문**은 범프 힙에서, 렉싱 도중에 잡힌다 (Ctx 의 `heap`)
     heap += str_body_bytes
-    if ntok is not None:
-        heap = align_up(heap + name_bytes, 4)  # 이름 바이트 (gh #5 A)
-        heap += name_count * 8                 # 이름 표
-        heap += pow2_at_least(name_count * 2) * 4   # 이름 해시
-        heap += nmax * SIZEOF_NODE             # 노드 (gh #5 C: 선언부 + 가장 큰 본문)
+    heap = align_up(heap + name_bytes, 4)  # 이름 바이트 (gh #5 A)
+    heap += name_count * 8                 # 이름 표
+    heap += pow2_at_least(name_count * 2) * 4   # 이름 해시
+    heap += nmax * SIZEOF_NODE             # 노드 (gh #5 C: 선언부 + 가장 큰 본문)
 
-        k = _count_arena_nodes(decls)
-        n_local = k["params"] + k["lets"] + k["binds"] + 2
-        n_name = k["structs"] + k["enums"] + k["consts"] + k["fns"] + 2
-        heap += (k["tys"] + 7 + 8) * 12  # 타입
-        heap += (k["fields"] + k["tys"] + 2) * 20
-        heap += (k["structs"] + 2) * 24
-        heap += (k["variants"] + 2) * 24
-        heap += (k["enums"] + 2) * 28
-        heap += (k["consts"] + 2) * 28
-        heap += (k["params"] + 2) * 16
-        heap += (k["fns"] + 2) * 52
-        heap += n_local * 36
-        heap += (k["strs"] + 2) * 16
-        heap += n_name * 12 * 3          # taken, tynames, scalars
-        heap += (n_local + 2) * 4  # 스코프
-        heap += (MAX_DEPTH + MAX_DEPTH + 8) * 4  # 표시
-        heap += 512 * 4 * 2  # free, ctrl
-        heap += ((k["fns"] + 2) * 3) * 4  # 시그니처
+    k = _count_arena_nodes(decls)
+    n_local = k["params"] + k["lets"] + k["binds"] + 2
+    n_name = k["structs"] + k["enums"] + k["consts"] + k["fns"] + 2
+    heap += (k["tys"] + 7 + 8) * 12  # 타입
+    heap += (k["fields"] + k["tys"] + 2) * 20
+    heap += (k["structs"] + 2) * 24
+    heap += (k["variants"] + 2) * 24
+    heap += (k["enums"] + 2) * 28
+    heap += (k["consts"] + 2) * 28
+    heap += (k["params"] + 2) * 16
+    heap += (k["fns"] + 2) * 52
+    heap += n_local * 36
+    heap += (k["strs"] + 2) * 16
+    heap += n_name * 12 * 3          # taken, tynames, scalars
+    heap += (n_local + 2) * 4  # 스코프
+    heap += (MAX_DEPTH + MAX_DEPTH + 8) * 4  # 표시
+    heap += 512 * 4 * 2  # free, ctrl
+    heap += ((k["fns"] + 2) * 3) * 4  # 시그니처
     return heap
+
+
+def check_token_workspace(ntok: int) -> None:
+    """선언 하나가 S1..S2 토큰 작업장에 들어가는가 (gh #5 C).
+
+    스트리밍 뒤로 이것이 **진짜 한계**다. 프로그램은 아무리 길어도 되고, 함수
+    하나가 작업장보다 많은 토큰을 요구하면 거절된다. 예전 한계("프로그램 전체가
+    아레나에 들어가는가")는 이제 뒷받침일 뿐이다.
+    """
+    if ntok * SIZEOF_TOKEN > TOKEN_SCRATCH_END - BOOTSTRAP_SCRATCH:
+        raise CompileError(1, 1, "program is too large for the compiler's memory")
 
 
 def check_bootstrap_memory(*args, **kw) -> None:
@@ -3325,9 +3294,8 @@ def _parse_declarations(src: bytes):
     decl_tokens = largest_body = 0
 
     def finish(eof: Token):
+        # 두 호출부 모두 chunk 가 비어 있지 않을 때만 부른다
         nonlocal chunk, max_tokens, decl_tokens, largest_body
-        if not chunk:
-            return
         toks = chunk + [eof]
         parsed = Parser(toks).parse_program()
         decls.append(parsed[0])
@@ -3415,8 +3383,7 @@ def compile(src: bytes) -> tuple[int, bytes]:
     sys.setrecursionlimit(max(saved, 8000))
     try:
         decls, ntok, name_bytes, name_count, nmax, str_bytes = _parse_declarations(src)
-        if ntok * SIZEOF_TOKEN > TOKEN_SCRATCH_END - BOOTSTRAP_SCRATCH:
-            raise CompileError(1, 1, "program is too large for the compiler's memory")
+        check_token_workspace(ntok)
         check_bootstrap_memory(
             len(src), ntok, decls, name_bytes, name_count, nmax,
             str_body_bytes=str_bytes,
