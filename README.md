@@ -64,14 +64,24 @@ B(cool0c.cool0)       → C        B == C 여야 한다
 `A` 가 `cool0c.cool0` 의 충실한 전사라면 `A` 와 `B` 가 같은 코드를 뱉으므로 `B == C`
 가 바로 나온다. 어긋나면 전사가 틀린 것이다.
 
-### ⚠ `cool0c.wat` 은 지금 뒤처져 있다 (stale)
+### 전사가 따라잡았다
 
-`cool0c.cool0` 이 앞서 갔고 **전사는 의도적으로 미뤄 뒀다** — 여러 변경을 모아
-한 번에 옮겨 적기 위해서다. 그동안 위 고정점은 성립하지 않는다.
+```
+P = cool0.py(cool0c.cool0)
+A = wat2wasm(cool0c.wat)
+B = A(cool0c.cool0)
+C = B(cool0c.cool0)
 
-이것은 조용히 썩지 않는다. `tests/conftest.py` 의 `wat_is_current()` 가 매번
-`cool0c.wat` 으로 `cool0c.cool0` 을 컴파일해 보고, 거절당하면 관련 시험을 통째로
-**스킵**시키면서 사유에 실제 오류 메시지를 적는다:
+B == C == P                       108,268 바이트
+```
+
+`tests/test_milestone.py` 가 이걸 지킨다.
+
+전사가 뒤처지는 것은 정상이다 -- `cool0c.cool0` 이 먼저 가고 전사는 여러 변경을
+모아 한 번에 따라간다. 그동안 위 고정점은 성립하지 않는다. 조용히 썩지는 않는다:
+`tests/conftest.py` 의 `wat_is_current()` 가 매번 `cool0c.wat` 으로
+`cool0c.cool0` 을 컴파일해 보고, 거절당하면 관련 시험을 통째로 **스킵**시키면서
+사유에 실제 오류 메시지를 적는다.
 
 ```
 SKIPPED: cool0c.wat 이 cool0c.cool0 을 거절한다: <진짜 진단>
@@ -81,9 +91,11 @@ SKIPPED: cool0c.wat 이 cool0c.cool0 을 거절한다: <진짜 진단>
 때문이다. 하지만 스킵 수와 그 사유가 눈앞에 남으므로 "초록색이니 괜찮다"로는
 안 읽힌다. 전사가 끝나면 아무것도 안 고쳐도 스킵이 저절로 다시 켜진다.
 
-밀린 것: 스칼라 enum, `|` 패턴, `enum Punct`, Token/Node 배치 변경, `S1`/`S2`
-이동, 그리고 [gh #5](https://github.com/sebastianrcnt/coollang/issues/5) 의
-0/A/B/C.
+그리고 스킵되는 동안에도 텍스트만으로 볼 수 있는 것은 계속 본다
+(`tests/test_transcription.py`): 함수가 다 있는지, 서명의 워드 수가 맞는지,
+모든 호출의 인자 수가 맞는지, 박아 둔 문자열 주소가 리터럴에 맞는지, 함수마다
+만지는 노드 필드가 원본과 같은지. 마지막 세 가지는 서명이 멀쩡한 채 본문만 낡은
+함수 서른 개를 실제로 잡아냈다.
 
 ### 신뢰 사슬
 
