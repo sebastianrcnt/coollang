@@ -3170,207 +3170,263 @@ fn srem(a: u32, b: u32) -> u32 {
 fn sshr(a: u32, sh: u32) -> u32 { let x: i32 = a as i32; return (x >> sh) as u32; }
 
 // Returns the value; the type comes back in c.cety.
-fn const_expr(c: &mut Ctx, e: u32, want: u32) -> u32 {
-    if failed(c) { c.^.cety = TY_I32; return 0; }
-    let mut iwant: u32 = 0;
-    if want != 0 && is_int_ty(c, want) && ty_kind(c, want) != TYK_INTLIT { iwant = want; }
-    let k: NodeKind = c.^.nodes[e].kind;
+fn const_ident(c: &mut Ctx, e: u32) -> u32 {
     let line: u32 = c.^.nodes[e].line;
     let col: u32 = c.^.nodes[e].col;
-    let ea: u32 = c.^.nodes[e].a;
-    let eb: u32 = c.^.nodes[e].b;
+    let name: u32 = c.^.nodes[e].a;
+    let ci: u32 = find_const(c, name);
+    if ci != 0 {
+        force_const(c, ci, line, col);
+        c.^.cety = c.^.consts[ci].ty;
+        return c.^.consts[ci].value;
+    }
+    e_not_const(c, line, col, name);
+    c.^.cety = TY_I32;
+    return 0;
+}
 
-    if k == NodeKind.E_INT { c.^.cety = TY_INTLIT; return ea; }
-    if k == NodeKind.E_CHAR { c.^.cety = TY_U32; return ea; }
-    if k == NodeKind.E_BOOL { c.^.cety = TY_BOOL; return ea; }
-    if k == NodeKind.E_IDENT {
-        let ci: u32 = find_const(c, ea);
-        if ci != 0 {
-            force_const(c, ci, line, col);
-            c.^.cety = c.^.consts[ci].ty;
-            return c.^.consts[ci].value;
-        }
-        e_not_const(c, line, col, ea);
+fn const_cast(c: &mut Ctx, e: u32) -> u32 {
+    let line: u32 = c.^.nodes[e].line;
+    let col: u32 = c.^.nodes[e].col;
+    let v: u32 = const_expr(c, c.^.nodes[e].a, 0);
+    let t: u32 = c.^.cety;
+    let dst: u32 = resolve_ty(c, c.^.nodes[e].b);
+    if failed(c) { c.^.cety = TY_I32; return 0; }
+    if !is_int_ty(c, t) && ty_kind(c, t) != TYK_PTR {
+        e_cast_from(c, line, col, t);
         c.^.cety = TY_I32;
         return 0;
     }
-    if k == NodeKind.E_CAST {
-        let v: u32 = const_expr(c, ea, 0);
-        let t: u32 = c.^.cety;
-        let dst: u32 = resolve_ty(c, eb);
-        if failed(c) { c.^.cety = TY_I32; return 0; }
-        if !is_int_ty(c, t) && ty_kind(c, t) != TYK_PTR {
-            e_cast_from(c, line, col, t);
-            c.^.cety = TY_I32;
-            return 0;
-        }
-        let dk: u32 = ty_kind(c, dst);
-        if dk != TYK_I32 && dk != TYK_U32 && dk != TYK_PTR {
-            e_cast_to(c, line, col, dst);
-            c.^.cety = TY_I32;
-            return 0;
-        }
-        c.^.cety = dst;
-        return v;
+    let dk: u32 = ty_kind(c, dst);
+    if dk != TYK_I32 && dk != TYK_U32 && dk != TYK_PTR {
+        e_cast_to(c, line, col, dst);
+        c.^.cety = TY_I32;
+        return 0;
     }
-    if k == NodeKind.E_UNARY {
-        let op: Punct = c.^.nodes[e].op;
-        let mut sub_want: u32 = TY_BOOL;
-        if op == Punct.Sub { sub_want = want; }
-        let v: u32 = const_expr(c, eb, sub_want);
-        let t: u32 = c.^.cety;
-        if failed(c) { c.^.cety = TY_I32; return 0; }
-        if op == Punct.Sub {
-            if !is_int_ty(c, t) {
-                e_negate(c, line, col, t);
-                c.^.cety = TY_I32;
-                return 0;
-            }
-            c.^.cety = t;
-            return 0 - v;
-        }
-        if ty_kind(c, t) != TYK_BOOL {
-            e_not_bool(c, line, col, t);
-            c.^.cety = TY_I32;
-            return 0;
-        }
-        c.^.cety = TY_BOOL;
-        return 1 - v;
-    }
-    if k == NodeKind.E_BINARY {
-        let op: Punct = c.^.nodes[e].op;
-        let ec: u32 = c.^.nodes[e].c;
-        let cmp: bool = is_cmp(op) || op == Punct.AndAnd || op == Punct.OrOr;
-        let mut lwant: u32 = want;
-        if cmp { lwant = 0; }
-        let lv: u32 = const_expr(c, eb, lwant);
-        let lt: u32 = c.^.cety;
-        let mut rwant: u32 = 0;
-        if op == Punct.Shl || op == Punct.Shr {
-            rwant = TY_U32;
-        } else if cmp {
-            rwant = 0;
-        } else if ty_kind(c, lt) != TYK_INTLIT {
-            rwant = lt;
-        } else {
-            rwant = want;
-        }
-        let rv: u32 = const_expr(c, ec, rwant);
-        let rt: u32 = c.^.cety;
-        if failed(c) { c.^.cety = TY_I32; return 0; }
+    c.^.cety = dst;
+    return v;
+}
 
-        if op == Punct.AndAnd || op == Punct.OrOr {
-            if ty_kind(c, lt) != TYK_BOOL || ty_kind(c, rt) != TYK_BOOL {
-                e_op_bool(c, line, col, op);
-                c.^.cety = TY_I32;
-                return 0;
-            }
-            c.^.cety = TY_BOOL;
-            if op == Punct.AndAnd {
-                if lv != 0 && rv != 0 { return 1; }
-                return 0;
-            }
-            if lv != 0 || rv != 0 { return 1; }
-            return 0;
-        }
-        if op == Punct.Shl || op == Punct.Shr {
-            if !is_int_ty(c, lt) || !is_int_ty(c, rt) {
-                e_op_int(c, line, col, op);
-                c.^.cety = TY_I32;
-                return 0;
-            }
-            // the shift amount is `u32` here for the same reason it is everywhere
-            // else (language.md S5) -- a constant is not a weaker position
-            if ty_kind(c, rt) != TYK_INTLIT && ty_kind(c, rt) != TYK_U32 {
-                let rl: u32 = c.^.nodes[ec].line;
-                let rc: u32 = c.^.nodes[ec].col;
-                e_expected_ty(c, rl, rc, TY_U32, rt);
-                c.^.cety = TY_I32;
-                return 0;
-            }
-            let mut t: u32 = lt;
-            if ty_kind(c, lt) == TYK_INTLIT {
-                if iwant != 0 { t = iwant; } else { t = TY_I32; }
-            }
-            let sh: u32 = rv & 31;
-            c.^.cety = t;
-            if op == Punct.Shl { return lv << sh; }
-            if ty_kind(c, t) == TYK_I32 { return sshr(lv, sh); }
-            return lv >> sh;
-        }
-        if !is_int_ty(c, lt) || !is_int_ty(c, rt) {
-            if (op == Punct.EqEq || op == Punct.Ne) && ty_kind(c, lt) == TYK_BOOL
-                && ty_kind(c, rt) == TYK_BOOL {
-                c.^.cety = TY_BOOL;
-                if op == Punct.EqEq {
-                    if lv == rv { return 1; }
-                    return 0;
-                }
-                if lv != rv { return 1; }
-                return 0;
-            }
-            e_op_int(c, line, col, op);
-            c.^.cety = TY_I32;
-            return 0;
-        }
-        // cool0 has no implicit i32/u32 conversion, in a constant either
-        // (language.md S3). An unsettled literal takes the other side's type;
-        // two settled ones have to already agree.
-        if ty_kind(c, lt) != TYK_INTLIT && ty_kind(c, rt) != TYK_INTLIT && lt != rt {
-            e_type_mismatch2(c, line, col, op, lt, rt);
-            c.^.cety = TY_I32;
-            return 0;
-        }
-        let mut t: u32 = lt;
-        if ty_kind(c, lt) == TYK_INTLIT { t = rt; }
-        if ty_kind(c, t) == TYK_INTLIT {
-            if !cmp && iwant != 0 { t = iwant; } else { t = TY_I32; }
-        }
-        let signed: bool = ty_kind(c, t) == TYK_I32;
-        if is_cmp(op) {
-            c.^.cety = TY_BOOL;
-            if op == Punct.EqEq { if lv == rv { return 1; } return 0; }
-            if op == Punct.Ne { if lv != rv { return 1; } return 0; }
-            if signed {
-                if op == Punct.Lt { if to_signed_lt(lv, rv) { return 1; } return 0; }
-                if op == Punct.Gt { if to_signed_gt(lv, rv) { return 1; } return 0; }
-                if op == Punct.Le { if !to_signed_gt(lv, rv) { return 1; } return 0; }
-                if !to_signed_lt(lv, rv) { return 1; }
-                return 0;
-            }
-            if op == Punct.Lt { if lv < rv { return 1; } return 0; }
-            if op == Punct.Gt { if lv > rv { return 1; } return 0; }
-            if op == Punct.Le { if lv <= rv { return 1; } return 0; }
-            if lv >= rv { return 1; }
-            return 0;
-        }
-        if (op == Punct.Div || op == Punct.Mod) && rv == 0 {
-            e_const_divzero(c, line, col);
+fn const_unary(c: &mut Ctx, e: u32, want: u32) -> u32 {
+    let line: u32 = c.^.nodes[e].line;
+    let col: u32 = c.^.nodes[e].col;
+    let op: Punct = c.^.nodes[e].op;
+    let mut sub_want: u32 = TY_BOOL;
+    if op == Punct.Sub { sub_want = want; }
+    let v: u32 = const_expr(c, c.^.nodes[e].b, sub_want);
+    let t: u32 = c.^.cety;
+    if failed(c) { c.^.cety = TY_I32; return 0; }
+    if op == Punct.Sub {
+        if !is_int_ty(c, t) {
+            e_negate(c, line, col, t);
             c.^.cety = TY_I32;
             return 0;
         }
         c.^.cety = t;
-        if op == Punct.Add { return lv + rv; }
-        if op == Punct.Sub { return lv - rv; }
-        if op == Punct.Mul { return lv * rv; }
-        if op == Punct.Div {
-            if signed { return sdiv(lv, rv); }
-            return lv / rv;
-        }
-        if op == Punct.Mod {
-            if signed { return srem(lv, rv); }
-            return lv % rv;
-        }
-        if op == Punct.And { return lv & rv; }
-        if op == Punct.Or { return lv | rv; }
-        if op == Punct.Xor { return lv ^ rv; }
-        e_op_not_const(c, line, col, op);
+        return 0 - v;
+    }
+    if ty_kind(c, t) != TYK_BOOL {
+        e_not_bool(c, line, col, t);
         c.^.cety = TY_I32;
         return 0;
     }
-    e_not_const_expr(c, line, col);
-    c.^.cety = TY_I32;
+    c.^.cety = TY_BOOL;
+    return 1 - v;
+}
+
+// The comparisons, folded. The caller has already settled the operand type and
+// knows whether it is signed (language.md S5).
+fn const_compare(op: Punct, lv: u32, rv: u32, signed: bool) -> u32 {
+    match op {
+        EqEq => { if lv == rv { return 1; } return 0; }
+        Ne => { if lv != rv { return 1; } return 0; }
+        Lt => {
+            if signed { if to_signed_lt(lv, rv) { return 1; } return 0; }
+            if lv < rv { return 1; }
+            return 0;
+        }
+        Gt => {
+            if signed { if to_signed_gt(lv, rv) { return 1; } return 0; }
+            if lv > rv { return 1; }
+            return 0;
+        }
+        Le => {
+            if signed { if !to_signed_gt(lv, rv) { return 1; } return 0; }
+            if lv <= rv { return 1; }
+            return 0;
+        }
+        // only a comparison reaches here, so this is `>=`
+        _ => {
+            if signed { if !to_signed_lt(lv, rv) { return 1; } return 0; }
+            if lv >= rv { return 1; }
+            return 0;
+        }
+    }
+}
+
+// The arithmetic and bitwise operators, folded. `cety` is already the result
+// type; only the operators that cannot be folded reset it.
+fn const_arith(c: &mut Ctx, line: u32, col: u32, op: Punct,
+               lv: u32, rv: u32, signed: bool) -> u32 {
+    match op {
+        Add => { return lv + rv; }
+        Sub => { return lv - rv; }
+        Mul => { return lv * rv; }
+        Div => { if signed { return sdiv(lv, rv); } return lv / rv; }
+        Mod => { if signed { return srem(lv, rv); } return lv % rv; }
+        And => { return lv & rv; }
+        Or => { return lv | rv; }
+        Xor => { return lv ^ rv; }
+        _ => {
+            e_op_not_const(c, line, col, op);
+            c.^.cety = TY_I32;
+            return 0;
+        }
+    }
+}
+
+fn const_shift(c: &mut Ctx, e: u32, op: Punct, lv: u32, rv: u32,
+               lt: u32, rt: u32, iwant: u32) -> u32 {
+    let line: u32 = c.^.nodes[e].line;
+    let col: u32 = c.^.nodes[e].col;
+    if !is_int_ty(c, lt) || !is_int_ty(c, rt) {
+        e_op_int(c, line, col, op);
+        c.^.cety = TY_I32;
+        return 0;
+    }
+    // the shift amount is `u32` here for the same reason it is everywhere else
+    // (language.md S5) -- a constant is not a weaker position
+    if ty_kind(c, rt) != TYK_INTLIT && ty_kind(c, rt) != TYK_U32 {
+        let rhs: u32 = c.^.nodes[e].c;
+        let rl: u32 = c.^.nodes[rhs].line;
+        let rc: u32 = c.^.nodes[rhs].col;
+        e_expected_ty(c, rl, rc, TY_U32, rt);
+        c.^.cety = TY_I32;
+        return 0;
+    }
+    let mut t: u32 = lt;
+    if ty_kind(c, lt) == TYK_INTLIT {
+        if iwant != 0 { t = iwant; } else { t = TY_I32; }
+    }
+    let sh: u32 = rv & 31;
+    c.^.cety = t;
+    if op == Punct.Shl { return lv << sh; }
+    if ty_kind(c, t) == TYK_I32 { return sshr(lv, sh); }
+    return lv >> sh;
+}
+
+fn const_logical(c: &mut Ctx, line: u32, col: u32, op: Punct,
+                 lv: u32, rv: u32, lt: u32, rt: u32) -> u32 {
+    if ty_kind(c, lt) != TYK_BOOL || ty_kind(c, rt) != TYK_BOOL {
+        e_op_bool(c, line, col, op);
+        c.^.cety = TY_I32;
+        return 0;
+    }
+    c.^.cety = TY_BOOL;
+    if op == Punct.AndAnd {
+        if lv != 0 && rv != 0 { return 1; }
+        return 0;
+    }
+    if lv != 0 || rv != 0 { return 1; }
     return 0;
+}
+
+// What each side is folded against. A comparison settles nothing for its
+// operands, a shift wants u32 on the right, and otherwise the right side
+// follows the left once the left has settled (language.md S3).
+fn const_rhs_want(c: &Ctx, op: Punct, lt: u32, want: u32, cmp: bool) -> u32 {
+    if op == Punct.Shl || op == Punct.Shr { return TY_U32; }
+    if cmp { return 0; }
+    if ty_kind(c, lt) != TYK_INTLIT { return lt; }
+    return want;
+}
+
+fn const_binary(c: &mut Ctx, e: u32, want: u32) -> u32 {
+    let line: u32 = c.^.nodes[e].line;
+    let col: u32 = c.^.nodes[e].col;
+    let op: Punct = c.^.nodes[e].op;
+    let lhs: u32 = c.^.nodes[e].b;
+    let rhs: u32 = c.^.nodes[e].c;
+    let mut iwant: u32 = 0;
+    if want != 0 && is_int_ty(c, want) && ty_kind(c, want) != TYK_INTLIT {
+        iwant = want;
+    }
+    let cmp: bool = is_cmp(op) || op == Punct.AndAnd || op == Punct.OrOr;
+    let mut lwant: u32 = want;
+    if cmp { lwant = 0; }
+    let lv: u32 = const_expr(c, lhs, lwant);
+    let lt: u32 = c.^.cety;
+    let rwant: u32 = const_rhs_want(c, op, lt, want, cmp);
+    let rv: u32 = const_expr(c, rhs, rwant);
+    let rt: u32 = c.^.cety;
+    if failed(c) { c.^.cety = TY_I32; return 0; }
+
+    if op == Punct.AndAnd || op == Punct.OrOr {
+        return const_logical(c, line, col, op, lv, rv, lt, rt);
+    }
+    if op == Punct.Shl || op == Punct.Shr {
+        return const_shift(c, e, op, lv, rv, lt, rt, iwant);
+    }
+    if !is_int_ty(c, lt) || !is_int_ty(c, rt) {
+        // `==` and `!=` are the only operators bool constants take
+        if (op == Punct.EqEq || op == Punct.Ne) && ty_kind(c, lt) == TYK_BOOL
+            && ty_kind(c, rt) == TYK_BOOL {
+            c.^.cety = TY_BOOL;
+            return const_compare(op, lv, rv, false);
+        }
+        e_op_int(c, line, col, op);
+        c.^.cety = TY_I32;
+        return 0;
+    }
+    // cool0 has no implicit i32/u32 conversion, in a constant either
+    // (language.md S3). An unsettled literal takes the other side's type;
+    // two settled ones have to already agree.
+    if ty_kind(c, lt) != TYK_INTLIT && ty_kind(c, rt) != TYK_INTLIT && lt != rt {
+        e_type_mismatch2(c, line, col, op, lt, rt);
+        c.^.cety = TY_I32;
+        return 0;
+    }
+    let mut t: u32 = lt;
+    if ty_kind(c, lt) == TYK_INTLIT { t = rt; }
+    if ty_kind(c, t) == TYK_INTLIT {
+        if !cmp && iwant != 0 { t = iwant; } else { t = TY_I32; }
+    }
+    let signed: bool = ty_kind(c, t) == TYK_I32;
+    if is_cmp(op) {
+        c.^.cety = TY_BOOL;
+        return const_compare(op, lv, rv, signed);
+    }
+    if (op == Punct.Div || op == Punct.Mod) && rv == 0 {
+        e_const_divzero(c, line, col);
+        c.^.cety = TY_I32;
+        return 0;
+    }
+    c.^.cety = t;
+    return const_arith(c, line, col, op, lv, rv, signed);
+}
+
+// Constant folding (language.md S4). `cety` carries the type out alongside the
+// value, because cool0 returns one word.
+fn const_expr(c: &mut Ctx, e: u32, want: u32) -> u32 {
+    if failed(c) { c.^.cety = TY_I32; return 0; }
+    let line: u32 = c.^.nodes[e].line;
+    let col: u32 = c.^.nodes[e].col;
+    let ea: u32 = c.^.nodes[e].a;
+    match expr_kind(c.^.nodes[e].kind) {
+        Int => { c.^.cety = TY_INTLIT; return ea; }
+        Char => { c.^.cety = TY_U32; return ea; }
+        Bool => { c.^.cety = TY_BOOL; return ea; }
+        Ident => { return const_ident(c, e); }
+        Cast => { return const_cast(c, e); }
+        Unary => { return const_unary(c, e, want); }
+        Binary => { return const_binary(c, e, want); }
+        NotExpr | Str | Borrow | Call | Index | Field | Deref | StructLit
+        | LitField | SliceExpr | OffsetExpr | MatchExpr => {
+            e_not_const_expr(c, line, col);
+            c.^.cety = TY_I32;
+            return 0;
+        }
+    }
 }
 
 // ===========================================================================
@@ -4888,19 +4944,21 @@ fn check_call(c: &mut Ctx, e: u32) -> u32 {
 // Places
 // ===========================================================================
 
+// Which local a place is rooted at, walking out through fields, indices and
+// derefs. A constant is not rooted anywhere (language.md S7).
 fn root_local(c: &Ctx, e: u32) -> u32 {
     let mut p: u32 = e;
     for p != 0 {
-        let k: NodeKind = c.^.nodes[p].kind;
-        if k == NodeKind.E_IDENT {
-            if c.^.nodes[p].aux2 != 0 { return 0; }
-            return c.^.nodes[p].aux;
+        match expr_kind(c.^.nodes[p].kind) {
+            Ident => {
+                if c.^.nodes[p].aux2 != 0 { return 0; }
+                return c.^.nodes[p].aux;
+            }
+            Field | Index | Deref => { p = c.^.nodes[p].a; }
+            NotExpr | Int | Char | Str | Bool | Unary | Binary | Borrow | Cast
+            | Call | StructLit | LitField | SliceExpr | OffsetExpr
+            | MatchExpr => { return 0; }
         }
-        if k == NodeKind.E_FIELD || k == NodeKind.E_INDEX || k == NodeKind.E_DEREF {
-            p = c.^.nodes[p].a;
-            continue;
-        }
-        return 0;
     }
     return 0;
 }
@@ -5113,219 +5171,281 @@ fn check_expr(c: &mut Ctx, e: u32, want: u32) -> u32 {
     return t;
 }
 
+// `slice`, `slice_mut` and `offset` all take a raw pointer first (language.md S5).
+fn check_ptr_operand(c: &mut Ctx, p: u32) -> u32 {
+    let pt: u32 = check_expr(c, p, 0);
+    if failed(c) { return TY_I32; }
+    if ty_kind(c, pt) != TYK_PTR {
+        let pl: u32 = c.^.nodes[p].line;
+        let pc: u32 = c.^.nodes[p].col;
+        if err_open(c, pl, pc) {
+            put_str(c, "expected a raw pointer, found ");
+            put_q_ty(c, pt);
+            err_end(c);
+        }
+        return TY_I32;
+    }
+    return pt;
+}
+
+fn check_slice_expr(c: &mut Ctx, e: u32) -> u32 {
+    let line: u32 = c.^.nodes[e].line;
+    let col: u32 = c.^.nodes[e].col;
+    let is_mut: u32 = c.^.nodes[e].a;
+    let p: u32 = c.^.nodes[e].b;
+    let n: u32 = c.^.nodes[e].c;
+    if c.^.unsafed == 0 {
+        if err_open(c, line, col) {
+            put_ch(c, 96);
+            if is_mut != 0 { put_str(c, "slice_mut"); } else { put_str(c, "slice"); }
+            put_ch(c, 96);
+            put_str(c, " requires ");
+            put_ch(c, 96);
+            put_str(c, "unsafe");
+            put_ch(c, 96);
+            err_end(c);
+        }
+        return TY_I32;
+    }
+    let pt: u32 = check_ptr_operand(c, p);
+    if failed(c) { return TY_I32; }
+    coerce(c, n, TY_U32);
+    if failed(c) { return TY_I32; }
+    match c.^.types[pt] {
+        Ptr(elem) => { return ty_intern(c, TYK_SLICE, elem, is_mut); }
+        _ => { return TY_I32; }
+    }
+}
+
+fn check_offset_expr(c: &mut Ctx, e: u32) -> u32 {
+    let p: u32 = c.^.nodes[e].a;
+    let ix: u32 = c.^.nodes[e].b;
+    let pt: u32 = check_ptr_operand(c, p);
+    if failed(c) { return TY_I32; }
+    coerce(c, ix, TY_U32);
+    if failed(c) { return TY_I32; }
+    match c.^.types[pt] {
+        Ptr(inner) => {
+            c.^.nodes[e].d = size_of(c, inner);
+            return pt;
+        }
+        _ => { return TY_I32; }
+    }
+}
+
+// A name in value position: a local, a constant folded to its value, or an
+// error. A function name is not a value (language.md S4).
+fn check_ident_expr(c: &mut Ctx, e: u32) -> u32 {
+    let line: u32 = c.^.nodes[e].line;
+    let col: u32 = c.^.nodes[e].col;
+    let name: u32 = c.^.nodes[e].a;
+    let loc: u32 = lookup(c, name);
+    if loc != 0 {
+        let lt: u32 = c.^.locals[loc].ty;
+        c.^.nodes[e].aux = loc;
+        c.^.nodes[e].aux2 = 0;
+        return read_ty(c, lt);
+    }
+    let ci: u32 = find_const(c, name);
+    if ci != 0 {
+        force_const(c, ci, line, col);
+        if failed(c) { return TY_I32; }
+        c.^.nodes[e].aux = c.^.consts[ci].value;
+        c.^.nodes[e].aux2 = 1;
+        return c.^.consts[ci].ty;
+    }
+    if find_fn(c, name) != 0 {
+        err_msg(c, line, col, "functions are not values");
+        return TY_I32;
+    }
+    e_unknown_name(c, line, col, name);
+    return TY_I32;
+}
+
+fn check_unary_expr(c: &mut Ctx, e: u32, want: u32) -> u32 {
+    let line: u32 = c.^.nodes[e].line;
+    let col: u32 = c.^.nodes[e].col;
+    let opnd: u32 = c.^.nodes[e].b;
+    if c.^.nodes[e].op == Punct.Not {
+        coerce(c, opnd, TY_BOOL);
+        return TY_BOOL;
+    }
+    let iw: u32 = int_want(c, want);
+    let t: u32 = check_expr(c, opnd, iw);
+    if failed(c) { return TY_I32; }
+    if !is_int_ty(c, t) { e_negate(c, line, col, t); return TY_I32; }
+    return t;
+}
+
+// `as` reinterprets bits between integers and raw pointers, nothing else
+// (language.md S5).
+fn check_cast_expr(c: &mut Ctx, e: u32) -> u32 {
+    let line: u32 = c.^.nodes[e].line;
+    let col: u32 = c.^.nodes[e].col;
+    let opnd: u32 = c.^.nodes[e].a;
+    let tn: u32 = c.^.nodes[e].b;
+    let mut src: u32 = check_expr(c, opnd, 0);
+    if failed(c) { return TY_I32; }
+    if ty_kind(c, src) == TYK_INTLIT {
+        retype(c, opnd, TY_I32);
+        src = TY_I32;
+    }
+    let dst: u32 = resolve_ty(c, tn);
+    if failed(c) { return TY_I32; }
+    let sk: u32 = ty_kind(c, src);
+    let dk: u32 = ty_kind(c, dst);
+    if sk != TYK_I32 && sk != TYK_U32 && sk != TYK_PTR {
+        e_cast_from(c, line, col, src);
+        return TY_I32;
+    }
+    if dk != TYK_I32 && dk != TYK_U32 && dk != TYK_PTR {
+        e_cast_to(c, line, col, dst);
+        return TY_I32;
+    }
+    return dst;
+}
+
+// Reading a place as a value. An aggregate stays where it is; everything else
+// is loaded (implementation.md S2).
+fn check_place_expr(c: &mut Ctx, e: u32) -> u32 {
+    let ty: u32 = check_place(c, e);
+    if failed(c) { return TY_I32; }
+    if is_aggregate(c, ty) { return ty; }
+    return read_ty(c, ty);
+}
+
+// `b.f` in value position is four different things, in this order: the tag of
+// a scalar enum literal, an aggregate enum literal (which is not a value), a
+// slice's built-in `len`/`ptr`, or a real field read.
+fn check_field_expr(c: &mut Ctx, e: u32) -> u32 {
+    let line: u32 = c.^.nodes[e].line;
+    let col: u32 = c.^.nodes[e].col;
+    let base: u32 = c.^.nodes[e].a;
+    let sv: u32 = scalar_enum_lit(c, e);
+    if sv != 0 {
+        let sei: u32 = scalar_enum_lit_enum(c, e);
+        let ens: u32 = c.^.enums[sei].name;
+        c.^.nodes[e].aux = c.^.variants[sv].tag;
+        c.^.nodes[e].aux2 = 2;   // 2 marks a scalar tag constant
+        return ty_named(c, ens);
+    }
+    if is_enum_lit(c, e) {
+        err_msg(c, line, col, "enum literal is only allowed as an initializer");
+        return TY_I32;
+    }
+    let which: u32 = slice_field(c, e);
+    if which == 0 { return check_place_expr(c, e); }
+    let bt: u32 = check_expr(c, base, 0);
+    if failed(c) { return TY_I32; }
+    c.^.nodes[e].aux = which;
+    if which == 1 { return TY_U32; }
+    match c.^.types[bt] {
+        Slice(elem, m) => { return ty_intern(c, TYK_PTR, elem, 0); }
+        _ => { return TY_I32; }
+    }
+}
+
 fn check_expr_inner(c: &mut Ctx, e: u32, want: u32) -> u32 {
     if failed(c) { return TY_I32; }
-    let k: NodeKind = c.^.nodes[e].kind;
     let line: u32 = c.^.nodes[e].line;
     let col: u32 = c.^.nodes[e].col;
     let ea: u32 = c.^.nodes[e].a;
     let eb: u32 = c.^.nodes[e].b;
-
-    if k == NodeKind.E_INT { return TY_INTLIT; }
-    if k == NodeKind.E_CHAR { return TY_U32; }
-    if k == NodeKind.E_BOOL { return TY_BOOL; }
-    if k == NodeKind.E_STR {
-        let addr: u32 = intern_string(c, ea, eb, line, col);
-        c.^.nodes[e].aux = addr;
-        return ty_intern(c, TYK_SLICE, TY_U8, 0);
-    }
-    if k == NodeKind.E_STRUCTLIT {
-        err_msg(c, line, col, "struct literal is only allowed as an initializer");
-        return TY_I32;
-    }
-    if k == NodeKind.S_MATCH { return check_match_expr(c, e, want); }
-    if k == NodeKind.E_SLICE {
-        let ec: u32 = c.^.nodes[e].c;
-        if c.^.unsafed == 0 {
-            if err_open(c, line, col) {
-                put_ch(c, 96);
-                if ea != 0 { put_str(c, "slice_mut"); } else { put_str(c, "slice"); }
-                put_ch(c, 96);
-                put_str(c, " requires ");
-                put_ch(c, 96);
-                put_str(c, "unsafe");
-                put_ch(c, 96);
-                err_end(c);
+    match expr_kind(c.^.nodes[e].kind) {
+        Int => { return TY_INTLIT; }
+        Char => { return TY_U32; }
+        Bool => { return TY_BOOL; }
+        Str => {
+            let addr: u32 = intern_string(c, ea, eb, line, col);
+            c.^.nodes[e].aux = addr;
+            return ty_intern(c, TYK_SLICE, TY_U8, 0);
+        }
+        StructLit => {
+            err_msg(c, line, col, "struct literal is only allowed as an initializer");
+            return TY_I32;
+        }
+        MatchExpr => { return check_match_expr(c, e, want); }
+        SliceExpr => { return check_slice_expr(c, e); }
+        OffsetExpr => { return check_offset_expr(c, e); }
+        Ident => { return check_ident_expr(c, e); }
+        Unary => { return check_unary_expr(c, e, want); }
+        Borrow => {
+            err_msg(c, line, col, "a borrow may only appear as a call argument");
+            return TY_I32;
+        }
+        Cast => { return check_cast_expr(c, e); }
+        Binary => { return check_binary(c, e, want); }
+        Call => {
+            if is_enum_lit(c, e) {
+                err_msg(c, line, col, "enum literal is only allowed as an initializer");
+                return TY_I32;
             }
+            return check_call(c, e);
+        }
+        Field => { return check_field_expr(c, e); }
+        Index | Deref => { return check_place_expr(c, e); }
+        // a literal field only appears inside a struct literal
+        NotExpr | LitField => {
+            err_msg(c, line, col, "expected expression");
             return TY_I32;
         }
-        let pt: u32 = check_expr(c, eb, 0);
-        if failed(c) { return TY_I32; }
-        if ty_kind(c, pt) != TYK_PTR {
-            let pl: u32 = c.^.nodes[eb].line;
-            let pc: u32 = c.^.nodes[eb].col;
-            if err_open(c, pl, pc) {
-                put_str(c, "expected a raw pointer, found ");
-                put_q_ty(c, pt);
-                err_end(c);
-            }
-            return TY_I32;
-        }
-        coerce(c, ec, TY_U32);
-        if failed(c) { return TY_I32; }
-        let elem: u32 = ty_arg(c, pt);
-        return ty_intern(c, TYK_SLICE, elem, ea);
     }
-    if k == NodeKind.E_OFFSET {
-        let pt: u32 = check_expr(c, ea, 0);
-        if failed(c) { return TY_I32; }
-        if ty_kind(c, pt) != TYK_PTR {
-            let pl: u32 = c.^.nodes[ea].line;
-            let pc: u32 = c.^.nodes[ea].col;
-            if err_open(c, pl, pc) {
-                put_str(c, "expected a raw pointer, found ");
-                put_q_ty(c, pt);
-                err_end(c);
-            }
-            return TY_I32;
-        }
-        coerce(c, eb, TY_U32);
-        if failed(c) { return TY_I32; }
-        let inner: u32 = ty_arg(c, pt);
-        c.^.nodes[e].d = size_of(c, inner);
-        return pt;
-    }
-    if k == NodeKind.E_IDENT {
-        let loc: u32 = lookup(c, ea);
-        if loc != 0 {
-            let lt: u32 = c.^.locals[loc].ty;
-            c.^.nodes[e].aux = loc;
-            c.^.nodes[e].aux2 = 0;
-            return read_ty(c, lt);
-        }
-        let ci: u32 = find_const(c, ea);
-        if ci != 0 {
-            force_const(c, ci, line, col);
-            if failed(c) { return TY_I32; }
-            c.^.nodes[e].aux = c.^.consts[ci].value;
-            c.^.nodes[e].aux2 = 1;
-            return c.^.consts[ci].ty;
-        }
-        if find_fn(c, ea) != 0 {
-            err_msg(c, line, col, "functions are not values");
-            return TY_I32;
-        }
-        e_unknown_name(c, line, col, ea);
-        return TY_I32;
-    }
-    if k == NodeKind.E_UNARY {
-        if c.^.nodes[e].op == Punct.Not {
-            coerce(c, eb, TY_BOOL);
-            return TY_BOOL;
-        }
-        let iw: u32 = int_want(c, want);
-        let t: u32 = check_expr(c, eb, iw);
-        if failed(c) { return TY_I32; }
-        if !is_int_ty(c, t) { e_negate(c, line, col, t); return TY_I32; }
-        return t;
-    }
-    if k == NodeKind.E_BORROW {
-        err_msg(c, line, col, "a borrow may only appear as a call argument");
-        return TY_I32;
-    }
-    if k == NodeKind.E_CAST {
-        let mut src: u32 = check_expr(c, ea, 0);
-        if failed(c) { return TY_I32; }
-        if ty_kind(c, src) == TYK_INTLIT {
-            retype(c, ea, TY_I32);
-            src = TY_I32;
-        }
-        let dst: u32 = resolve_ty(c, eb);
-        if failed(c) { return TY_I32; }
-        let sk: u32 = ty_kind(c, src);
-        let dk: u32 = ty_kind(c, dst);
-        if sk != TYK_I32 && sk != TYK_U32 && sk != TYK_PTR {
-            e_cast_from(c, line, col, src);
-            return TY_I32;
-        }
-        if dk != TYK_I32 && dk != TYK_U32 && dk != TYK_PTR {
-            e_cast_to(c, line, col, dst);
-            return TY_I32;
-        }
-        return dst;
-    }
-    if k == NodeKind.E_BINARY { return check_binary(c, e, want); }
-    if k == NodeKind.E_CALL {
-        if is_enum_lit(c, e) {
-            err_msg(c, line, col, "enum literal is only allowed as an initializer");
-            return TY_I32;
-        }
-        return check_call(c, e);
-    }
-    if k == NodeKind.E_FIELD {
-        let sv: u32 = scalar_enum_lit(c, e);
-        if sv != 0 {
-            let sei: u32 = scalar_enum_lit_enum(c, e);
-            let ens3: u32 = c.^.enums[sei].name;
-            c.^.nodes[e].aux = c.^.variants[sv].tag;
-            c.^.nodes[e].aux2 = 2;   // 2 marks a scalar tag constant
-            return ty_named(c, ens3);
-        }
-        if is_enum_lit(c, e) {
-            err_msg(c, line, col, "enum literal is only allowed as an initializer");
-            return TY_I32;
-        }
-        let which: u32 = slice_field(c, e);
-        if which != 0 {
-            let bt: u32 = check_expr(c, ea, 0);
-            if failed(c) { return TY_I32; }
-            c.^.nodes[e].aux = which;
-            if which == 1 { return TY_U32; }
-            let elem: u32 = ty_arg(c, bt);
-            return ty_intern(c, TYK_PTR, elem, 0);
-        }
-    }
-    if k == NodeKind.E_FIELD || k == NodeKind.E_INDEX || k == NodeKind.E_DEREF {
-        let ty: u32 = check_place(c, e);
-        if failed(c) { return TY_I32; }
-        if is_aggregate(c, ty) { return ty; }
-        return read_ty(c, ty);
-    }
-    err_msg(c, line, col, "expected expression");
-    return TY_I32;
 }
 
 // ===========================================================================
 // The whole check (language.md S4)
 // ===========================================================================
 
+// One pass per kind of declaration, in the order the later ones depend on the
+// earlier ones: names, then struct layout, then enum layout, then constants
+// (which may refer to each other), then function signatures. Top level is
+// order-independent, which is why it takes this many passes (language.md S4).
 fn check_program(c: &mut Ctx) {
-    // pass one: gather declarations. Top level is order-independent (language.md S4)
     let mut d: u32 = c.^.decls;
     for d != 0 && !failed(c) {
         claim(c, d);
         d = c.^.nodes[d].next;
     }
     if failed(c) { return; }
+
     d = c.^.decls;
     for d != 0 {
-        let k: NodeKind = c.^.nodes[d].kind;
-        if k == NodeKind.D_STRUCT || k == NodeKind.D_ENUM { add_type_name(c, d); }
-        if k == NodeKind.D_ENUM { add_scalar_name(c, d); }
+        match decl_kind(c.^.nodes[d].kind) {
+            Struct => { add_type_name(c, d); }
+            Enum => {
+                add_type_name(c, d);
+                add_scalar_name(c, d);
+            }
+            NotDecl | Fn | Const | Param | FieldDecl | Variant => { }
+        }
         d = c.^.nodes[d].next;
     }
+
     d = c.^.decls;
     for d != 0 && !failed(c) {
-        if c.^.nodes[d].kind == NodeKind.D_STRUCT { declare_struct(c, d); }
+        if decl_kind(c.^.nodes[d].kind) == DeclKind.Struct { declare_struct(c, d); }
         d = c.^.nodes[d].next;
     }
     if failed(c) { return; }
+
     d = c.^.decls;
     for d != 0 && !failed(c) {
-        if c.^.nodes[d].kind == NodeKind.D_ENUM { declare_enum(c, d); }
+        if decl_kind(c.^.nodes[d].kind) == DeclKind.Enum { declare_enum(c, d); }
         d = c.^.nodes[d].next;
     }
     if failed(c) { return; }
+
     // consts may reference each other, so register them all before folding
     d = c.^.decls;
     for d != 0 && !failed(c) {
-        if c.^.nodes[d].kind == NodeKind.D_CONST { declare_const(c, d); }
+        if decl_kind(c.^.nodes[d].kind) == DeclKind.Const { declare_const(c, d); }
         d = c.^.nodes[d].next;
     }
     if failed(c) { return; }
+
     d = c.^.decls;
     for d != 0 && !failed(c) {
-        if c.^.nodes[d].kind == NodeKind.D_CONST {
+        if decl_kind(c.^.nodes[d].kind) == DeclKind.Const {
             let ci: u32 = c.^.nodes[d].aux;
             let line: u32 = c.^.nodes[d].line;
             let col: u32 = c.^.nodes[d].col;
@@ -5334,17 +5454,17 @@ fn check_program(c: &mut Ctx) {
         d = c.^.nodes[d].next;
     }
     if failed(c) { return; }
+
     let mut index: u32 = 0;
     d = c.^.decls;
     for d != 0 && !failed(c) {
-        if c.^.nodes[d].kind == NodeKind.D_FN {
+        if decl_kind(c.^.nodes[d].kind) == DeclKind.Fn {
             declare_fn(c, d, index);
             index += 1;
         }
         d = c.^.nodes[d].next;
     }
     c.^.nfns = index;
-    if failed(c) { return; }
 
     // Bodies are not checked here any more. Each one is parsed, checked,
     // emitted and dropped inside emit_module's code loop (gh #5 C) -- the
@@ -5658,19 +5778,31 @@ fn in_wasm_local(c: &Ctx, e: u32) -> bool {
     return !loc_in_memory(c, loc);
 }
 
+// The type a place holds, read back from what the checker recorded on it.
 fn place_ty(c: &Ctx, e: u32) -> u32 {
-    let k: NodeKind = c.^.nodes[e].kind;
-    if k == NodeKind.E_IDENT {
-        let loc: u32 = ident_local(c, e);
-        return c.^.locals[loc].ty;
+    match expr_kind(c.^.nodes[e].kind) {
+        Ident => {
+            let loc: u32 = ident_local(c, e);
+            return c.^.locals[loc].ty;
+        }
+        Field => {
+            let f: u32 = c.^.nodes[e].d;
+            return c.^.fields[f].ty;
+        }
+        // an index or a deref: the element or pointee of the base's type
+        NotExpr | Int | Char | Str | Bool | Unary | Binary | Borrow | Cast
+        | Call | Index | Deref | StructLit | LitField | SliceExpr | OffsetExpr
+        | MatchExpr => {
+            let base: u32 = c.^.nodes[e].a;
+            let bt: u32 = c.^.nodes[base].ty;
+            match c.^.types[bt] {
+                Slice(elem, m) => { return elem; }
+                Ref(inner, m) => { return inner; }
+                Ptr(inner) => { return inner; }
+                _ => { return 0; }
+            }
+        }
     }
-    if k == NodeKind.E_FIELD {
-        let f: u32 = c.^.nodes[e].d;
-        return c.^.fields[f].ty;
-    }
-    let base: u32 = c.^.nodes[e].a;
-    let bt: u32 = c.^.nodes[base].ty;
-    return ty_arg(c, bt);
 }
 
 fn emit_addr(c: &mut Ctx, e: u32) {
